@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Space</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Cinzel+Decorative:wght@400;700;900&family=Dancing+Script:wght@400..700&family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Noto+Sans+JP:wght@100..900&family=Oswald:wght@200..700&family=Pacifico&family=Roboto:ital,wght@0,100..900;1,100..900&family=Signika+Negative:wght@300..700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="art.css">
+</head>
+<body>
+    <header class="header">
+        <h1><span style="color:rgb(154, 154, 39);">The</span> Spa<span style="color: violet;">ce(86)</span></h1>
+        
+        <div class="burger" id="burger">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        <nav  class="nav-links" id="navLinks">
+            <ul>
+                <li><a href="#Home">Home</a></li>
+                <li><a href="#Gallery">Gallery</a></li>
+                <li><a href="#About">About</a></li>
+                <li><a href="#Contact">Contact</a></li>
+            </ul>
+        </nav>
+   
+    </header>
+
+    <section id="Home">
+       <div class="home-text">
+        <h2>Welcome to my art Gallery</h2>
+        <p>Explore my work and get to know my artistic journey.</p>
+        <p>A universe of colors, emotions, and abstract expression. Experience the beauty of art like never before—bold, dynamic, and filled with endless possibilities.</p>
+        <p>Explore our collection, immerse yourself in creativity, and let art transport you beyond the ordinary.</p>
+        <a href="#Gallery" class="cta">Discover More</a>
+       </div>
+       <div class="Home-img">
+        <img src="./image/ChatGPT Image Apr 1, 2025, 10_29_22 AM.png" alt="">
+       </div>
+    </section>
+
+        <!-- ===== Gallery Section ===== -->
+        <section id="Gallery">
+            <h2>Our Collection</h2>
+            <div class="gallery-container">
+                <img src="./image/art1 (1).jpg" alt="Abstract Art 1">
+                <img src="./image/art2.jpg" alt="Abstract Art 2">
+                <img src="./image/art3.jpg" alt="Abstract Art 3">
+                <img src="./image/art4.jpg" alt="Abstract Art 4">
+                <img src="./image/art5.jpg" alt="Abstract Art 5">
+                <img src="./image/ChatGPT Image Apr 1, 2025, 10_26_04 AM.png" alt="Abstract Art 6">
+            </div>
+        </section>
+    
+        <!-- ===== About Section ===== -->
+        <section id="About">
+            <h2>About Us</h2>
+            <p>At Art Vibes, we celebrate the world of abstract expressionism. Our mission is to provide art lovers with stunning, high-quality pieces that inspire and evoke emotion.</p>
+            <p>Founded by a group of passionate artists, we strive to bring you unique and original artwork that transforms spaces and sparks creativity.</p>
+        </section>
+    
+        <!-- ===== Contact Section ===== -->
+        <section id="Contact">
+            <h2>Contact Us</h2>
+            <p>Have questions or want to inquire about purchasing a piece? Reach out to us!</p>
+            <form>
+                <input type="text" placeholder="Your Name" id="nameInput">
+                <input type="email" placeholder="Your Email" id="emailInput">
+                <textarea placeholder="Your Message" id="extraText"></textarea>
+                <button type="button" id="btn">Send Message</button>
+                <p id="alert"></p>
+            </form>
+        </section>
+    
+        <footer>
+            <p>&copy; 2025 The Space(86). All Rights Reserved.</p>
+        </footer>
+
+        <script src="art.js"></script>
+</body>
+</html>
