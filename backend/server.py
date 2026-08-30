@@ -1,11 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import staticfiles
+from fastapi.staticfiles import StaticFiles
 import json
 from deep_translator import GoogleTranslator
 import uvicorn
 import sqlite3
-import os
+from pathlib import Path # 👈 NEW: For foolproof file paths
 
 app = FastAPI()
 
@@ -120,7 +120,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if artwork_id is None or not original_text:
                     continue
 
-                # Save to Database FIRST
                 conn = sqlite3.connect('gallery.db')
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -132,7 +131,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 conn.commit()
                 conn.close()
 
-                # TARGETED TRANSLATION & BROADCAST
                 for client in connected_clients:
                     if client == websocket:
                         continue 
@@ -168,10 +166,15 @@ async def websocket_endpoint(websocket: WebSocket):
             del client_languages[websocket]
         print(f"👋 Client disconnected. Total: {len(connected_clients)}")
 
-app.mount("/", StaticFiles(directory="..", html=True), name="static")
+# ==========================================
+# 4. SERVE FRONTEND FILES (FOOLPROOF)
+# ==========================================
+# This finds the exact folder containing server.py, then goes up one level to the root
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent
+
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
 
 if __name__ == "__main__":
     print("🚀 Starting FastAPI server with SQLite Database...")
-    # print("   - WebSockets: ws://localhost:8000/ws")
-    # print("   - API: http://localhost:8000/comments")
     uvicorn.run(app, host="0.0.0.0", port=8000)
