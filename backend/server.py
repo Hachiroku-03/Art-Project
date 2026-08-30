@@ -171,7 +171,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ==========================================
 # This finds the exact folder containing server.py, then goes up one level to the root
 BASE_DIR = Path(__file__).resolve().parent
-FRONTEND_DIR = BASE_DIR.parent
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
 
