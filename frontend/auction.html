@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Auctions | THE SPACE</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Montserrat:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="art.css">
+    <link rel="stylesheet" href="auction.css">
+</head>
+<body>
+
+    <!-- ===== Navigation ===== -->
+    <header class="header" id="header">
+        <div class="logo">
+            <a href="index.html" style="text-decoration: none; color: inherit;">
+                <h1>THE <span class="accent">SPACE</span></h1>
+            </a>
+        </div>
+        <nav class="nav-links" id="navLinks">
+            <ul>
+                <li><a href="index.html" class="nav-link">Home</a></li>
+                <li><a href="gallery.html" class="nav-link">Gallery</a></li>
+                <li><a href="auction.html" class="nav-link active">Auctions</a></li>
+                <li><a href="index.html#about" class="nav-link">About</a></li>
+                <li><a href="index.html#contact" class="nav-link">Contact</a></li>
+            </ul>
+        </nav>
+        <div class="burger" id="burger">
+            <span></span><span></span><span></span>
+        </div>
+    </header>
+
+    <!-- ===== Page Hero ===== -->
+    <section class="page-hero auction-hero">
+        <div class="hero-overlay"></div>
+        <div class="page-hero-content">
+            <h1 class="creative-title">
+                <span class="title-line">LIVE</span>
+                <span class="title-line accent">AUCTIONS</span>
+            </h1>
+            <div class="connection-status" id="connection-status">
+                <span class="status-dot"></span> Connecting to server...
+            </div>
+        </div>
+    </section>
+
+    <!-- ===== Main Auction Interface ===== -->
+    <main class="auction-container">
+        <div class="container auction-layout">
+            
+            <!-- Left: Artwork Display -->
+            <div class="auction-image-section">
+                <img id="auction-img" src="" alt="Auction Item">
+                <div class="live-badge">🔴 LIVE</div>
+            </div>
+
+            <!-- Right: Controls & Feed -->
+            <div class="auction-controls-section">
+                
+                <!-- Artwork Info -->
+                <div class="auction-header">
+                    <h1 id="auction-title">Loading...</h1>
+                    <div class="artist-profile">
+                        <img id="auction-artist-avatar" src="" alt="Artist" class="avatar-round large">
+                        <div>
+                            <p class="artist-name" id="auction-artist">Artist Name</p>
+                            <p class="artwork-meta" id="auction-style">Style • Year</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timer & Price -->
+                <div class="auction-metrics">
+                    <div class="metric-box">
+                        <span class="metric-label">Time Remaining</span>
+                        <span class="metric-value timer" id="auction-timer">00:00:00</span>
+                    </div>
+                    <div class="metric-box highlight">
+                        <span class="metric-label">Current Bid</span>
+                        <span class="metric-value price" id="current-price">$0</span>
+                    </div>
+                </div>
+
+                <!-- Bid Input -->
+                <div class="bid-input-container">
+                    <input type="number" id="bid-amount" placeholder="Enter your bid amount (USD)">
+                    <button id="place-bid-btn" class="btn btn-primary">Place Bid</button>
+                </div>
+                <p class="bid-feedback" id="bid-feedback"></p>
+
+                <!-- Live Bid Feed -->
+                <div class="live-feed-container">
+                    <h3>Live Activity</h3>
+                    <div id="bid-feed" class="bid-feed">
+                        <!-- Bids injected here via JS -->
+                        <div class="feed-item system">Waiting for bids...</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <!-- ===== Footer ===== -->
+    <footer class="footer">
+        <div class="footer-top">
+            <div class="container">
+                <div class="footer-grid">
+                    <div class="footer-brand">
+                        <h3>THE <span class="accent">SPACE</span></h3>
+                        <p>A universe of colors, emotions, and abstract expression.</p>
+                        <div class="social-links">
+                            <a href="#" class="social-link"><i class="fab fa-instagram"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-twitter"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-facebook-f"></i></a>
+                        </div>
+                    </div>
+                    <div class="footer-links">
+                        <h4>Quick Links</h4>
+                        <ul>
+                            <li><a href="index.html">Home</a></li>
+                            <li><a href="gallery.html">Gallery</a></li>
+                            <li><a href="auction.html">Live Auctions</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-newsletter">
+                        <h4>Stay Updated</h4>
+                        <p>Join our mailing list for exclusive drops.</p>
+                        <form class="newsletter-form">
+                            <input type="email" placeholder="Your email address" required>
+                            <button type="submit" class="btn btn-small">Subscribe</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <div class="container">
+                <p>&copy; 2025 THE SPACE(86). All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="auction.js"></script>
+</body>
+</html>

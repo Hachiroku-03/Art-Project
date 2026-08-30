@@ -1,0 +1,249 @@
+/* ===== Page Hero ===== */
+.page-hero {
+    position: relative;
+    height: 50vh;
+    min-height: 400px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background: #1a1a1a;
+    margin-top: 0; /* Override any default margins */
+}
+
+.page-hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: url('./image/liquid-purple-art-painting-abstract-colorful-background-with-color-splash-paints-modern-art.jpg') center/cover;
+    opacity: 0.2;
+}
+
+.page-hero-content {
+    position: relative;
+    z-index: 2;
+}
+
+.creative-title {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 20px;
+}
+
+.title-line {
+    font-size: 4rem;
+    letter-spacing: 8px;
+    line-height: 1;
+}
+
+/* ===== Filter & Search Bar ===== */
+.filter-bar {
+    padding: 30px 0;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 70px; /* Below the header */
+    z-index: 900;
+}
+
+.filter-bar .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.filter-group {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.filter-btn {
+    padding: 8px 20px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 0.85rem;
+    letter-spacing: 1px;
+}
+
+.filter-btn:hover, .filter-btn.active {
+    border-color: var(--text-main);
+    color: var(--text-main);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.search-sort-group {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+
+.search-box {
+    display: flex;
+    align-items: center;
+    background: var(--bg-main);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 8px 15px;
+    gap: 10px;
+}
+
+.search-box i {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.search-box input {
+    background: transparent;
+    border: none;
+    color: var(--text-main);
+    font-family: 'Montserrat', sans-serif;
+    font-size: 0.9rem;
+    width: 200px;
+    outline: none;
+}
+
+.styled-select {
+    padding: 10px 35px 10px 15px;
+    background: var(--bg-main);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 0.85rem;
+    outline: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23ffffff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 15px center;
+}
+
+/* ===== Gallery Grid ===== */
+.gallery-section {
+    padding: 60px 0 100px;
+    background: var(--bg-main);
+}
+
+.gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 40px;
+}
+
+/* Artwork Card Component */
+.artwork-card {
+    background: var(--bg-card);
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.4s ease;
+    border: 1px solid transparent;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+
+.artwork-card:hover {
+    transform: translateY(-8px);
+    border-color: var(--border-color);
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+}
+
+.artwork-card-image {
+    height: 350px;
+    overflow: hidden;
+    position: relative;
+}
+
+.artwork-card-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.6s ease;
+}
+
+.artwork-card:hover .artwork-card-image img {
+    transform: scale(1.05);
+}
+
+.artwork-card-info {
+    padding: 20px;
+}
+
+.artwork-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 15px;
+}
+
+.artwork-title {
+    font-family: 'Cinzel', serif;
+    font-size: 1.2rem;
+    color: var(--text-main);
+    margin-bottom: 8px;
+}
+
+.artwork-price {
+    font-size: 1.2rem;
+    font-weight: 500;
+    color: var(--text-main);
+}
+
+.artist-mini-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.avatar-round {
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--border-color);
+}
+
+.artist-name-mini {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.artwork-stats-mini {
+    display: flex;
+    gap: 20px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border-color);
+}
+
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.stat-item i {
+    font-size: 0.75rem;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+    .title-line { font-size: 2.5rem; }
+    .filter-bar .container { flex-direction: column; align-items: stretch; }
+    .search-sort-group { flex-direction: column; }
+    .search-box input { width: 100%; }
+    .gallery-grid { grid-template-columns: 1fr; }
+}

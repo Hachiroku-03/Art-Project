@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Artwork Details | THE SPACE</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="art.css">
+    <link rel="stylesheet" href="artwork-detail.css">
+</head>
+<body>
+
+    <!-- ===== Navigation ===== -->
+    <header class="header" id="header">
+        <div class="logo">
+            <a href="index.html" style="text-decoration: none; color: inherit;">
+                <h1>THE <span class="accent">SPACE</span></h1>
+            </a>
+        </div>
+        <nav class="nav-links" id="navLinks">
+            <ul>
+                <li><a href="index.html" class="nav-link">Home</a></li>
+                <li><a href="gallery.html" class="nav-link">Gallery</a></li>
+                <li><a href="auction.html" class="nav-link">Auctions</a></li>
+                <li><a href="index.html#about" class="nav-link">About</a></li>
+                <li><a href="index.html#contact" class="nav-link">Contact</a></li>
+            </ul>
+        </nav>
+        <div class="burger" id="burger">
+            <span></span><span></span><span></span>
+        </div>
+    </header>
+
+    <!-- ===== Main Detail Layout (Now Stacked) ===== -->
+    <main class="detail-container">
+        
+        <!-- Top: Massive Image -->
+        <div class="detail-image-section">
+            <img id="detail-img" src="" alt="Artwork">
+        </div>
+
+        <!-- Bottom: Details & Comments -->
+        <div class="detail-info-section">
+            
+            <!-- Artwork Info -->
+            <div class="info-header">
+                <h1 id="detail-title">Artwork Title</h1>
+                <div class="artist-profile">
+                    <img id="detail-artist-avatar" src="" alt="Artist" class="avatar-round large">
+                    <div>
+                        <p class="artist-name" id="detail-artist">Artist Name</p>
+                        <p class="artwork-meta" id="detail-meta">Style • Year</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-description">
+                <p id="detail-desc">Description goes here...</p>
+            </div>
+
+            <div class="info-stats">
+                <div class="stat-item-detail"><i class="fas fa-ruler-combined"></i> <span id="detail-dimensions">0 x 0</span></div>
+                <div class="stat-item-detail"><i class="fas fa-palette"></i> <span id="detail-medium">Medium</span></div>
+            </div>
+
+            <div class="info-action">
+                <p class="price-tag" id="detail-price">$0</p>
+                <button class="btn btn-primary" onclick="alert('Inquiry form would open here!')">Inquire to Purchase</button>
+            </div>
+
+            <!-- Collapsible Comments Section -->
+            <div class="comments-section-wrapper">
+                <button class="comments-toggle-btn" id="comments-toggle-btn">
+                    <span>View Discussion <span id="comment-count">(0)</span></span>
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+                
+                <div class="comments-container" id="comments-container">
+                    <div id="comments-list" class="comments-list">
+                        <!-- Comments injected here via JS -->
+                    </div>
+
+                    <div class="comment-input-wrapper">
+                        <img src="https://i.pravatar.cc/150?img=11" class="avatar-round small">
+                        <input type="text" id="new-comment-input" placeholder="Add to the discussion...">
+                        
+                        <button id="voice-btn" class="voice-comment-btn" title="Voice Comment">
+                            <i class="fas fa-microphone"></i>
+                        </button>
+                        
+                        <button id="send-comment" title="Send"><i class="fas fa-arrow-up"></i></button>
+                    </div
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ===== Footer ===== -->
+    <footer class="footer">
+        <div class="footer-top">
+            <div class="container">
+                <div class="footer-grid">
+                    <div class="footer-brand">
+                        <h3>THE <span class="accent">SPACE</span></h3>
+                        <p>A universe of colors, emotions, and abstract expression.</p>
+                        <div class="social-links">
+                            <a href="#" class="social-link"><i class="fab fa-instagram"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-twitter"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-facebook-f"></i></a>
+                        </div>
+                    </div>
+                    <div class="footer-links">
+                        <h4>Quick Links</h4>
+                        <ul>
+                            <li><a href="index.html">Home</a></li>
+                            <li><a href="gallery.html">Gallery</a></li>
+                            <li><a href="auction.html">Live Auctions</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-newsletter">
+                        <h4>Stay Updated</h4>
+                        <p>Join our mailing list for exclusive drops.</p>
+                        <form class="newsletter-form">
+                            <input type="email" placeholder="Your email address" required>
+                            <button type="submit" class="btn btn-small">Subscribe</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <div class="container">
+                <p>&copy; 2025 THE SPACE(86). All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="artwork-detail.js"></script>
+</body>
+</html>

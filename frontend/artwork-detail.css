@@ -1,0 +1,392 @@
+/* ===== Detail Page Layout (Stacked) ===== */
+.detail-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    padding-top: 80px; /* Offset for fixed header */
+    background: var(--bg-main);
+}
+
+/* Top: Image */
+.detail-image-section {
+    width: 100%;
+    max-height: 70vh; /* Prevents it from stretching the page endlessly */
+    background: #1a1a1a;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.detail-image-section img {
+    width: 100%;
+    height: 100%;
+    max-height: 70vh;
+    object-fit: contain; /* 👈 Ensures the entire artwork is visible without cropping */
+    display: block;
+}
+
+/* Bottom: Info (Centered and constrained for readability) */
+.detail-info-section {
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 20px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+}
+
+.info-header h1 {
+    font-size: 2.5rem;
+    margin-bottom: 20px;
+    letter-spacing: 2px;
+    color: var(--text-main);
+}
+
+.artist-profile {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 15px;
+    background: var(--bg-card);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.avatar-round.large { width: 50px; height: 50px; }
+.avatar-round.small { width: 35px; height: 35px; }
+
+.artist-name {
+    font-weight: 500;
+    color: var(--text-main);
+    margin-bottom: 2px;
+}
+
+.artwork-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.info-description p {
+    color: var(--text-muted);
+    line-height: 1.8;
+    font-size: 1.05rem;
+}
+
+.info-stats {
+    display: flex;
+    gap: 30px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    padding: 20px 0;
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.stat-item-detail {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.stat-item-detail i { color: var(--text-main); }
+
+.info-action {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.price-tag {
+    font-family: 'Cinzel', serif;
+    font-size: 2rem;
+    color: var(--text-main);
+}
+
+/* ===== Collapsible Comments Section ===== */
+.comments-section-wrapper {
+    margin-top: 20px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 20px;
+}
+
+.comments-toggle-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    padding: 15px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 1rem;
+    font-weight: 500;
+    transition: all 0.3s;
+}
+
+.comments-toggle-btn:hover {
+    background: var(--bg-card);
+    border-color: var(--text-main);
+}
+
+.comments-toggle-btn i {
+    transition: transform 0.3s ease;
+}
+
+.comments-toggle-btn.active i {
+    transform: rotate(180deg);
+}
+
+/* The Dropdown Animation */
+.comments-container {
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: max-height 0.4s ease, opacity 0.3s ease, margin-top 0.3s ease;
+}
+
+.comments-container.open {
+    max-height: 1000px; /* Large enough to fit all comments */
+    opacity: 1;
+    margin-top: 20px;
+}
+
+.comments-list {
+    max-height: 500px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin-bottom: 20px;
+    padding-right: 10px;
+}
+
+/* Comment Component */
+.comment-component {
+    display: flex;
+    gap: 15px;
+}
+
+.comment-body {
+    flex: 1;
+    background: var(--bg-card);
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column; 
+}
+
+.comment-author {
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--text-main);
+    margin-bottom: 5px;
+}
+
+.comment-time {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 400;
+    margin-left: 8px;
+}
+
+.comment-text {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    margin-bottom: 10px;
+}
+
+.comment-actions {
+    display: flex;
+    gap: 15px;
+}
+
+.action-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: color 0.3s;
+}
+
+.action-btn:hover, .action-btn.liked {
+    color: var(--text-main);
+}
+
+/* Nested Replies */
+.replies-container {
+    margin-left: 50px;
+    margin-top: 20px;
+    padding-left: 20px;
+    border-left: 2px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.replies-container .comment-body {
+    background: rgba(255, 255, 255, 0.02); 
+}
+
+/* Input */
+.comment-input-wrapper {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    background: var(--bg-card);
+    padding: 10px 15px;
+    border-radius: 30px;
+    border: 1px solid var(--border-color);
+}
+
+.comment-input-wrapper input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-main);
+    outline: none;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 0.9rem;
+}
+
+#send-comment {
+    background: var(--text-main);
+    color: var(--bg-main);
+    border: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.3s;
+}
+
+#send-comment:hover { opacity: 0.8; }
+
+/* Translation Display */
+.comment-translation {
+    background: rgba(255, 255, 255, 0.03);
+    border-left: 2px solid var(--text-main);
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-style: italic;
+}
+
+.comment-translation i {
+    color: var(--text-main);
+    font-size: 0.9rem;
+    font-style: normal;
+}
+
+/* Reply Input Box */
+.reply-input-container {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    animation: slideDown 0.3s ease;
+}
+
+.reply-input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-main);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    color: var(--text-main);
+    font-family: 'Montserrat', sans-serif;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.reply-input:focus { border-color: var(--text-main); }
+
+.reply-send-btn, .reply-cancel-btn {
+    padding: 8px 15px;
+    border-radius: 20px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.reply-send-btn { background: var(--text-main); color: var(--bg-main); }
+.reply-cancel-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--border-color); }
+
+/* Voice & Play Buttons */
+.voice-comment-btn, .play-audio-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s;
+}
+
+.voice-comment-btn:hover, .play-audio-btn:hover {
+    background: var(--text-main);
+    color: var(--bg-main);
+}
+
+.voice-comment-btn.recording {
+    background: #ff4444;
+    color: white;
+    border-color: #ff4444;
+    animation: pulse 1.5s infinite;
+}
+
+.play-audio-btn.playing {
+    color: var(--text-main);
+    animation: pulse-audio 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0.7); }
+    50% { box-shadow: 0 0 0 10px rgba(255, 68, 68, 0); }
+}
+
+@keyframes pulse-audio {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+    .detail-info-section {
+        padding: 30px 15px 60px;
+    }
+    .info-header h1 {
+        font-size: 2rem;
+    }
+    .replies-container {
+        margin-left: 30px;
+    }
+}

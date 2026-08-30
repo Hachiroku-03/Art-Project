@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gallery | THE SPACE</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="art.css">
+    <link rel="stylesheet" href="gallery.css">
+</head>
+<body>
+
+    <!-- ===== Navigation ===== -->
+    <header class="header" id="header">
+        <div class="logo">
+            <a href="index.html" style="text-decoration: none; color: inherit;">
+                <h1>THE <span class="accent">SPACE</span></h1>
+            </a>
+        </div>
+        
+        <nav class="nav-links" id="navLinks">
+            <ul>
+                <li><a href="index.html" class="nav-link">Home</a></li>
+                <li><a href="gallery.html" class="nav-link active">Gallery</a></li>
+                <li><a href="auction.html" class="nav-link">Auctions</a></li>
+                <li><a href="index.html#about" class="nav-link">About</a></li>
+                <li><a href="index.html#contact" class="nav-link">Contact</a></li>
+            </ul>
+        </nav>
+
+        <div class="burger" id="burger">
+            <span></span><span></span><span></span>
+        </div>
+    </header>
+
+    <!-- ===== Page Hero ===== -->
+    <section class="page-hero">
+        <div class="hero-overlay"></div>
+        <div class="page-hero-content">
+            <h1 class="creative-title">
+                <span class="title-line">THE</span>
+                <span class="title-line accent">COLLECTION</span>
+            </h1>
+            <p class="hero-subtitle">Discover extraordinary artworks from visionary artists</p>
+        </div>
+    </section>
+
+    <!-- ===== Filter & Search Bar ===== -->
+    <section class="filter-bar">
+        <div class="container">
+            <div class="filter-group">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="abstract">Abstract</button>
+                <button class="filter-btn" data-filter="contemporary">Contemporary</button>
+                <button class="filter-btn" data-filter="digital">Digital</button>
+            </div>
+            
+            <div class="search-sort-group">
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="search-input" placeholder="Search artworks or artists...">
+                </div>
+                <select id="sort-select" class="styled-select">
+                    <option value="newest">Newest First</option>
+                    <option value="price-low">Price: Low to High</option>
+                    <option value="price-high">Price: High to Low</option>
+                    <option value="popular">Most Popular</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===== Gallery Grid ===== -->
+    <section class="gallery-section">
+        <div class="container">
+            <div class="gallery-grid" id="gallery-grid">
+                <!-- Artwork cards will be injected here by JavaScript -->
+            </div>
+        </div>
+    </section>
+
+    <!-- ===== Footer ===== -->
+    <footer class="footer">
+        <div class="footer-top">
+            <div class="container">
+                <div class="footer-grid">
+                    <div class="footer-brand">
+                        <h3>THE <span class="accent">SPACE</span></h3>
+                        <p>A universe of colors, emotions, and abstract expression.</p>
+                        <div class="social-links">
+                            <a href="#" class="social-link"><i class="fab fa-instagram"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-twitter"></i></a>
+                            <a href="#" class="social-link"><i class="fab fa-facebook-f"></i></a>
+                        </div>
+                    </div>
+                    <div class="footer-links">
+                        <h4>Quick Links</h4>
+                        <ul>
+                            <li><a href="index.html">Home</a></li>
+                            <li><a href="gallery.html">Gallery</a></li>
+                            <li><a href="auction.html">Live Auctions</a></li>
+                        </ul>
+                    </div>
+                    <div class="footer-newsletter">
+                        <h4>Stay Updated</h4>
+                        <p>Join our mailing list for exclusive drops.</p>
+                        <form class="newsletter-form">
+                            <input type="email" placeholder="Your email address" required>
+                            <button type="submit" class="btn btn-small">Subscribe</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <div class="container">
+                <p>&copy; 2025 THE SPACE(86). All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="art.js"></script>
+    <script src="gallery.js"></script>
+</body>
+</html>
