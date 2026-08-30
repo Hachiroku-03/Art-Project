@@ -1,9 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import staticfiles
 import json
 from deep_translator import GoogleTranslator
 import uvicorn
 import sqlite3
+import os
 
 app = FastAPI()
 
@@ -166,8 +168,10 @@ async def websocket_endpoint(websocket: WebSocket):
             del client_languages[websocket]
         print(f"👋 Client disconnected. Total: {len(connected_clients)}")
 
+app.mount("/", StaticFiles(directory="..", html=True), name="static")
+
 if __name__ == "__main__":
     print("🚀 Starting FastAPI server with SQLite Database...")
-    print("   - WebSockets: ws://localhost:8000/ws")
-    print("   - API: http://localhost:8000/comments")
-    uvicorn.run(app, host="localhost", port=8000)
+    # print("   - WebSockets: ws://localhost:8000/ws")
+    # print("   - API: http://localhost:8000/comments")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,3 +1,9 @@
+// ==========================================
+// 0. GLOBAL SETUP & DYNAMIC URLS
+// ==========================================
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
+
 // ===== 1. Mock Auction Data =====
 const currentAuction = {
     id: 1,
@@ -49,7 +55,7 @@ const priceEl = document.getElementById('current-price');
 let ws;
 
 function connectWebSocket() {
-    ws = new WebSocket("ws://localhost:8000/ws");
+    ws = new WebSocket(WS_URL); // 👈 DYNAMIC URL
 
     ws.onopen = () => {
         console.log("✅ Connected to Auction Server!");
@@ -62,22 +68,19 @@ function connectWebSocket() {
         const message = event.data;
         console.log("📩 Server broadcast:", message);
 
-        // 🚨 1. CHECK FOR ERRORS FIRST 🚨
         if (message.startsWith("ERROR:")) {
             const feedback = document.getElementById('bid-feedback');
             feedback.textContent = message;
             feedback.style.color = "#ff4444";
             addFeedItem("System", message, true);
-            return; // Stop here, don't update the price!
+            return;
         }
 
-        // 🚨 2. IF SUCCESS, UPDATE PRICE 🚨
         const priceMatch = message.match(/\$(\d+)/);
         if (priceMatch) {
             const newPrice = parseInt(priceMatch[1]);
             priceEl.textContent = `$${newPrice.toLocaleString()}`;
             
-            // Flash effect
             priceEl.style.color = '#00ff88';
             setTimeout(() => priceEl.style.color = 'var(--text-main)', 500);
         }
@@ -121,7 +124,6 @@ document.getElementById('place-bid-btn').addEventListener('click', () => {
         return;
     }
 
-    // 🚨 FRONTEND VALIDATION: Check against the screen price 🚨
     const currentPriceText = document.getElementById('current-price').textContent;
     const currentPrice = parseInt(currentPriceText.replace(/[$,]/g, ''));
 

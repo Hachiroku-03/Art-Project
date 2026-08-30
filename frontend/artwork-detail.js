@@ -1,6 +1,10 @@
 // ==========================================
-// 0. GLOBAL SETUP
+// 0. GLOBAL SETUP & DYNAMIC URLS
 // ==========================================
+const API_BASE = window.location.origin; // Automatically detects localhost or render.com
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
+
 window.userLanguage = localStorage.getItem('userLanguage') || 'en';
 
 const speechLangMap = {
@@ -329,7 +333,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 let chatWs;
 
 function connectChatWebSocket() {
-    ws = new WebSocket("wss://closure-maker-tropics.ngrok-free.app/ws");
+    chatWs = new WebSocket(WS_URL); // 👈 DYNAMIC URL
     chatWs.onopen = () => {
         console.log("✅ Chat connected!");
         chatWs.send(JSON.stringify({ type: "init", user_lang: window.userLanguage }));
@@ -425,33 +429,10 @@ document.getElementById('new-comment-input').addEventListener('keypress', (e) =>
     if (e.key === 'Enter') document.getElementById('send-comment').click();
 });
 
-document.addEventListener('DOMContentLoaded', () => {
-    const id = getArtworkIdFromUrl();
-    const artwork = artworksData.find(a => a.id === id);
-    
-    if (artwork) {
-        populateDetails(artwork);
-        loadCommentsFromDB(id); 
-    }
-    connectChatWebSocket(); 
-
-    // 👇 NEW: Comments Dropdown Toggle Logic
-    const commentsToggleBtn = document.getElementById('comments-toggle-btn');
-    const commentsContainer = document.getElementById('comments-container');
-    
-    if (commentsToggleBtn && commentsContainer) {
-        commentsToggleBtn.addEventListener('click', () => {
-            commentsContainer.classList.toggle('open');
-            commentsToggleBtn.classList.toggle('active');
-        });
-    }
-});
-
 // ==========================================
 // 5. INITIALIZATION & DATABASE FETCH
 // ==========================================
 
-// Helper: Convert flat database rows into nested comment objects
 function nestComments(flatComments) {
     const commentMap = {};
     const roots = [];
@@ -459,7 +440,7 @@ function nestComments(flatComments) {
     flatComments.forEach(c => {
         c.replies = [];
         c.liked = false;
-        c.time = c.timestamp || get.getCurrentTime();
+        c.time = c.timestamp || getCurrentTime(); // 👈 FIXED TYPO HERE
         c.avatar = `https://i.pravatar.cc/150?img=${(c.id % 10) + 1}`;
         commentMap[c.id] = c;
     });
@@ -475,11 +456,10 @@ function nestComments(flatComments) {
     return roots;
 }
 
-// Helper: Recursively translate a comment and all its replies
 async function translateCommentAndReplies(comment) {
     if (comment.text && window.userLanguage !== 'en') {
         try {
-            const response = await fetch("http://localhost:8000/translate", {
+            const response = await fetch(`${API_BASE}/translate`, { // 👈 DYNAMIC URL
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -501,15 +481,13 @@ async function translateCommentAndReplies(comment) {
     }
 }
 
-// Fetch comments from the Python database on load, then translate if needed
 async function loadCommentsFromDB(artworkId) {
     try {
-        const response = await fetch(`http://localhost:8000/comments?artwork_id=${artworkId}`);
+        const response = await fetch(`${API_BASE}/comments?artwork_id=${artworkId}`); // 👈 DYNAMIC URL
         const dbComments = await response.json();
         
         commentsData[artworkId] = nestComments(dbComments);
         
-        // Translate each comment if the user's language is different from English
         if (window.userLanguage !== 'en') {
             for (let comment of commentsData[artworkId]) {
                 await translateCommentAndReplies(comment);
@@ -535,7 +513,17 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (artwork) {
         populateDetails(artwork);
-        loadCommentsFromDB(id); // Load from DB and translate
+        loadCommentsFromDB(id); 
     }
     connectChatWebSocket(); 
+
+    const commentsToggleBtn = document.getElementById('comments-toggle-btn');
+    const commentsContainer = document.getElementById('comments-container');
+    
+    if (commentsToggleBtn && commentsContainer) {
+        commentsToggleBtn.addEventListener('click', () => {
+            commentsContainer.classList.toggle('open');
+            commentsToggleBtn.classList.toggle('active');
+        });
+    }
 });
