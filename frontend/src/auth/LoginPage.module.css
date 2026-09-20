@@ -1,0 +1,209 @@
+.shell {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+}
+
+.formCard {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 430px);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 2.8rem 2.4rem;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 1.9rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  margin-bottom: 0.4rem;
+}
+
+.tagline {
+  text-align: center;
+  font-weight: 300;
+  font-size: 0.72rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 2.2rem;
+}
+
+.field { margin-bottom: 1.2rem; }
+
+.labelRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.45rem;
+}
+
+.label {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.miniLink {
+  font-size: 0.72rem;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.miniLink:hover { color: var(--vip); }
+
+.inputBox {
+  display: flex;
+  align-items: center;
+  background: var(--wall);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.8rem 0.9rem;
+  transition: border-color 0.2s, background 0.2s;
+}
+.inputBox:focus-within { border-color: var(--ink); background: var(--paper); }
+.inputBoxInvalid { border-color: var(--err); }
+
+.input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+}
+
+.eyeBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 0.5rem;
+  cursor: pointer;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+}
+.eyeBtn:hover { color: var(--ink); }
+
+.errorText {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--err);
+  font-style: italic;
+}
+
+.submitBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.95rem;
+  margin-top: 0.4rem;
+  background: var(--ink);
+  color: var(--wall);
+  border: none;
+  border-radius: var(--radius);
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+}
+.submitBtn:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+.submitBtn:disabled { opacity: 0.5; cursor: wait; }
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 1.5rem 0;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 300;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.divider::before,
+.divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.googleBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  width: 100%;
+  padding: 0.85rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.googleBtn:hover { border-color: var(--ink); }
+
+.googleIcon { width: 18px; height: 18px; }
+
+.faceBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  margin-top: 0.7rem;
+  padding: 0.85rem;
+  background: transparent;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.faceBtn:hover { background: var(--ink); color: var(--wall); }
+
+.footerLine {
+  margin-top: 1.6rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.createLink {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.createLink:hover { color: var(--vip); }
+
+.toast {
+  margin-top: 1rem;
+  min-height: 1.3em;
+  text-align: center;
+  font-size: 0.9rem;
+}
+.toastOk { color: var(--ok); }
+.toastErr { color: var(--err); }
+.toastNote { color: var(--ink-soft); }

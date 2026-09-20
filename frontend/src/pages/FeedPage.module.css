@@ -1,0 +1,26 @@
+.layout {
+  min-height: 100vh;
+  background: var(--wall);
+  /* Updated from 64px to 72px to match the new Navbar height */
+  padding: calc(72px + 2.5rem) 1rem 4rem; 
+}
+
+.feedContainer { max-width: 620px; margin: 0 auto; }
+
+.emptyText {
+  text-align: center;
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 1.25rem;
+  color: var(--ink-soft);
+  margin-top: 5rem;
+}
+.emptyText::before,
+.emptyText::after {
+  content: "";
+  display: block;
+  width: 60px;
+  height: 1px;
+  background: var(--line-strong);
+  margin: 1.2rem auto;
+}

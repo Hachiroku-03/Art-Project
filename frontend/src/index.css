@@ -1,0 +1,58 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* the white cube */
+  --wall: #F6F6F4;
+  --paper: #FFFFFF;
+  --ink: #0E0E0E;
+  --ink-soft: #6B6B6B;
+  --ink-faint: #9A9A9A;
+  --line: rgba(14, 14, 14, 0.14);
+  --line-strong: rgba(14, 14, 14, 0.35);
+
+  /* the only colors with a job */
+  --vip: #5B3A8E;
+  --err: #6D1A24;
+  --ok: #1E3A2B;
+
+  /* type */
+  --font-display: "Archivo Black", system-ui, sans-serif;
+  --font-ui: "Inter", system-ui, sans-serif;
+  --font-label: "EB Garamond", Georgia, serif;
+
+  /* geometry & light */
+  --radius: 2px;
+  --shadow-card: 0 1px 2px rgba(14,14,14,0.04), 0 12px 32px rgba(14,14,14,0.06);
+  --shadow-lift: 0 2px 4px rgba(14,14,14,0.06), 0 24px 48px rgba(14,14,14,0.10);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { 
+  scroll-behavior: smooth;
+  overflow-y: scroll; /* FIX: scrollbar always exists → no shift, no dead gap */
+}
+
+body {
+  min-height: 100vh;
+  background: var(--wall);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+::selection { background: var(--ink); color: var(--wall); }
+
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* gallery scrollbar */
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: var(--wall); }
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid var(--wall);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ink); }
