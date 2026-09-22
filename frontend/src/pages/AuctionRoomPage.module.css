@@ -1,0 +1,194 @@
+/* ============ THE CURTAIN ============ */
+.curtainLayout {
+  min-height: 100vh;
+  background: #0a0a0a;
+  padding-top: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.curtain { text-align: center; animation: curtainIn 1s ease both; }
+@keyframes curtainIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.curtainLabel { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.28em; text-transform: uppercase; color: #555; margin-bottom: 1.4rem; }
+.curtainTime { font-family: var(--font-display); font-size: clamp(3rem, 10vw, 6.5rem); color: #fff; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.curtainSub { margin-top: 1.2rem; font-family: var(--font-label); font-style: italic; color: #666; font-size: 1.05rem; }
+
+/* ============ THE ROOM ============ */
+.layout { min-height: 100vh; background: #0a0a0a; padding: calc(72px + 1.5rem) 1.5rem 4rem; color: #fff; }
+.room { max-width: 1080px; margin: 0 auto; }
+
+.topBar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.backBtn {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(255,255,255,0.08); border: none; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background 0.15s;
+}
+.backBtn:hover { background: rgba(255,255,255,0.18); }
+.watching { display: flex; align-items: center; gap: 0.4rem; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #888; }
+.watching i { width: 6px; height: 6px; border-radius: 50%; background: #ff453a; animation: blink 1.2s infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* the stream — dominant */
+.streamBox {
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(255,255,255,0.06);
+  margin-bottom: 1.4rem;
+}
+.streamFrame { width: 100%; height: 100%; border: none; display: block; }
+.streamPlaceholder {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
+  color: #444; font-family: var(--font-label); font-style: italic; font-size: 1.1rem;
+}
+
+/* title row — YouTube grammar, gallery soul */
+.titleRow { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 1.4rem; }
+.titleLeft { min-width: 0; }
+.roomTitle { font-family: var(--font-label); font-style: italic; font-weight: 500; font-size: 1.9rem; line-height: 1.15; margin-bottom: 0.45rem; }
+.roomMeta { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; font-size: 0.78rem; color: #888; }
+.metaHost { color: #bbb; font-weight: 600; }
+.metaLots { letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.68rem; }
+.livePill { display: flex; align-items: center; gap: 0.4rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #ff453a; font-size: 0.7rem; }
+.livePill i { width: 7px; height: 7px; border-radius: 50%; background: #ff453a; animation: blink 1.2s infinite; }
+.endedPill { font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; font-size: 0.7rem; }
+
+/* museum label plate */
+.lotPlate {
+  flex-shrink: 0;
+  background: #fff; color: #0e0e0e;
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 0.5rem 0.9rem;
+  border-radius: 2px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
+
+/* chapters — filmstrip catalogue */
+.chapters { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 1.2rem; margin-bottom: 1.4rem; scrollbar-width: thin; scrollbar-color: #333 #0a0a0a; }
+.chapters::-webkit-scrollbar { height: 5px; }
+.chapters::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+.chapter {
+  flex-shrink: 0;
+  width: 128px;
+  aspect-ratio: 3 / 4;
+  background: #141414;
+  border: 1px solid #262626;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  display: flex; flex-direction: column;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chapterActive { border-color: #fff; box-shadow: 0 0 24px rgba(255,255,255,0.15); }
+.chapterSold { opacity: 0.45; }
+
+.chapterSealed {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem;
+  color: #4a4a4a;
+  border: 1px dashed #333;
+  border-radius: 7px;
+  margin: 4px;
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.chapterImg { width: 100%; height: 78%; object-fit: cover; }
+.chapterImgBlank { width: 100%; height: 78%; background: #1e1e1e; }
+.chapterTitle {
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-label); font-style: italic; font-size: 0.78rem; color: #bbb;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.soldStamp {
+  position: absolute; top: 8px; right: -22px;
+  transform: rotate(35deg);
+  background: #ff453a; color: #fff;
+  font-family: var(--font-display); font-size: 0.55rem; letter-spacing: 0.14em;
+  padding: 0.2rem 1.6rem;
+}
+
+/* paddle box */
+.paddleBox {
+  background: #121212;
+  border: 1px solid #262626;
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.4rem;
+}
+.paddleTop { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
+.paddleLabel { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #888; }
+.paddleAmount { font-family: var(--font-display); font-size: 1.6rem; color: #fff; font-variant-numeric: tabular-nums; }
+.paddleRow { display: flex; gap: 0.7rem; }
+.paddleInput {
+  flex: 1;
+  background: #000; border: 1px solid #333; border-radius: 8px;
+  padding: 0.75rem 1rem;
+  color: #fff; font-family: var(--font-ui); font-size: 0.95rem;
+  outline: none; transition: border-color 0.15s;
+}
+.paddleInput:focus { border-color: #fff; }
+.paddleBtn {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: #fff; color: #000; border: none; border-radius: 8px;
+  padding: 0 1.4rem;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.paddleBtn:hover:not(:disabled) { opacity: 0.85; }
+.paddleBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.paddleError { margin-top: 0.6rem; font-size: 0.78rem; color: #ff453a; }
+
+/* gates — engraved ticket styling */
+.gateCard {
+  background: rgba(255,255,255,0.03);
+  border: 1px dashed rgba(255,255,255,0.25);
+  border-radius: 12px;
+  padding: 1.2rem 1.3rem;
+  margin-bottom: 1.4rem;
+  display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start;
+}
+.gateTitle { display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; font-weight: 600; color: #fff; }
+.gateText { font-size: 0.82rem; color: #888; line-height: 1.5; }
+.gateBtn {
+  margin-top: 0.4rem;
+  background: #fff; color: #000; border: none; border-radius: 999px;
+  padding: 0.6rem 1.4rem;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.gateBtn:hover:not(:disabled) { opacity: 0.85; }
+.gateBtn:disabled { opacity: 0.4; }
+.gateMsg { font-size: 0.8rem; color: #7ed491; font-weight: 500; }
+
+/* ledger */
+.ledgerHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.7rem; }
+.ledgerTitle { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #888; }
+.ledgerLive { display: flex; align-items: center; gap: 0.4rem; font-size: 0.68rem; font-weight: 600; color: #ff453a; }
+.ledgerLive i { width: 6px; height: 6px; border-radius: 50%; background: #ff453a; animation: blink 1.2s infinite; }
+
+.ledger { display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #333 #0a0a0a; }
+.ledger::-webkit-scrollbar { width: 4px; }
+.ledger::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+.ledgerRow {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #141414;
+  border-left: 3px solid #2c2c2c;
+  border-radius: 0 8px 8px 0;
+  padding: 0.6rem 0.9rem;
+  animation: rowIn 0.3s ease both;
+}
+@keyframes rowIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+.ledgerLead { border-left-color: #fff; background: #1a1a1a; }
+.ledgerUser { font-size: 0.85rem; color: #ccc; }
+.ledgerAmount { font-family: var(--font-display); font-size: 0.88rem; color: #fff; font-variant-numeric: tabular-nums; }
+.ledgerEmpty { text-align: center; font-family: var(--font-label); font-style: italic; color: #4a4a4a; padding: 2.2rem 0; }
+
+@media (max-width: 760px) {
+  .layout { padding: calc(72px + 1rem) 0.9rem 3rem; }
+  .titleRow { flex-direction: column; align-items: flex-start; gap: 0.7rem; }
+  .lotPlate { align-self: flex-start; }
+}

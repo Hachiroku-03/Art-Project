@@ -1,9 +1,10 @@
-import { useEffect, useState, useRef, type FormEvent, type ChangeEvent } from 'react'
+import { useEffect, useState, useRef, useMemo, type FormEvent, type ChangeEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Heart, Share2, Bookmark, Gavel, Image as ImageIcon, Send, ArrowLeft, X, ChevronDown } from 'lucide-react'
+import { Heart, Share2, Bookmark, Image as ImageIcon, Send, ArrowLeft, X, ChevronDown } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import { Preloader } from '../components/Preloader'
 import { VoiceRecorder } from '../components/VoiceRecorder'
+import { VoiceNote } from '../components/VoiceNote'
 import { translateMany } from '../lib/translate'
 import styles from './PostRoomPage.module.css'
 
@@ -44,12 +45,12 @@ export function PostRoomPage() {
   const [liked, setLiked] = useState(false)
   const [likeCount, setLikeCount] = useState(0)
   const [following, setFollowing] = useState(false)
-  const [currentBid, setCurrentBid] = useState('')
 
   const [draft, setDraft] = useState('')
   const [replyingTo, setReplyingTo] = useState<CommentRow | null>(null)
   const [expandedThreads, setExpandedThreads] = useState<Record<number, boolean>>({})
   const [commentLikes, setCommentLikes] = useState<Record<number, { liked: boolean; count: number }>>({})
+  const [sortBy, setSortBy] = useState<'top' | 'newest'>('top')
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composerRef = useRef<HTMLInputElement>(null)
@@ -58,6 +59,20 @@ export function PostRoomPage() {
   const [autoDesc, setAutoDesc] = useState('')
   const [threadTranslated, setThreadTranslated] = useState(true)
   const [commentTranslations, setCommentTranslations] = useState<Record<number, string>>({})
+
+  // All hooks live above the early returns (Rules of Hooks).
+  const topLevelComments = useMemo(() => {
+    if (!post) return []
+    const base = comments.filter(c => !c.parent_id)
+    if (sortBy === 'top') {
+      return [...base].sort((a, b) => {
+        const aLikes = commentLikes[a.id]?.count || 0
+        const bLikes = commentLikes[b.id]?.count || 0
+        return bLikes - aLikes
+      })
+    }
+    return base
+  }, [comments, sortBy, commentLikes, post])
 
   useEffect(() => {
     if (!id) return
@@ -78,7 +93,6 @@ export function PostRoomPage() {
           setLiked(data.post.liked_by_viewer)
           setLikeCount(data.post.like_count)
           setFollowing(data.post.followed_by_viewer)
-          setCurrentBid(data.post.current_bid || '')
           if (data.post.description) {
             try {
               const t = (await translateMany([data.post.description], language))[0]
@@ -131,16 +145,6 @@ export function PostRoomPage() {
     const res = await fetch(`${FEED_API}/follow`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, target: post.username }) })
     const data = await res.json()
     setFollowing(data.following)
-  }
-
-  async function placeBid() {
-    if (!post) return
-    const input = window.prompt(`Your bid for "${post.title}" (current: ${currentBid || post.price || 'none'}):`)
-    if (!input) return
-    const res = await fetch(`${FEED_API}/posts/${post.id}/bid`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, amount: input }) })
-    const data = await res.json()
-    if (data.current_bid) setCurrentBid(String(data.current_bid))
-    else window.alert(data.error || 'Bid failed.')
   }
 
   async function uploadFile(file: File): Promise<string | null> {
@@ -214,20 +218,23 @@ export function PostRoomPage() {
   )
 
   const hasAutoDesc = !!autoDesc && autoDesc.trim() !== (post.description || '').trim()
-  const topLevelComments = comments.filter(c => !c.parent_id)
   const getReplies = (parentId: number) => comments.filter(c => c.parent_id === parentId)
 
   function renderComment(c: CommentRow) {
     const lk = commentLikes[c.id] || { liked: false, count: 0 }
+    const isAuthor = c.user_name === post?.username
     return (
       <div key={c.id} className={styles.commentRow}>
         <div className={styles.cAvatar}>{(c.user_name || '?')[0].toUpperCase()}</div>
         <div className={styles.cMain}>
-          <p className={styles.cName}>{c.user_name}</p>
+          <p className={styles.cName}>
+            {c.user_name}
+            {isAuthor && <span className={styles.authorTag}>Author</span>}
+          </p>
           {c.kind === 'image' && c.body ? (
             <img className={styles.commentImage} src={c.body} alt="attachment" />
           ) : c.kind === 'voice' && c.body ? (
-            <audio className={styles.commentAudio} controls src={c.body} />
+            <VoiceNote src={c.body} seed={c.id} />
           ) : (
             <p className={styles.cBody}>{threadTranslated && commentTranslations[c.id] ? commentTranslations[c.id] : c.body}</p>
           )}
@@ -236,8 +243,12 @@ export function PostRoomPage() {
             <button className={styles.metaBtn} onClick={() => handleReplyClick(c)}>Reply</button>
           </div>
         </div>
-        <button className={`${styles.cLike} ${lk.liked ? styles.cLiked : ''}`} onClick={() => toggleCommentLike(c)} aria-label="Like comment">
-          <Heart size={16} fill={lk.liked ? 'currentColor' : 'none'} />
+        <button
+          className={`${styles.cLike} ${lk.liked ? styles.cLiked : ''}`}
+          onClick={() => toggleCommentLike(c)}
+          aria-label="Like comment"
+        >
+          <Heart size={18} fill={lk.liked ? 'currentColor' : 'none'} />
           <span className={styles.cLikeCount}>{lk.count > 0 ? lk.count : ''}</span>
         </button>
       </div>
@@ -247,19 +258,22 @@ export function PostRoomPage() {
   return (
     <main className={styles.layout}>
       <Navbar />
+
       <div className={styles.container}>
 
-        <div className={styles.artSide}>
+        {/* 1. MEDIA STAGE */}
+        <div className={styles.stage}>
           {post.image_url ? (
-            <img src={post.image_url} alt={post.title} className={styles.artImage} />
+            <img src={post.image_url} alt={post.title} className={styles.stageImage} />
           ) : (
-            <div className={styles.artPlaceholder}>canvas awaiting its first layer</div>
+            <div className={styles.stagePlaceholder}>canvas awaiting its first layer</div>
           )}
+          <button className={styles.backBtnFloat} onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft size={20} /></button>
         </div>
 
-        <div className={styles.detailSide}>
+        {/* 2. CONTENT INFO */}
+        <div className={styles.contentBlock}>
           <header className={styles.header}>
-            <button className={styles.backBtn} onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft size={18} /></button>
             <div className={styles.who}>
               <div className={`${styles.avatar} ${post.tier === 'vip' ? styles.vipRing : ''}`}>
                 {(post.display_name || post.username)[0].toUpperCase()}
@@ -279,14 +293,6 @@ export function PostRoomPage() {
           <div className={styles.infoBlock}>
             <h1 className={styles.artTitle}>"{post.title}"</h1>
             <p className={styles.medium}>{hasAutoDesc ? autoDesc : post.description}</p>
-            {post.type === 'drop' && (
-              <div className={styles.priceRow}>
-                <span className={styles.priceLabel}>
-                  {currentBid ? `Current bid $${currentBid}` : post.price ? `Asking $${post.price}` : 'Open for bids'}
-                </span>
-                <button className={styles.bidBtn} onClick={placeBid}><Gavel size={14} /> Place Bid</button>
-              </div>
-            )}
           </div>
 
           <div className={styles.actions}>
@@ -296,53 +302,63 @@ export function PostRoomPage() {
             <button className={styles.actionBtn}><Share2 size={20} /></button>
             <button className={`${styles.actionBtn} ${styles.right}`}><Bookmark size={20} /></button>
           </div>
+        </div>
 
-          <div className={styles.commentsWrap}>
-            <div className={styles.commentsHead}>
-              <span className={styles.commentsTitle}>Comments · {comments.length}</span>
-              {comments.length > 0 && (
-                <button className={styles.translateBtn} onClick={() => setThreadTranslated(!threadTranslated)}>
-                  {threadTranslated ? 'Show original' : 'Show translation'}
+        {/* 3. COMMENTS THREAD */}
+        <div className={styles.commentsSection}>
+          <div className={styles.commentsHead}>
+            <span className={styles.commentsTitle}>Comments · {comments.length}</span>
+            {comments.length > 0 && (
+              <div className={styles.headActions}>
+                <button className={styles.sortBtn} onClick={() => setSortBy(s => s === 'top' ? 'newest' : 'top')}>
+                  {sortBy === 'top' ? 'Top' : 'Newest'}
                 </button>
-              )}
-            </div>
-
-            {topLevelComments.length === 0 ? (
-              <p className={styles.noComments}>Be the first to comment on this piece.</p>
-            ) : (
-              topLevelComments.map(c => {
-                const replies = getReplies(c.id)
-                const isExpanded = expandedThreads[c.id]
-                return (
-                  <div key={c.id} className={styles.threadContainer}>
-                    {renderComment(c)}
-                    {replies.length > 0 && (
-                      <div className={styles.repliesWrap}>
-                        {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
-                        {replies.length > 1 && (
-                          <button
-                            className={`${styles.viewReplies} ${isExpanded ? styles.open : ''}`}
-                            onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: !isExpanded }))}
-                          >
-                            {isExpanded ? 'Hide replies' : `View ${replies.length} replies`}
-                            <ChevronDown size={14} className={styles.chev} />
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })
+                <button className={styles.translateBtn} onClick={() => setThreadTranslated(!threadTranslated)}>
+                  {threadTranslated ? 'Original' : 'Translate'}
+                </button>
+              </div>
             )}
           </div>
 
+          {topLevelComments.length === 0 ? (
+            <p className={styles.noComments}>Be the first to comment on this piece.</p>
+          ) : (
+            topLevelComments.map(c => {
+              const replies = getReplies(c.id)
+              const isExpanded = expandedThreads[c.id]
+              return (
+                <div key={c.id} className={styles.threadContainer}>
+                  {renderComment(c)}
+                  {replies.length > 0 && (
+                    <div className={styles.repliesWrap}>
+                      {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
+                      {replies.length > 1 && !isExpanded && (
+                        <button className={styles.viewReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: true }))}>
+                          View {replies.length} replies
+                          <ChevronDown size={14} />
+                        </button>
+                      )}
+                      {isExpanded && replies.length > 1 && (
+                        <button className={styles.hideReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: false }))}>
+                          Hide replies
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        {/* 4. COMPOSER — recorder docks itself on top of this row via CSS */}
+        <div className={styles.composerWrapper}>
           {replyingTo && (
             <div className={styles.replyingBanner}>
               <span>Replying to <strong>@{replyingTo.user_name}</strong></span>
               <button onClick={() => setReplyingTo(null)} aria-label="Cancel reply"><X size={14} /></button>
             </div>
           )}
-
           <form className={styles.composer} onSubmit={submitComment}>
             <input
               ref={composerRef}
@@ -363,6 +379,7 @@ export function PostRoomPage() {
             )}
           </form>
         </div>
+
       </div>
     </main>
   )

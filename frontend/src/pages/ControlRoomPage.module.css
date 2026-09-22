@@ -1,0 +1,39 @@
+.layout { min-height: 100vh; background: var(--wall); padding: calc(72px + 2rem) 1.5rem 4rem; }
+.wrap { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.2rem; }
+.heading { font-family: var(--font-display); font-size: 1.8rem; }
+.statusLine { font-size: 0.8rem; color: var(--ink-soft); }
+.msg { font-size: 0.82rem; color: var(--vip); font-weight: 600; }
+.muted { font-family: var(--font-label); font-style: italic; color: var(--ink-faint); font-size: 0.95rem; }
+
+.backBtn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: none; color: var(--ink-soft); font-size: 0.8rem; cursor: pointer; align-self: flex-start; }
+.backBtn:hover { color: var(--ink); }
+
+.card { background: var(--paper); border: 1px solid rgba(14,14,14,0.06); border-radius: 16px; padding: 1.3rem 1.4rem; display: flex; flex-direction: column; gap: 0.7rem; box-shadow: 0 2px 8px rgba(14,14,14,0.04); }
+.cardTitle { display: flex; align-items: center; gap: 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+
+.row { display: flex; gap: 0.6rem; }
+.input { width: 100%; background: #f1f0ed; border: 1px solid transparent; border-radius: 10px; padding: 0.65rem 0.9rem; font-family: var(--font-ui); font-size: 0.88rem; outline: none; }
+.input:focus { background: var(--paper); border-color: var(--line); }
+.hiddenInput { display: none; }
+
+.primaryBtn { display: inline-flex; align-items: center; gap: 0.5rem; align-self: flex-start; background: var(--ink); color: var(--wall); border: none; border-radius: 999px; padding: 0.65rem 1.2rem; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+.primaryBtn:hover { opacity: 0.88; }
+
+.chip { display: inline-flex; align-items: center; gap: 0.4rem; background: #f4f3f0; border: 1.5px solid transparent; border-radius: 999px; padding: 0.45rem 0.9rem; font-size: 0.72rem; font-weight: 600; color: var(--ink-soft); cursor: pointer; }
+.chipOn { border-color: var(--ink); background: var(--paper); color: var(--ink); }
+
+.saleRow { display: flex; justify-content: space-between; align-items: center; width: 100%; background: none; border: none; padding: 0.7rem 0.2rem; border-bottom: 1px solid rgba(14,14,14,0.06); cursor: pointer; text-align: left; }
+.saleRow:last-child { border-bottom: none; }
+.saleTitle { font-weight: 600; font-size: 0.92rem; }
+.saleMeta { font-size: 0.72rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; }
+
+.lotRow { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0.2rem; border-bottom: 1px solid rgba(14,14,14,0.06); }
+.lotRow:last-child { border-bottom: none; }
+.lotPos { font-family: var(--font-display); font-size: 0.75rem; color: var(--ink-faint); }
+.lotTitle { flex: 1; font-size: 0.9rem; font-weight: 500; }
+.lotBadge { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f4f3f0; color: var(--ink-soft); }
+.lot_on_block { background: var(--vip); color: #fff; }
+.lot_sold { background: var(--ink); color: var(--wall); }
+.lotBid { font-family: var(--font-display); font-size: 0.78rem; }
+.miniBtn { display: inline-flex; align-items: center; gap: 0.35rem; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 0.35rem 0.8rem; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); cursor: pointer; }
+.miniBtn:hover { background: var(--ink); color: var(--wall); }

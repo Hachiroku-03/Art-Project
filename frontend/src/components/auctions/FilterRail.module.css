@@ -1,0 +1,25 @@
+.rail { display: flex; flex-direction: column; gap: 1.6rem; }
+
+.group { display: flex; flex-direction: column; gap: 0.2rem; }
+.groupLabel { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.4rem; }
+
+.chip {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  width: 100%; text-align: left;
+  background: none; border: none;
+  padding: 0.5rem 0.7rem; border-radius: 9px;
+  font-family: var(--font-ui); font-size: 0.82rem; font-weight: 500; color: var(--ink-soft);
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.chip:hover { background: rgba(14,14,14,0.04); color: var(--ink); }
+.chipOn { background: var(--ink); color: var(--wall); }
+.chipOn:hover { background: var(--ink); color: var(--wall); }
+.chipCount { font-size: 0.7rem; font-variant-numeric: tabular-nums; opacity: 0.6; }
+
+.clear {
+  align-self: flex-start; margin-top: 0.4rem;
+  background: none; border: none; padding: 0;
+  font-family: var(--font-ui); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-faint); cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+}
+.clear:hover { color: var(--err); }

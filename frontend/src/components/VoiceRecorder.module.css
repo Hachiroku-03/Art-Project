@@ -1,40 +1,42 @@
 .recordBtn {
-  width: 38px;
-  height: 38px;
+  width: 38px; height: 38px;
   border-radius: 50%;
   border: none;
   background: #f1f0ed;
   color: var(--ink-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
   transition: all 0.15s;
   user-select: none;
-  touch-action: none;
 }
 .recordBtn:hover { background: #e7e6e2; color: var(--ink); }
-.recordBtn:active { transform: scale(0.95); background: var(--vip); color: var(--wall); }
+.recordBtn:active { transform: scale(0.95); }
 
+/* DOCKED PANEL — floats directly above the composer row */
 .panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.55rem);   /* sits ON TOP of the comment field */
+  z-index: 20;
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  flex: 1;
-  min-width: 0;
-  padding: 0.45rem 0.9rem;
-  background: #f8f7f5;
-  border-radius: 999px;
-  animation: slideIn 0.2s ease;
+  gap: 0.55rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(14,14,14,0.12);
+  animation: dockIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
-@keyframes slideIn {
-  from { opacity: 0; transform: translateY(4px); }
+@keyframes dockIn {
+  from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
 .pulse {
-  width: 8px; height: 8px;
+  width: 9px; height: 9px;
   border-radius: 50%;
   background: var(--err);
   animation: pulseDot 1.2s infinite;
@@ -46,14 +48,14 @@
 }
 
 .timer {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
-/* the waveform lines */
+/* waveform clips on narrow screens instead of overflowing */
 .wave {
   display: flex;
   align-items: center;
@@ -70,43 +72,59 @@
   background: currentColor;
   flex-shrink: 0;
 }
-.wavePreview { color: var(--ink-soft); }
+.panel:has(.sendBtn) .wave { color: var(--ink-soft); } /* preview tone */
 
 .ctrlBtn {
-  width: 30px; height: 30px;
+  width: 32px; height: 32px;
   border-radius: 50%;
   border: none;
-  background: rgba(14, 14, 14, 0.06);
+  background: rgba(14,14,14,0.06);
   color: var(--ink-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
   transition: all 0.15s;
 }
-.ctrlBtn:hover { background: rgba(14, 14, 14, 0.1); color: var(--ink); }
-.danger:hover { background: rgba(109, 26, 36, 0.1); color: var(--err); }
+.ctrlBtn:hover { background: rgba(14,14,14,0.1); color: var(--ink); }
+.danger:hover { background: rgba(109,26,36,0.1); color: var(--err); }
 
-.sendBtn {
-  width: 32px; height: 32px;
+.stopBtn {
+  width: 34px; height: 34px;
   border-radius: 50%;
   border: none;
   background: var(--ink);
   color: var(--wall);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
   transition: all 0.15s;
 }
-.sendBtn:hover { opacity: 0.85; }
+.stopBtn:hover { opacity: 0.88; }
 
-.hint {
-  font-size: 0.66rem;
-  color: var(--ink-faint);
+.playBtn {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--vip);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
   flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(91,58,142,0.3);
 }
+.playBtn:hover { transform: scale(1.04); }
+
+.sendBtn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--ok);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.sendBtn:hover { opacity: 0.9; }
 
 .panel audio { display: none; }

@@ -1,0 +1,57 @@
+.card {
+  background: var(--paper);
+  border: 1px solid rgba(14,14,14,0.06);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(14,14,14,0.04);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  display: flex; flex-direction: column;
+}
+.card:hover { transform: translateY(-3px); box-shadow: 0 14px 34px rgba(14,14,14,0.12); }
+.card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.media { position: relative; aspect-ratio: 4 / 3; background: var(--wall); overflow: hidden; }
+.img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.imgBlank { width: 100%; height: 100%; background: linear-gradient(160deg, #eceae5, #e2e0da); }
+
+.pillRow { position: absolute; top: 0.6rem; left: 0.6rem; }
+.pill {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  font-size: 0.58rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 0.25rem 0.6rem; border-radius: 999px;
+  background: rgba(14,14,14,0.78); color: #fff; backdrop-filter: blur(4px);
+}
+.pill i { width: 6px; height: 6px; border-radius: 50%; background: #ff453a; animation: blink 1.2s infinite; }
+.pillLive { background: rgba(14,14,14,0.82); }
+.pillUpcoming { background: rgba(255,255,255,0.85); color: var(--ink-soft); }
+.pillEnded { background: rgba(14,14,14,0.5); color: rgba(255,255,255,0.8); }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* countdown scrim burned onto the image */
+.scrim {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
+  padding: 1.4rem 0.8rem 0.6rem;
+  background: linear-gradient(to top, rgba(0,0,0,0.72), rgba(0,0,0,0));
+}
+.scrimLabel { font-size: 0.6rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.7); }
+.scrimTime { font-family: var(--font-display); font-size: 1.05rem; color: #fff; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+
+.body { padding: 0.9rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.title { font-family: var(--font-label); font-style: italic; font-weight: 500; font-size: 1.15rem; line-height: 1.2; }
+
+.metaRow { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.host { font-size: 0.72rem; color: var(--ink-faint); }
+
+.tier {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-size: 0.56rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-soft); border: 1px solid var(--line); padding: 0.15rem 0.5rem; border-radius: 999px;
+}
+.tierVip { background: var(--vip); border-color: var(--vip); color: #fff; }
+.tierInvite { background: var(--ink); border-color: var(--ink); color: var(--wall); }
+
+.foot { display: flex; align-items: center; justify-content: space-between; margin-top: 0.2rem; padding-top: 0.6rem; border-top: 1px solid var(--line); }
+.lots { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+.rope { font-size: 0.62rem; font-style: italic; font-family: var(--font-label); color: var(--ink-faint); }

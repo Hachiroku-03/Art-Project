@@ -1,16 +1,15 @@
 import { useState, useRef, useEffect } from 'react'
-import { Mic, Pause, Play, Trash2, Lock, LockOpen, Send, Square } from 'lucide-react'
+import { Mic, Pause, Play, Trash2, Send, Square } from 'lucide-react'
 import styles from './VoiceRecorder.module.css'
 
 type Phase = 'idle' | 'recording' | 'paused' | 'preview'
 
-const BAR_COUNT = 28
+const BAR_COUNT = 48 // clipped gracefully on narrow screens via overflow
 
 export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void }) {
   const [phase, setPhase] = useState<Phase>('idle')
-  const [locked, setLocked] = useState(false)
   const [duration, setDuration] = useState(0)
-  const [bars, setBars] = useState<number[]>(Array(BAR_COUNT).fill(4))
+  const [bars, setBars] = useState<number[]>(Array(BAR_COUNT).fill(3))
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewPlaying, setPreviewPlaying] = useState(false)
 
@@ -21,17 +20,23 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef(0)
   const timerRef = useRef<number | undefined>(undefined)
-  const barsRef = useRef<number[]>(Array(BAR_COUNT).fill(4))
-  const startYRef = useRef(0)
+  const barsRef = useRef<number[]>(Array(BAR_COUNT).fill(3))
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const blobRef = useRef<Blob | null>(null)
 
-  useEffect(() => () => {
-    if (timerRef.current) window.clearInterval(timerRef.current)
+  // One central teardown — EVERY exit path calls this so the mic never leaks.
+  function teardown() {
+    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = undefined }
     cancelAnimationFrame(rafRef.current)
     streamRef.current?.getTracks().forEach(t => t.stop())
-    ctxRef.current?.close()
-  }, [])
+    streamRef.current = null
+    if (ctxRef.current && ctxRef.current.state !== 'closed') ctxRef.current.close().catch(() => {})
+    ctxRef.current = null
+    analyserRef.current = null
+  }
+
+  // Safety net: if the component unmounts mid-recording, kill the mic.
+  useEffect(() => teardown, [])
 
   function startTimer() {
     timerRef.current = window.setInterval(() => setDuration(d => d + 1), 1000)
@@ -40,7 +45,6 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
     if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = undefined }
   }
 
-  // Live waveform: read mic amplitude every frame
   function drawLoop() {
     const an = analyserRef.current
     if (an) {
@@ -49,16 +53,15 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
       let sum = 0
       for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
       const rms = Math.sqrt(sum / data.length)
-      const h = Math.min(28, 4 + rms * 110)
+      const h = Math.min(34, 3 + rms * 130)
       barsRef.current = [...barsRef.current.slice(1), h]
       setBars(barsRef.current)
     }
     rafRef.current = requestAnimationFrame(drawLoop)
   }
 
-  async function startRecording(e: React.MouseEvent | React.TouchEvent) {
-    e.preventDefault()
-    startYRef.current = 'touches' in e ? e.touches[0].clientY : e.clientY
+  async function startRecording() {
+    if (phase !== 'idle') return
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
@@ -72,13 +75,13 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
       const rec = new MediaRecorder(stream)
       chunksRef.current = []
       rec.ondataavailable = ev => { if (ev.data.size > 0) chunksRef.current.push(ev.data) }
+      // The handler that builds the preview the moment we stop.
       rec.onstop = () => {
-        streamRef.current?.getTracks().forEach(t => t.stop())
-        streamRef.current = null
-        cancelAnimationFrame(rafRef.current)
+        teardown()
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        blobRef.current = blob
+        chunksRef.current = []
         if (blob.size > 0) {
+          blobRef.current = blob
           setPreviewUrl(URL.createObjectURL(blob))
           setPhase('preview')
         } else {
@@ -87,25 +90,29 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
       }
       rec.start()
       recRef.current = rec
-      barsRef.current = Array(BAR_COUNT).fill(4)
+      barsRef.current = Array(BAR_COUNT).fill(3)
       setBars(barsRef.current)
       setDuration(0)
-      setLocked(false)
       setPhase('recording')
       startTimer()
       rafRef.current = requestAnimationFrame(drawLoop)
-    } catch { /* mic denied */ }
+    } catch {
+      teardown()
+      resetAll()
+    }
   }
 
   function pauseRec() {
-    recRef.current?.pause()
+    const rec = recRef.current
+    if (rec && rec.state === 'recording') { try { rec.pause() } catch { /* unsupported (Safari) */ } }
     stopTimer()
     cancelAnimationFrame(rafRef.current)
     setPhase('paused')
   }
 
   function resumeRec() {
-    recRef.current?.resume()
+    const rec = recRef.current
+    if (rec && rec.state === 'paused') { try { rec.resume() } catch { /* unsupported */ } }
     startTimer()
     rafRef.current = requestAnimationFrame(drawLoop)
     setPhase('recording')
@@ -114,23 +121,18 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
   function stopToPreview() {
     stopTimer()
     const rec = recRef.current
-    if (rec && rec.state !== 'inactive') rec.stop() // onstop opens the preview
+    if (rec && rec.state !== 'inactive') rec.stop() // onstop → preview
     else resetAll()
   }
 
   function trashIt() {
     stopTimer()
-    cancelAnimationFrame(rafRef.current)
     const rec = recRef.current
     if (rec && rec.state !== 'inactive') {
-      rec.onstop = () => {
-        streamRef.current?.getTracks().forEach(t => t.stop())
-        streamRef.current = null
-      }
+      rec.onstop = () => teardown() // discard: don't build a preview
       rec.stop()
     } else {
-      streamRef.current?.getTracks().forEach(t => t.stop())
-      streamRef.current = null
+      teardown()
     }
     resetAll()
   }
@@ -139,38 +141,18 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
     setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
     setPreviewPlaying(false)
     setPhase('idle')
-    setLocked(false)
     setDuration(0)
-    barsRef.current = Array(BAR_COUNT).fill(4)
+    barsRef.current = Array(BAR_COUNT).fill(3)
     setBars(barsRef.current)
     blobRef.current = null
   }
 
   function sendIt() {
-    if (blobRef.current) onSend(blobRef.current)
+    const blob = blobRef.current
+    teardown()
     resetAll()
+    if (blob) onSend(blob)
   }
-
-  // Release (unlocked) goes to PREVIEW — never auto-sends
-  useEffect(() => {
-    if (phase !== 'recording' || locked) return
-    const up = () => stopToPreview()
-    window.addEventListener('mouseup', up)
-    window.addEventListener('touchend', up)
-    return () => { window.removeEventListener('mouseup', up); window.removeEventListener('touchend', up) }
-  }, [phase, locked])
-
-  // Slide up 80px to lock hands-free
-  useEffect(() => {
-    if (phase !== 'recording' || locked) return
-    const move = (e: MouseEvent | TouchEvent) => {
-      const y = 'touches' in e ? e.touches[0].clientY : (e as MouseEvent).clientY
-      if (startYRef.current - y > 80) setLocked(true)
-    }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('touchmove', move)
-    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('touchmove', move) }
-  }, [phase, locked])
 
   function togglePreview() {
     const el = audioRef.current
@@ -183,7 +165,7 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
 
   if (phase === 'idle') {
     return (
-      <button type="button" className={styles.recordBtn} onMouseDown={startRecording} onTouchStart={startRecording} aria-label="Record voice comment">
+      <button type="button" className={styles.recordBtn} onClick={startRecording} aria-label="Record voice comment">
         <Mic size={18} />
       </button>
     )
@@ -193,18 +175,18 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
     return (
       <div className={styles.panel}>
         <audio ref={audioRef} src={previewUrl ?? undefined} onEnded={() => setPreviewPlaying(false)} />
-        <button type="button" className={styles.ctrlBtn} onClick={togglePreview} aria-label="Play or pause preview">
-          {previewPlaying ? <Pause size={15} /> : <Play size={15} />}
+        <button type="button" className={styles.playBtn} onClick={togglePreview} aria-label="Play or pause preview">
+          {previewPlaying ? <Pause size={16} /> : <Play size={16} />}
         </button>
-        <div className={`${styles.wave} ${styles.wavePreview}`}>
+        <div className={styles.wave}>
           {bars.map((h, i) => <span key={i} style={{ height: `${h}px` }} />)}
         </div>
         <span className={styles.timer}>{fmt(duration)}</span>
         <button type="button" className={`${styles.ctrlBtn} ${styles.danger}`} onClick={trashIt} aria-label="Discard recording">
-          <Trash2 size={15} />
+          <Trash2 size={16} />
         </button>
         <button type="button" className={styles.sendBtn} onClick={sendIt} aria-label="Send voice comment">
-          <Send size={15} />
+          <Send size={16} />
         </button>
       </div>
     )
@@ -218,19 +200,15 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
       <div className={styles.wave}>
         {bars.map((h, i) => <span key={i} style={{ height: `${h}px` }} />)}
       </div>
-      <button type="button" className={styles.ctrlBtn} onClick={() => setLocked(l => !l)} aria-label="Lock recording">
-        {locked ? <Lock size={15} /> : <LockOpen size={15} />}
-      </button>
       <button type="button" className={styles.ctrlBtn} onClick={phase === 'recording' ? pauseRec : resumeRec} aria-label="Pause or resume">
-        {phase === 'recording' ? <Pause size={15} /> : <Play size={15} />}
+        {phase === 'recording' ? <Pause size={16} /> : <Play size={16} />}
       </button>
       <button type="button" className={`${styles.ctrlBtn} ${styles.danger}`} onClick={trashIt} aria-label="Discard recording">
-        <Trash2 size={15} />
+        <Trash2 size={16} />
       </button>
-      <button type="button" className={styles.ctrlBtn} onClick={stopToPreview} aria-label="Stop and preview">
-        <Square size={15} />
+      <button type="button" className={styles.stopBtn} onClick={stopToPreview} aria-label="Stop and preview">
+        <Square size={16} />
       </button>
-      {!locked && <p className={styles.hint}>release to preview · slide up to lock</p>}
     </div>
   )
 }

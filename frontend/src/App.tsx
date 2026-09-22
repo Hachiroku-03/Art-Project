@@ -2,9 +2,11 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { LoginPage } from './auth/LoginPage'
 import { SignupPage } from './auth/SignupPage'
 import { FeedPage } from './pages/FeedPage'
-import { PostRoomPage } from './pages/PostRoomPage' // ← NEW IMPORT
-// import {CreatePage} from './pages/CreatePage'
-// import { StubPage } from './pages/StubPage'
+import { PostRoomPage } from './pages/PostRoomPage'
+import { AuctionsPage } from './pages/AuctionsPage'
+import { AuctionRoomPage } from './pages/AuctionRoomPage'
+import { ControlRoomPage } from './pages/ControlRoomPage'
+// SalesRoomPage removed — /sales/:id now renders AuctionRoomPage
 
 function Gate() {
   const token = localStorage.getItem('space_token')
@@ -18,15 +20,11 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/feed" element={<FeedPage />} />
-        <Route path="/post/:id" element={<PostRoomPage />} /> {/* ← UPDATED ROUTE */}
-        {/* <Route path="/create" element={<CreatePage />} /> */}
-        {/* <Route path="/auctions" element={<StubPage title="Auctions" />} />
-        <Route path="/community" element={<StubPage title="Community" />} />
-        <Route path="/studio" element={<StubPage title="Studio" />} />
-        <Route path="/discover" element={<StubPage title="Discover" />} />
-        <Route path="/profile" element={<StubPage title="Profile" />} />
-        <Route path="/settings" element={<StubPage title="Settings" />} />
-        <Route path="/messages" element={<StubPage title="Messages" />} /> */}
+        <Route path="/post/:id" element={<PostRoomPage />} />
+        <Route path="/auctions" element={<AuctionsPage />} />
+        <Route path="/sales/:id" element={<AuctionRoomPage />} />
+        <Route path="/sales/control" element={<ControlRoomPage />} />
+        <Route path="/sales/:id/control" element={<ControlRoomPage />} />
         <Route path="*" element={<Gate />} />
       </Routes>
     </BrowserRouter>

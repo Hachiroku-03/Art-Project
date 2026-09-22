@@ -115,7 +115,7 @@ export function Navbar() {
 
             <nav className={styles.drawerLinks}>
               <button className={isActive('/feed')} onClick={() => navigateAndClose('/feed')}><Home size={18} /> Feed</button>
-              <button className={isActive('/auctions')} onClick={() => navigateAndClose('/auctions')}><Gavel size={18} /> Auctions</button>
+              <button className={isActive('/auctions')} onClick={() => navigate('/auctions')}>Auctions</button>
               <button className={isActive('/community')} onClick={() => navigateAndClose('/community')}><Users size={18} /> Community</button>
               {isCollector ? (
                 <button className={isActive('/discover')} onClick={() => navigateAndClose('/discover')}><Compass size={18} /> Discover</button>

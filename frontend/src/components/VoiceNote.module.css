@@ -1,0 +1,55 @@
+.bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  max-width: 260px;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.85rem 0.55rem 0.55rem;
+  background: #f4f3f0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  align-self: flex-start;
+}
+
+.playBtn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--ink);
+  color: var(--wall);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.playBtn:hover { opacity: 0.88; transform: scale(1.05); }
+.playBtn:active { transform: scale(0.96); }
+
+.wave {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  cursor: pointer;
+}
+.bar {
+  width: 3px;
+  min-height: 4px;
+  border-radius: 2px;
+  background: rgba(14, 14, 14, 0.16);
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.barPlayed { background: var(--vip); }
+
+.time {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 2.4ch;
+  text-align: right;
+}
