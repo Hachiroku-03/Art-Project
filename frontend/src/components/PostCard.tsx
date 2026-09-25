@@ -22,6 +22,8 @@ export type Post = {
   comment_count: number
   liked_by_viewer: boolean
   followed_by_viewer: boolean
+  bookmarked_by_viewer: boolean   // ← new, fed by the query
+  bookmark_count: number          // ← new
 }
 
 type PostCardProps = { post: Post; viewer: string; lang: string; autoDesc?: string }
@@ -37,22 +39,23 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
   const [likeCount, setLikeCount] = useState(post.like_count)
   const [following, setFollowing] = useState(post.followed_by_viewer)
   const [currentBid, setCurrentBid] = useState(post.current_bid || '')
+  const [bookmarked, setBookmarked] = useState(post.bookmarked_by_viewer)   // ← new
+  const [bmCount, setBmCount] = useState(post.bookmark_count)               // ← new
 
   const hasAutoDesc = !!autoDesc && autoDesc.trim() !== (post.description || '').trim()
 
   async function toggleLike(e: React.MouseEvent) {
-    e.stopPropagation() // Prevents the card from opening when clicking like
+    e.stopPropagation()
     const res = await fetch(`${API}/posts/${post.id}/like`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ viewer }),
     })
     const data = await res.json()
-    setLiked(data.liked)
-    setLikeCount(data.count)
+    setLiked(data.liked); setLikeCount(data.count)
   }
 
   async function toggleFollow(e: React.MouseEvent) {
-    e.stopPropagation() // Prevents the card from opening when clicking follow
+    e.stopPropagation()
     const res = await fetch(`${API}/follow`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ viewer, target: post.username }),
@@ -61,8 +64,18 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
     setFollowing(data.following)
   }
 
+  async function toggleBookmark(e: React.MouseEvent) {   // ← new, was a dead button
+    e.stopPropagation()
+    const res = await fetch(`${API}/posts/${post.id}/bookmark`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viewer }),
+    })
+    const data = await res.json()
+    setBookmarked(data.bookmarked); setBmCount(data.count)
+  }
+
   async function placeBid(e: React.MouseEvent) {
-    e.stopPropagation() // Prevents the card from opening when clicking bid
+    e.stopPropagation()
     const input = window.prompt(`Your bid for "${post.title}" (current: ${currentBid || post.price || 'none'}):`)
     if (!input) return
     const res = await fetch(`${API}/posts/${post.id}/bid`, {
@@ -74,8 +87,12 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
     else window.alert(data.error || 'Bid failed.')
   }
 
+  function openAuthor(e: React.MouseEvent) {   // ← new: name → wall, without opening the card
+    e.stopPropagation()
+    navigate(`/profile/${post.username}`)
+  }
+
   return (
-    // THE MAGIC LINE: The entire card is now a clickable button
     <article className={styles.card} onClick={() => navigate(`/post/${post.id}`)}>
       <header className={styles.header}>
         <div className={styles.who}>
@@ -83,7 +100,7 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
             {(post.display_name || post.username)[0].toUpperCase()}
           </div>
           <div>
-            <p className={styles.name}>{post.display_name || post.username}</p>
+            <button className={styles.name} onClick={openAuthor}>{post.display_name || post.username}</button>
             <p className={styles.meta}>
               <span className={styles.typeBadge}>{post.type.toUpperCase()}</span>
               {' · '}{exactTime(post.created_at)}
@@ -108,7 +125,7 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
       <div className={styles.labelBlock}>
         <h2 className={styles.artTitle}>"{post.title}"</h2>
         <p className={styles.medium}>{hasAutoDesc ? autoDesc : post.description}</p>
-        
+
         {post.type === 'drop' && (
           <div className={styles.priceRow}>
             <span className={styles.priceLabel}>
@@ -133,8 +150,9 @@ export function PostCard({ post, viewer, autoDesc }: PostCardProps) {
         <button className={styles.actionBtn} onClick={(e) => e.stopPropagation()}>
           <Share2 size={19} />
         </button>
-        <button className={`${styles.actionBtn} ${styles.right}`} onClick={(e) => e.stopPropagation()}>
-          <Bookmark size={19} />
+        <button className={`${styles.actionBtn} ${styles.right} ${bookmarked ? styles.bookmarked : ''}`} onClick={toggleBookmark}>
+          <Bookmark size={19} fill={bookmarked ? 'currentColor' : 'none'} />
+          <span>{bmCount || ''}</span>
         </button>
       </div>
     </article>

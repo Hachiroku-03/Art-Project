@@ -1,26 +1,21 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Eye, Paintbrush, Landmark } from 'lucide-react'
 import styles from './SignupPage.module.css'
 import { ThreeBackground } from './ThreeBackground'
 
 const API = 'http://localhost:8000'
-type Role = 'collector' | 'artist' | 'house'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function SignupPage() {
   const navigate = useNavigate()
-  const [role, setRole] = useState<Role>('collector')
-  
+
   const [email, setEmail] = useState('')
   const [fullName, setFullName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  
   const [discipline, setDiscipline] = useState('painting')
-  const [license, setLicense] = useState('')
-  
+
   const [toast, setToast] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -46,25 +41,19 @@ export function SignupPage() {
     }
 
     setLoading(true)
-    
-    const extra: Record<string, string> = {}
-    if (role === 'artist') {
-      extra.discipline = discipline
-    } else if (role === 'house') {
-      extra.license = license
-    }
 
     // Capture browser language for real-time translation
     const language = (navigator.language || 'en').slice(0, 2)
+    const extra = { discipline }  // no role, no license — those moved to the house application
 
     try {
       const res = await fetch(`${API}/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, fullName, username, password, role, extra, language }),
+        body: JSON.stringify({ email, fullName, username, password, extra, language }),
       })
       const data = await res.json()
-      
+
       if (res.ok) {
         navigate('/login')
       } else {
@@ -80,39 +69,10 @@ export function SignupPage() {
   return (
     <main className={styles.shell}>
       <ThreeBackground />
-      
+
       <section className={styles.card}>
         <h1 className={styles.wordmark}>Join The Space</h1>
-        <p className={styles.tagline}>Select your role to begin</p>
-
-        <div className={styles.roles}>
-          <button 
-            type="button" 
-            className={`${styles.roleCard} ${role === 'collector' ? styles.roleCardActive : ''}`}
-            onClick={() => setRole('collector')}
-          >
-            <Eye size={24} className={styles.roleIcon} />
-            <span className={styles.roleName}>Collector</span>
-          </button>
-          
-          <button 
-            type="button" 
-            className={`${styles.roleCard} ${role === 'artist' ? styles.roleCardActive : ''}`}
-            onClick={() => setRole('artist')}
-          >
-            <Paintbrush size={24} className={styles.roleIcon} />
-            <span className={styles.roleName}>Artist</span>
-          </button>
-          
-          <button 
-            type="button" 
-            className={`${styles.roleCard} ${role === 'house' ? styles.roleCardActive : ''}`}
-            onClick={() => setRole('house')}
-          >
-            <Landmark size={24} className={styles.roleIcon} />
-            <span className={styles.roleName}>House</span>
-          </button>
-        </div>
+        <p className={styles.tagline}>Every member hangs work. Earn the rostrum later.</p>
 
         <form onSubmit={handleSubmit}>
           <div className={styles.field}>
@@ -143,28 +103,17 @@ export function SignupPage() {
             </div>
           </div>
 
-          {role === 'artist' && (
-            <div className={styles.field}>
-              <label className={styles.label}>Primary Discipline</label>
-              <div className={styles.inputBox}>
-                <select className={styles.input} value={discipline} onChange={e => setDiscipline(e.target.value)}>
-                  <option value="painting">Painting</option>
-                  <option value="sculpture">Sculpture</option>
-                  <option value="digital">Digital</option>
-                  <option value="photography">Photography</option>
-                </select>
-              </div>
+          <div className={styles.field}>
+            <label className={styles.label}>Primary Discipline</label>
+            <div className={styles.inputBox}>
+              <select className={styles.input} value={discipline} onChange={e => setDiscipline(e.target.value)}>
+                <option value="painting">Painting</option>
+                <option value="sculpture">Sculpture</option>
+                <option value="digital">Digital</option>
+                <option value="photography">Photography</option>
+              </select>
             </div>
-          )}
-
-          {role === 'house' && (
-            <div className={styles.field}>
-              <label className={styles.label}>License / Reg ID</label>
-              <div className={styles.inputBox}>
-                <input className={styles.input} type="text" value={license} onChange={e => setLicense(e.target.value)} placeholder="Business License #" />
-              </div>
-            </div>
-          )}
+          </div>
 
           <button className={styles.submitBtn} type="submit" disabled={loading}>
             {loading ? 'Creating Account...' : 'Create Account'}

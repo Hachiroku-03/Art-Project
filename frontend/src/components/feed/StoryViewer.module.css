@@ -1,0 +1,19 @@
+.overlay { position: fixed; inset: 0; background: rgba(8,7,6,0.9); z-index: 400; display: flex; align-items: center; justify-content: center; animation: fade .2s ease; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.frame { position: relative; width: min(420px, 92vw); height: min(78vh, 720px); background: #0e0d0c; border-radius: 20px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.5); }
+.bars { position: absolute; top: 0.7rem; left: 0.8rem; right: 0.8rem; display: flex; gap: 4px; z-index: 5; }
+.bar { flex: 1; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.28); overflow: hidden; }
+.fill { display: block; height: 100%; background: #fff; border-radius: 2px; }
+.head { position: absolute; top: 1.4rem; left: 0.9rem; right: 0.9rem; display: flex; align-items: center; gap: 0.55rem; z-index: 5; }
+.ava { width: 30px; height: 30px; border-radius: 50%; background: var(--paper); color: var(--ink); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 0.85rem; }
+.un { color: #fff; font-size: 0.82rem; font-weight: 600; }
+.x { margin-left: auto; background: none; border: none; color: rgba(255,255,255,0.85); cursor: pointer; display: flex; padding: 0.2rem; }
+.x:hover { color: #fff; }
+.stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.img { width: 100%; height: 100%; object-fit: cover; }
+.textCard { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: 2rem; background: linear-gradient(150deg, #2a2440, #14111f); }
+.textCard p { font-family: var(--font-label); font-style: italic; font-size: 1.5rem; line-height: 1.4; color: #fff; text-align: center; }
+.nav { position: absolute; top: 0; bottom: 0; width: 38%; background: none; border: none; color: rgba(255,255,255,0.0); cursor: pointer; display: flex; align-items: center; z-index: 4; transition: color .15s; }
+.nav:hover { color: rgba(255,255,255,0.7); }
+.navL { left: 0; justify-content: flex-start; padding-left: 0.4rem; }
+.navR { right: 0; justify-content: flex-end; padding-right: 0.4rem; }

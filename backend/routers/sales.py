@@ -9,7 +9,7 @@ def create_sale(data: dict):
     host = data.get("viewer", ""); title = data.get("title", "").strip()
     conn = get_db(); cursor = conn.cursor()
     cursor.execute("SELECT role FROM users WHERE username = %s", (host,)); u = cursor.fetchone()
-    if not u or u["role"] == "collector": conn.close(); return {"error": "only artists and houses host sales"}
+    if not u or u["role"] != "house": conn.close(); return {"error": "only accredited houses may open a room"}
     cursor.execute('''INSERT INTO auctions (host_username, title, description, tier, status, starts_at, ticket_price, stream_type, stream_url) VALUES (%s,%s,%s,%s,'upcoming',%s,%s,%s,%s) RETURNING id''', (host, title, data.get("description", ""), data.get("tier", "open"), data.get("starts_at") or None, float(data.get("ticket_price", 0) or 0), data.get("stream_type", "external"), data.get("stream_url", "")))
     sid = cursor.fetchone()["id"]; conn.commit(); conn.close(); return {"id": sid}
 

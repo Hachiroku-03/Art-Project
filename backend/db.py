@@ -46,5 +46,24 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS lots (id SERIAL PRIMARY KEY, sale_id INTEGER REFERENCES auctions(id) ON DELETE CASCADE, position INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, image_url TEXT, starting_price NUMERIC(12,2) DEFAULT 0, status TEXT NOT NULL DEFAULT 'sealed', sold_price NUMERIC(12,2), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS lot_bids (id SERIAL PRIMARY KEY, lot_id INTEGER REFERENCES lots(id) ON DELETE CASCADE, user_name TEXT NOT NULL, amount NUMERIC(12,2) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+            user_name TEXT,
+            PRIMARY KEY (post_id, user_name)
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS stories (
+            id SERIAL PRIMARY KEY,
+            user_name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'image',
+            body TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    ''')
+
     conn.commit()
     conn.close()

@@ -1,0 +1,12 @@
+.rail { display: flex; flex-direction: column; gap: 0.2rem; }
+.head { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.6rem; }
+.quiet { font-family: var(--font-label); font-style: italic; font-size: 0.85rem; color: var(--ink-faint); }
+.row { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 0.6rem; padding: 0.5rem 0; }
+.ava { width: 38px; height: 38px; border-radius: 50%; background: var(--wall); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 0.85rem; color: var(--ink); cursor: pointer; }
+.info { background: none; border: none; text-align: left; cursor: pointer; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.nm { font-size: 0.82rem; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.66rem; color: var(--ink-faint); }
+.btn { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 0.32rem 0.8rem; font-family: var(--font-ui); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); cursor: pointer; transition: all 0.15s; }
+.btn:hover { background: var(--ink); border-color: var(--ink); color: var(--wall); }
+.btnOn { background: var(--paper); color: var(--ink-faint); border-color: var(--line); }
+.btnOn:hover { background: var(--paper); color: var(--ink-faint); }

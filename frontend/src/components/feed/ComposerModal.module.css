@@ -1,0 +1,39 @@
+.overlay { position: fixed; inset: 0; background: rgba(20,18,15,0.32); backdrop-filter: blur(3px); z-index: 300; display: flex; align-items: flex-end; justify-content: center; padding: 0; animation: fade .2s ease; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* THE FIX: a height ceiling + internal scroll, so a tall form never clips off-screen.
+   overscroll-behavior:contain stops the form's scroll from dragging the page behind it. */
+.sheet { width: 100%; max-width: 520px; max-height: 92vh; overflow-y: auto; overscroll-behavior: contain; background: var(--paper); border-radius: 22px 22px 0 0; padding: 1.2rem 1.3rem 1.6rem; box-shadow: 0 -10px 40px rgba(20,18,15,0.18); animation: rise .28s cubic-bezier(.16,1,.3,1); }
+@keyframes rise { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Desktop: center the dialog, round all four corners, and cast an ALL-AROUND shadow
+   (the mobile -10px upward shadow is wrong for a floating card). */
+@media (min-width: 600px) {
+  .overlay { align-items: center; padding: 1.5rem; }
+  .sheet { border-radius: 22px; box-shadow: 0 24px 70px rgba(20,18,15,0.28); }
+}
+
+/* sticky so the close ✕ stays reachable while a long form scrolls inside the sheet */
+.top { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; margin: -1.2rem -1.3rem 1rem; padding: 1.2rem 1.3rem 0.6rem; background: var(--paper); }
+.kicker { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-soft); }
+.close { background: none; border: none; color: var(--ink-faint); cursor: pointer; display: flex; padding: 0.3rem; border-radius: 50%; }
+.close:hover { background: rgba(14,14,14,0.05); color: var(--ink); }
+
+.form { display: flex; flex-direction: column; gap: 0.55rem; }
+.dropZone { width: 100%; aspect-ratio: 16/10; border-radius: 16px; background: #f4f2ee; border: 1px dashed rgba(14,14,14,0.16); display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; transition: border-color .15s, background .15s; }
+.dropZone:hover { border-color: var(--ink-soft); background: #efede8; }   /* normalized the stray capital-E hex */
+.preview { width: 100%; height: 100%; object-fit: cover; }
+.dropHint { display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font-label); font-style: italic; font-size: 0.9rem; color: var(--ink-faint); }
+.label { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.3rem; }
+.opt { font-weight: 500; letter-spacing: 0; text-transform: none; font-style: italic; font-family: var(--font-label); opacity: 0.7; }
+.input, .area { width: 100%; background: #f4f2ee; border: 1px solid transparent; border-radius: 12px; padding: 0.65rem 0.85rem; font-family: var(--font-ui); font-size: 0.92rem; color: var(--ink); outline: none; transition: background .15s, border-color .15s, box-shadow .15s; }
+.area { resize: vertical; line-height: 1.5; font-family: var(--font-label); font-style: italic; }
+.input:focus, .area:focus { background: var(--paper); border-color: var(--line); box-shadow: 0 0 0 4px rgba(14,14,14,0.04); }
+.input::placeholder, .area::placeholder { color: var(--ink-faint); }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+.col { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.err { font-size: 0.8rem; color: var(--err); }
+.submit { align-self: flex-start; margin-top: 0.4rem; background: var(--ink); color: var(--wall); border: none; border-radius: 999px; padding: 0.7rem 1.6rem; font-family: var(--font-ui); font-size: 0.74rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; box-shadow: 0 6px 18px rgba(20,18,15,0.18); transition: transform .15s, opacity .15s; }
+.submit:hover:not(:disabled) { transform: translateY(-1px); opacity: 0.92; }
+.submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.hidden { display: none; }

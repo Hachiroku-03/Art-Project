@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Home, Gavel, Users, Compass, Sparkles, MessageSquare, Menu, X, User, Settings, LogOut } from 'lucide-react'
+import { Home, Gavel, Crown, Menu, X, User, LogOut } from 'lucide-react'
 import styles from './Navbar.module.css'
 
 export function Navbar() {
@@ -8,10 +8,12 @@ export function Navbar() {
   const location = useLocation()
 
   const user = localStorage.getItem('space_user') || 'C'
-  const role = localStorage.getItem('space_role') || 'collector'
-  const tier = localStorage.getItem('space_tier')
+  const role = localStorage.getItem('space_role') || 'artist'   // collector is retired
+  const tier = localStorage.getItem('space_tier') || 'standard'
   const initial = user[0].toUpperCase()
+  const isVip = tier === 'vip'
 
+  // ---- hooks stay top-level, identical order to before ----
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -25,65 +27,50 @@ export function Navbar() {
   }, [])
 
   function handleLogout() {
-    setMobileOpen(false)
-    setMenuOpen(false)
+    setMobileOpen(false); setMenuOpen(false)
     localStorage.clear()
     navigate('/login')
   }
 
-  const navigateAndClose = (path: string) => {
-    setMobileOpen(false)
-    navigate(path)
-  }
-
+  const go = (path: string) => { setMobileOpen(false); setMenuOpen(false); navigate(path) }
   const isActive = (path: string) => (location.pathname === path ? styles.activeLink : '')
-  const isCollector = role === 'collector'
 
   return (
     <>
       <nav className={styles.navbar}>
-        <div className={styles.brand} onClick={() => navigateAndClose('/feed')}>THE SPACE</div>
+        <div className={styles.brand} onClick={() => go('/feed')}>THE SPACE</div>
 
-        {/* CENTER LINKS (Icons Restored) */}
+        {/* CENTER — only routes that actually exist. Community / Studio slots return with their pages. */}
         <div className={styles.navLinks}>
-          <button className={`${styles.link} ${isActive('/feed')}`} onClick={() => navigate('/feed')}>
+          <button className={`${styles.link} ${isActive('/feed')}`} onClick={() => go('/feed')}>
             <Home size={16} /> Feed
           </button>
-          <button className={`${styles.link} ${isActive('/auctions')}`} onClick={() => navigate('/auctions')}>
+          <button className={`${styles.link} ${isActive('/auctions')}`} onClick={() => go('/auctions')}>
             <Gavel size={16} /> Auctions
           </button>
-          <button className={`${styles.link} ${isActive('/community')}`} onClick={() => navigate('/community')}>
-            <Users size={16} /> Community
-          </button>
-          {isCollector ? (
-            <button className={`${styles.link} ${isActive('/discover')}`} onClick={() => navigate('/discover')}>
-              <Compass size={16} /> Discover
-            </button>
-          ) : (
-            <button className={`${styles.link} ${isActive('/studio')}`} onClick={() => navigate('/studio')}>
-              <Sparkles size={16} /> Studio
-            </button>
-          )}
         </div>
 
         {/* RIGHT */}
         <div className={styles.userCluster}>
-          <button className={styles.iconBtn} onClick={() => navigate('/messages')} aria-label="Messages">
-            <MessageSquare size={18} />
+          {/* THE SUBSCRIBE / VIP PILL */}
+          <button
+            className={`${styles.vipBtn} ${isVip ? styles.vipBtnOn : ''}`}
+            onClick={() => go('/pricing')}
+            aria-label={isVip ? 'Your VIP membership' : 'Go VIP'}
+          >
+            <Crown size={15} fill={isVip ? 'currentColor' : 'none'} />
+            <span className={styles.vipLabel}>{isVip ? 'VIP' : 'Go VIP'}</span>
           </button>
 
-          {/* Desktop Avatar Menu */}
+          {/* Desktop avatar menu */}
           <div className={`${styles.menuWrap} ${styles.desktopOnly}`} ref={menuRef}>
-            <button className={`${styles.avatar} ${tier === 'vip' ? styles.vipRing : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
+            <button className={`${styles.avatar} ${isVip ? styles.vipRing : ''}`} onClick={() => setMenuOpen(!menuOpen)}>
               {initial}
             </button>
             {menuOpen && (
               <div className={styles.menuDropdown}>
-                <button className={styles.menuItem} onClick={() => { setMenuOpen(false); navigate('/profile') }}>
+                <button className={styles.menuItem} onClick={() => go(`/profile/${user}`)}>
                   <User size={15} /> Profile
-                </button>
-                <button className={styles.menuItem} onClick={() => { setMenuOpen(false); navigate('/settings') }}>
-                  <Settings size={15} /> Settings
                 </button>
                 <button className={`${styles.menuItem} ${styles.menuDanger}`} onClick={handleLogout}>
                   <LogOut size={15} /> Log out
@@ -92,41 +79,42 @@ export function Navbar() {
             )}
           </div>
 
-          {/* Mobile Hamburger */}
+          {/* Mobile hamburger */}
           <button className={styles.hamburger} onClick={() => setMobileOpen(true)} aria-label="Open menu">
             <Menu size={22} />
           </button>
         </div>
       </nav>
 
-      {/* MOBILE DRAWER (Icons included here too) */}
+      {/* MOBILE DRAWER */}
       {mobileOpen && (
         <>
           <div className={styles.backdrop} onClick={() => setMobileOpen(false)} />
           <aside className={styles.drawer}>
             <div className={styles.drawerHeader}>
-              <div className={`${styles.avatar} ${tier === 'vip' ? styles.vipRing : ''}`}>{initial}</div>
+              <div className={`${styles.avatar} ${isVip ? styles.vipRing : ''}`}>{initial}</div>
               <div className={styles.drawerUserInfo}>
                 <p className={styles.drawerName}>{user}</p>
-                <p className={styles.drawerRole}>{role.toUpperCase()}</p>
+                <p className={styles.drawerRole}>{role.toUpperCase()}{isVip ? ' · VIP' : ''}</p>
               </div>
               <button className={styles.drawerClose} onClick={() => setMobileOpen(false)}><X size={20} /></button>
             </div>
 
             <nav className={styles.drawerLinks}>
-              <button className={isActive('/feed')} onClick={() => navigateAndClose('/feed')}><Home size={18} /> Feed</button>
-              <button className={isActive('/auctions')} onClick={() => navigate('/auctions')}>Auctions</button>
-              <button className={isActive('/community')} onClick={() => navigateAndClose('/community')}><Users size={18} /> Community</button>
-              {isCollector ? (
-                <button className={isActive('/discover')} onClick={() => navigateAndClose('/discover')}><Compass size={18} /> Discover</button>
-              ) : (
-                <button className={isActive('/studio')} onClick={() => navigateAndClose('/studio')}><Sparkles size={18} /> Studio</button>
-              )}
-              
+              {/* VIP row, prominent, top of drawer */}
+              <button className={`${styles.drawerVip} ${isVip ? styles.drawerVipOn : ''}`} onClick={() => go('/pricing')}>
+                <Crown size={18} fill={isVip ? 'currentColor' : 'none'} />
+                {isVip ? 'Your VIP membership' : 'Go VIP'}
+              </button>
+
               <div className={styles.drawerDivider} />
-              
-              <button onClick={() => navigateAndClose('/profile')}><User size={18} /> Profile</button>
-              <button onClick={() => navigateAndClose('/settings')}><Settings size={18} /> Settings</button>
+
+              <button className={isActive('/feed')} onClick={() => go('/feed')}><Home size={18} /> Feed</button>
+              <button className={isActive('/auctions')} onClick={() => go('/auctions')}><Gavel size={18} /> Auctions</button>
+
+              <div className={styles.drawerDivider} />
+
+              <button onClick={() => go(`/profile/${user}`)}><User size={18} /> Profile</button>
               <button className={styles.drawerDanger} onClick={handleLogout}><LogOut size={18} /> Log out</button>
             </nav>
           </aside>
