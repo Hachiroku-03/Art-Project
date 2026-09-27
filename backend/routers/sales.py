@@ -1,6 +1,9 @@
+import secrets
+
 from fastapi import APIRouter
 from db import get_db
 from helpers import auction_access
+from ledger import spend
 
 router = APIRouter()
 
@@ -58,7 +61,7 @@ def add_lot(sale_id: int, data: dict):
     lot = cursor.fetchone(); conn.commit(); conn.close(); return {"lot": lot}
 
 @router.get("/sales/{sale_id}")
-def get_sale(sale_id: int, viewer: str = ""):
+def get_sale(sale_id: int, viewer: str = "", code: str = ""):
     conn = get_db(); cursor = conn.cursor()
     cursor.execute('''SELECT id, host_username, title, description, tier, status, starts_at::text AS starts_at, ends_at::text AS ends_at, ticket_price::text AS ticket_price, stream_type, stream_url, stream_peer_id FROM auctions WHERE id = %s''', (sale_id,))
     sale = cursor.fetchone()
@@ -66,12 +69,25 @@ def get_sale(sale_id: int, viewer: str = ""):
     acc = auction_access(cursor, sale, viewer)
     if not acc["visible"]: conn.close(); return {"error": "this sale is private"}
     is_host = viewer == sale["host_username"]
+
+    cursor.execute("SELECT 1 FROM tickets WHERE auction_id = %s AND user_name = %s", (sale_id, viewer))
+    has_ticket = cursor.fetchone() is not None
+    proved = False
+    if code:
+        cursor.execute("SELECT 1 FROM tickets WHERE auction_id = %s AND code = %s AND user_name = %s", (sale_id, code.strip(), viewer))
+        proved = cursor.fetchone() is not None
+
+    allowed = is_host or proved
+    meta = {**sale, **acc, "is_host": is_host, "has_ticket": has_ticket, "locked": not allowed}
+    if not allowed:
+        conn.close(); return {"sale": meta, "lots": []}   # no catalogue for the unproven
+
     cursor.execute('''SELECT l.id, l.position, l.title, l.description, l.image_url, l.starting_price::text AS starting_price, l.status, l.sold_price::text AS sold_price, (SELECT MAX(amount)::text FROM lot_bids b WHERE b.lot_id = l.id) AS current_bid, (SELECT COUNT(*) FROM lot_bids b WHERE b.lot_id = l.id) AS bid_count FROM lots l WHERE l.sale_id = %s ORDER BY l.position''', (sale_id,))
     lots = cursor.fetchall(); out_lots = []
     for l in lots:
         if l["status"] == "sealed" and not is_host: out_lots.append({"id": l["id"], "position": l["position"], "status": "sealed"})
         else: out_lots.append(dict(l))
-    conn.close(); return {"sale": {**sale, **acc, "is_host": is_host}, "lots": out_lots}
+    conn.close(); return {"sale": meta, "lots": out_lots}
 
 @router.post("/sales/{sale_id}/go_live")
 def go_live(sale_id: int, data: dict):
@@ -119,15 +135,48 @@ def lot_bids_feed(lot_id: int, since: int = 0):
     conn.close(); return {"bids": rows}
 
 @router.post("/sales/{sale_id}/ticket")
-def buy_sale_ticket(sale_id: int, data: dict):
+def issue_paddle(sale_id: int, data: dict):
     viewer = data.get("viewer", "")
     if not viewer: return {"error": "viewer required"}
     conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT id, tier, ticket_price::text AS ticket_price FROM auctions WHERE id = %s", (sale_id,))
-    row = cursor.fetchone()
-    if not row: conn.close(); return {"error": "sale not found"}
-    acc = auction_access(cursor, row, viewer)
-    if not acc["can_buy_ticket"]: conn.close(); return {"error": "you are not invited to this sale"}
-    cursor.execute("INSERT INTO tickets (auction_id, user_name) VALUES (%s, %s) ON CONFLICT DO NOTHING", (sale_id, viewer))
-    conn.commit(); conn.close()
-    return {"message": "paddle purchased", "price": row["ticket_price"]}
+    try:
+        cursor.execute("SELECT id, host_username, title, tier, ticket_price::text AS ticket_price FROM auctions WHERE id = %s", (sale_id,))
+        row = cursor.fetchone()
+        if not row: conn.rollback(); return {"error": "sale not found"}
+        acc = auction_access(cursor, row, viewer)
+        if not acc["can_buy_ticket"]: conn.rollback(); return {"error": "you are not permitted to claim a paddle for this sale"}
+        cursor.execute("SELECT 1 FROM tickets WHERE auction_id = %s AND user_name = %s", (sale_id, viewer))
+        if cursor.fetchone(): conn.rollback(); return {"error": "you already hold a paddle for this room"}
+
+        price = float(row["ticket_price"] or 0)
+        if price > 0:
+            # Atomic debit INSIDE this transaction: if the code-mint below fails,
+            # the rollback discards the spend too. No money moves without a paddle.
+            ok, err, _ = spend(cursor, viewer, price, "ticket_purchase", f"Paddle · {row['title']}", "auctions", sale_id)
+            if not ok: conn.rollback(); return {"error": err}
+
+        code = ""
+        for _ in range(6):
+            c = f"{secrets.randbelow(900000) + 100000}"
+            cursor.execute("SELECT 1 FROM tickets WHERE code = %s", (c,))
+            if not cursor.fetchone(): code = c; break
+        if not code: conn.rollback(); return {"error": "could not mint a paddle, try again"}
+
+        cursor.execute("INSERT INTO tickets (auction_id, user_name, code) VALUES (%s, %s, %s)", (sale_id, viewer, code))
+        conn.commit()
+        return {"message": "paddle issued", "code": code, "price": f"{price:.2f}", "charged": price > 0}  # code shown ONCE
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
+
+@router.post("/sales/{sale_id}/enter")
+def enter_sale(sale_id: int, data: dict):
+    viewer = data.get("viewer", ""); code = (data.get("code") or "").strip()
+    if not viewer or not code: return {"error": "viewer and paddle number required"}
+    conn = get_db(); cursor = conn.cursor()
+    cursor.execute("SELECT user_name FROM tickets WHERE auction_id = %s AND code = %s", (sale_id, code))
+    row = cursor.fetchone(); conn.close()
+    if not row: return {"error": "That paddle number isn't valid for this room."}
+    if row["user_name"] != viewer: return {"error": "Tickets are unique to one account."}
+    return {"ok": True}

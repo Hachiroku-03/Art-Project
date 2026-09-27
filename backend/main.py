@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from routers import feed, auctions, sales, profile   
+from routers import feed, auctions, sales, profile, chat
 import os
 
 from db import init_db
@@ -24,6 +24,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.include_router(feed.router)
 app.include_router(sales.router)
 app.include_router(profile.router)  
+app.include_router(chat.router)
 
 init_db()
 

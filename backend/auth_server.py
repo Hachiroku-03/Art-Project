@@ -27,8 +27,11 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL missing — check your .env file")
 
 # Admins who may approve/reject house applications. Comma-separated usernames in .env.
-# e.g. ADMIN_USERNAMES=coura,houseadmin   →   if unset, admin endpoints 403 (safe default).
 ADMIN_USERNAMES = {u.strip() for u in os.getenv("ADMIN_USERNAMES", "").split(",") if u.strip()}
+
+# MONTHLY price of VIP, debited on signup and on every renewal (env-overridable).
+# NOTE: this was $20 one-time; as a recurrence it's $240/yr — lower it if steep.
+VIP_PRICE = float(os.getenv("VIP_PRICE", "20"))
 
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 FACE_THRESHOLD = 0.363
@@ -65,7 +68,6 @@ def init_db():
         )
     ''')
 
-    # House accreditation applications — the reviewable paper trail.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS house_applications (
             id SERIAL PRIMARY KEY,
@@ -81,7 +83,6 @@ def init_db():
         )
     ''')
 
-    # Migration safety net
     for column, definition in [
         ("email", "TEXT UNIQUE"),
         ("role", "TEXT DEFAULT 'artist'"),
@@ -91,9 +92,39 @@ def init_db():
         cursor.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column} {definition}")
 
     cursor.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'")
-    # ← added: the two media fields the edit-wall uploads write to
     cursor.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_url TEXT")
     cursor.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS banner_url TEXT")
+
+    # The money ledger — append-only, balance = SUM(amount). Created in BOTH
+    # init_db() calls (here + db.py) so either server can boot first.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ledger_entries (
+            id SERIAL PRIMARY KEY,
+            user_name TEXT NOT NULL,
+            amount NUMERIC(12,2) NOT NULL,
+            kind TEXT NOT NULL,
+            reference TEXT,
+            ref_table TEXT,
+            ref_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger_entries (user_name, created_at DESC)")
+
+    # VIP subscription — the truth for "VIP right now"; users.tier is a cache.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vip_subscriptions (
+            user_name TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'active',
+            price NUMERIC(12,2) NOT NULL DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            renews_at TIMESTAMP NOT NULL,
+            cancelled_at TIMESTAMP,
+            last_charged_at TIMESTAMP,
+            periods_paid INTEGER NOT NULL DEFAULT 0,
+            failure_reason TEXT
+        )
+    ''')
 
     # One-time (idempotent) collapse: the collector role is retired — everyone is an artist.
     cursor.execute("UPDATE users SET role = 'artist' WHERE role = 'collector'")
@@ -114,9 +145,112 @@ def cosine_similarity(a, b):
         return 0.0
     return dot / (norm_a * norm_b)
 
+# ---- LEDGER HELPERS — KEEP IN SYNC WITH backend/ledger.py (see note there) ----
+def balance_of(cursor, user_name):
+    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (user_name,))
+    row = cursor.fetchone()
+    return float(row["bal"]) if row else 0.0
+
+def _valid_amount(amount):
+    try: a = round(float(amount), 2)
+    except (TypeError, ValueError): return None
+    if not math.isfinite(a) or a <= 0: return None
+    return a
+
+def spend(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None):
+    a = _valid_amount(amount)
+    if a is None: return False, "invalid amount", None
+    cursor.execute("SELECT id FROM users WHERE username = %s FOR UPDATE", (user_name,))
+    if not cursor.fetchone(): return False, "unknown user", None
+    bal = balance_of(cursor, user_name)
+    if bal + 1e-9 < a: return False, f"insufficient balance — ${bal:,.2f} available", bal
+    cursor.execute("INSERT INTO ledger_entries (user_name, amount, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                   (user_name, -a, kind, reference, ref_table, ref_id))
+    return True, None, round(bal - a, 2)
+
+def credit(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None):
+    a = _valid_amount(amount)
+    if a is None: return False, "invalid amount", None
+    cursor.execute("SELECT id FROM users WHERE username = %s FOR UPDATE", (user_name,))
+    if not cursor.fetchone(): return False, "unknown user", None
+    cursor.execute("INSERT INTO ledger_entries (user_name, amount, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                   (user_name, a, kind, reference, ref_table, ref_id))
+    return True, None, round(balance_of(cursor, user_name), 2)
+
+# ==========================================
+# VIP SWEEP — lazy monthly renewal, no scheduler.
+# Runs at the single-call sites where VIP is actually needed (login, /wallet,
+# /vip/*, /wallet/topup). NEVER in the /sales loop — the gate reads the sub
+# table directly (helpers.auction_access), so the floor stays cheap and correct.
+#
+# Concurrency: the claim UPDATE is serialized by the sub row's row-lock; under
+# READ COMMITTED a second sweep re-evaluates `renews_at <= now()` after the lock
+# releases and matches 0 rows, so a period is never charged twice. A SAVEPOINT
+# isolates the claim so a FAILED charge rolls back only the claim (renews_at /
+# periods_paid are not consumed for money we didn't take), not the caller's tx.
+# ==========================================
+def _sweep_vip(cursor, viewer):
+    """Normalize the subscription, charge/lapse as due, re-sync users.tier.
+    Caller owns the transaction. Returns the effective tier after sweeping."""
+    if not viewer:
+        return "standard"
+    cursor.execute("SELECT tier FROM users WHERE username = %s", (viewer,))
+    u = cursor.fetchone()
+    if not u:
+        return "standard"
+
+    # Grandfather: a legacy tier='vip' with no sub row gets the current month free,
+    # then renews like everyone else. Non-VIPs never get a row.
+    cursor.execute("SELECT 1 FROM vip_subscriptions WHERE user_name = %s", (viewer,))
+    if not cursor.fetchone():
+        if u["tier"] == "vip":
+            cursor.execute(
+                """INSERT INTO vip_subscriptions (user_name, status, price, renews_at, started_at, periods_paid)
+                   VALUES (%s, 'active', %s, CURRENT_TIMESTAMP + INTERVAL '1 month', CURRENT_TIMESTAMP, 0)""",
+                (viewer, VIP_PRICE))
+        else:
+            return "standard"
+
+    # Cancelled-and-expired → stop, no charge (access already ran to renews_at).
+    cursor.execute(
+        """UPDATE vip_subscriptions SET status = 'cancelled'
+           WHERE user_name = %s AND status = 'active' AND cancelled_at IS NOT NULL
+             AND renews_at <= CURRENT_TIMESTAMP""", (viewer,))
+
+    # Active-or-past_due, not cancelled, and due → optimistic claim, then charge.
+    cursor.execute("SAVEPOINT vip_sweep")
+    cursor.execute(
+        """UPDATE vip_subscriptions
+              SET renews_at = GREATEST(renews_at, CURRENT_TIMESTAMP) + INTERVAL '1 month',
+                  last_charged_at = CURRENT_TIMESTAMP,
+                  periods_paid = periods_paid + 1,
+                  status = 'active',
+                  failure_reason = NULL
+            WHERE user_name = %s AND cancelled_at IS NULL
+              AND status IN ('active','past_due') AND renews_at <= CURRENT_TIMESTAMP
+        RETURNING price""", (viewer,))
+    claimed = cursor.fetchone()
+    if claimed:
+        ok, err, _ = spend(cursor, viewer, float(claimed["price"]), "vip_renewal",
+                           "VIP membership · monthly renewal", "vip_subscriptions", None)
+        if not ok:
+            cursor.execute("ROLLBACK TO SAVEPOINT vip_sweep")   # undo the claim only
+            cursor.execute("UPDATE vip_subscriptions SET status='past_due', failure_reason=%s WHERE user_name=%s",
+                           (err, viewer))
+
+    # Authoritative cache sync: tier == 'vip' iff an active sub is in-date.
+    # (cancelled_at does NOT reduce access, so it's not part of this predicate.)
+    cursor.execute(
+        """SELECT CASE WHEN EXISTS(SELECT 1 FROM vip_subscriptions
+                                    WHERE user_name = %s AND status = 'active'
+                                      AND renews_at > CURRENT_TIMESTAMP)
+                  THEN 'vip' ELSE 'standard' END AS t""", (viewer,))
+    eff = cursor.fetchone()["t"]
+    cursor.execute("UPDATE users SET tier = %s WHERE username = %s", (eff, viewer))
+    return eff
+
 # ==========================================
 # SIGNUP — single role: everyone is an artist.
-# Client role is IGNORED on purpose (no self-declaring as a house).
 # ==========================================
 @app.post("/signup")
 def signup(data: dict):
@@ -144,7 +278,7 @@ def signup(data: dict):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO users (username, email, password_hash, salt, role) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (username, email, pw_hash, salt, "artist"),  # forced
+            (username, email, pw_hash, salt, "artist"),
         )
         user_id = cursor.fetchone()["id"]
         cursor.execute(
@@ -164,8 +298,6 @@ def signup(data: dict):
 
 # ==========================================
 # HOUSE ACCREDITATION — apply / status / admin review
-# The application FORM page and the ADMIN panel are built later;
-# these endpoints are the contract they plug into.
 # ==========================================
 @app.post("/house/apply")
 def house_apply(data: dict):
@@ -189,7 +321,6 @@ def house_apply(data: dict):
             return {"error": "unknown user"}
         if u["role"] == "house":
             return {"error": "you are already an accredited house"}
-        # Block re-applying while one is live (pending or approved). Rejected → may retry.
         cursor.execute(
             "SELECT status FROM house_applications WHERE user_id = %s AND status IN ('pending','approved') ORDER BY created_at DESC LIMIT 1",
             (u["id"],),
@@ -212,7 +343,6 @@ def house_apply(data: dict):
 
 @app.get("/house/application")
 def house_application(viewer: str = ""):
-    """Drives the 3-state floor button: none/rejected → apply, pending → review, approved → control room."""
     if not viewer:
         return {"error": "viewer required"}
     conn = get_db()
@@ -231,7 +361,6 @@ def house_application(viewer: str = ""):
 
 @app.get("/house/applications")
 def house_applications_list(status: str = "", viewer: str = ""):
-    """ADMIN. Lists applications (default: all). Pass ?status=pending for the review queue."""
     if not _is_admin(viewer):
         return {"error": "admin only"}
     conn = get_db()
@@ -257,7 +386,6 @@ def house_applications_list(status: str = "", viewer: str = ""):
 
 @app.post("/house/applications/{app_id}/approve")
 def house_approve(app_id: int, data: dict):
-    """ADMIN. Flips status to approved AND grants the house role (the feed server gates on role)."""
     viewer = data.get("viewer", "")
     if not _is_admin(viewer):
         return {"error": "admin only"}
@@ -285,7 +413,6 @@ def house_approve(app_id: int, data: dict):
 
 @app.post("/house/applications/{app_id}/reject")
 def house_reject(app_id: int, data: dict):
-    """ADMIN. Declines the application; the member stays an artist and may re-apply."""
     viewer = data.get("viewer", "")
     if not _is_admin(viewer):
         return {"error": "admin only"}
@@ -311,7 +438,7 @@ def house_reject(app_id: int, data: dict):
         conn.close()
 
 # ==========================================
-# LOGIN
+# LOGIN — sweeps VIP first so the tier the client caches is never stale at session start.
 # ==========================================
 @app.post("/login")
 def login(data: dict):
@@ -320,24 +447,25 @@ def login(data: dict):
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM users WHERE username = %s OR email = %s",
-        (identifier, identifier.lower()),
-    )
+    cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (identifier, identifier.lower()))
     row = cursor.fetchone()
-    conn.close()
-
     if row is None:
+        conn.close()
         return {"error": "Account not found."}
-    if hash_password(password, row["salt"]) == row["password_hash"]:
-        return {
-            "message": f"Welcome back, {row['username']}",
-            "username": row["username"],
-            "role": row["role"],
-            "tier": row["tier"],
-            "token": secrets.token_hex(32),
-        }
-    return {"error": "Incorrect password."}
+    if hash_password(password, row["salt"]) != row["password_hash"]:
+        conn.close()
+        return {"error": "Incorrect password."}
+
+    tier = _sweep_vip(cursor, row["username"])   # normalize sub + re-sync users.tier
+    conn.commit()
+    conn.close()
+    return {
+        "message": f"Welcome back, {row['username']}",
+        "username": row["username"],
+        "role": row["role"],
+        "tier": tier,                              # post-sweep truth, not the pre-read row
+        "token": secrets.token_hex(32),
+    }
 
 # ==========================================
 # SETTINGS (Language Preference)
@@ -385,8 +513,7 @@ def register_face(data: dict):
     conn = get_db()
     try:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET face_embedding = %s WHERE username = %s",
-                       (embedding_json, username))
+        cursor.execute("UPDATE users SET face_embedding = %s WHERE username = %s", (embedding_json, username))
         if cursor.rowcount == 0:
             conn.rollback()
             return {"error": "unknown user"}
@@ -400,55 +527,180 @@ def login_face(data: dict):
     embedding = data.get("embedding", [])
     if not embedding:
         return {"error": "embedding required"}
-
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT username, role, face_embedding FROM users WHERE face_embedding IS NOT NULL")
+    cursor.execute("SELECT username, role, tier, face_embedding FROM users WHERE face_embedding IS NOT NULL")
     rows = cursor.fetchall()
-    conn.close()
-
-    best_score = -1.0
-    best_user = None
-    best_role = None
+    best_score, best_user, best_role, best_tier = -1.0, None, None, "standard"
     for row in rows:
         stored = json.loads(row["face_embedding"])
         score = cosine_similarity(embedding, stored)
         if score > best_score:
-            best_score = score
-            best_user = row["username"]
-            best_role = row["role"]
-
+            best_score, best_user, best_role, best_tier = score, row["username"], row["role"], row["tier"]
     if best_user is not None and best_score >= FACE_THRESHOLD:
+        tier = _sweep_vip(cursor, best_user)   # same sweep as password login
+        conn.commit()
+        conn.close()
         return {"message": f"welcome back, {best_user}", "username": best_user,
-                "role": best_role, "score": round(best_score, 3), "token": secrets.token_hex(32)}
+                "role": best_role, "tier": tier, "score": round(best_score, 3), "token": secrets.token_hex(32)}
+    conn.close()
     return {"error": "face not recognized", "score": round(best_score, 3)}
 
 # ==========================================
-# VIP MEMBERSHIP — mock upgrade, but PERSISTED to users.tier
-# so the backend velvet rope (auction_access) actually opens.
-# Real payment (Space Wallet) replaces this call later, same contract.
+# VIP MEMBERSHIP — MONTHLY subscription.
+# upgrade = charge for the current period + set renews_at (+1 month).
+# cancel  = stop auto-renew at period end; access continues to renews_at; no refund.
+# resume  = clear a pending cancel while paid time remains; FREE (that month is bought).
 # ==========================================
 @app.post("/vip/upgrade")
 def vip_upgrade(data: dict):
     viewer = data.get("viewer", "")
-    if not viewer:
-        return {"error": "viewer required"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute("UPDATE users SET tier = 'vip' WHERE username = %s", (viewer,))
-    if cursor.rowcount == 0:
-        conn.close(); return {"error": "unknown user"}
-    conn.commit(); conn.close()
-    return {"message": "welcome to the inner circle", "tier": "vip"}
+    if not viewer: return {"error": "viewer required"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        _sweep_vip(cursor, viewer)   # normalize first (a lapsed-active must not read as "already vip")
+        cursor.execute("SELECT status, cancelled_at, renews_at FROM vip_subscriptions WHERE user_name = %s FOR UPDATE", (viewer,))
+        sub = cursor.fetchone()
+
+        in_date = sub and sub["status"] == "active" and sub["renews_at"] is not None \
+            and sub["renews_at"].timestamp() * 1000 > __import__("time").time() * 1000  # placeholder; see note
+        # (the timestamp compare above is awkward in py; we rely on SQL predicates instead ↓)
+        cursor.execute(
+            "SELECT 1 FROM vip_subscriptions WHERE user_name = %s AND status='active' AND cancelled_at IS NULL AND renews_at > CURRENT_TIMESTAMP",
+            (viewer,))
+        if cursor.fetchone():
+            conn.rollback(); return {"error": "you are already a VIP member"}
+
+        # Paid-through-but-cancelled → resume auto-renew, no charge.
+        cursor.execute(
+            "SELECT 1 FROM vip_subscriptions WHERE user_name = %s AND status='active' AND cancelled_at IS NOT NULL AND renews_at > CURRENT_TIMESTAMP",
+            (viewer,))
+        if cursor.fetchone():
+            cursor.execute("UPDATE vip_subscriptions SET cancelled_at = NULL WHERE user_name = %s", (viewer,))
+            cursor.execute("UPDATE users SET tier = 'vip' WHERE username = %s", (viewer,))
+            conn.commit()
+            cursor.execute("SELECT renews_at::text AS renews_at FROM vip_subscriptions WHERE user_name = %s", (viewer,))
+            return {"message": "membership resumed", "tier": "vip", "charged": 0,
+                    "renews_at": cursor.fetchone()["renews_at"]}
+
+        # Create / resume-from-past_due / reactivate / renew-lapsed → charge the period.
+        ok, err, bal = spend(cursor, viewer, VIP_PRICE, "vip_upgrade", "VIP membership · monthly", "vip_subscriptions", None)
+        if not ok:
+            conn.rollback(); return {"error": err}
+        cursor.execute(
+            """INSERT INTO vip_subscriptions (user_name, status, price, started_at, renews_at, cancelled_at, last_charged_at, periods_paid, failure_reason)
+               VALUES (%s, 'active', %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 month', NULL, CURRENT_TIMESTAMP, 1, NULL)
+               ON CONFLICT (user_name) DO UPDATE SET
+                 status = 'active', price = EXCLUDED.price,
+                 renews_at = CURRENT_TIMESTAMP + INTERVAL '1 month',
+                 cancelled_at = NULL, last_charged_at = CURRENT_TIMESTAMP,
+                 periods_paid = vip_subscriptions.periods_paid + 1,
+                 failure_reason = NULL""",
+            (viewer, VIP_PRICE))
+        cursor.execute("UPDATE users SET tier = 'vip' WHERE username = %s", (viewer,))
+        conn.commit()
+        cursor.execute("SELECT renews_at::text AS renews_at FROM vip_subscriptions WHERE user_name = %s", (viewer,))
+        return {"message": "welcome to the inner circle", "tier": "vip", "charged": VIP_PRICE,
+                "balance": f"{bal:,.2f}", "renews_at": cursor.fetchone()["renews_at"]}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
 
 @app.post("/vip/cancel")
 def vip_cancel(data: dict):
     viewer = data.get("viewer", "")
-    if not viewer:
-        return {"error": "viewer required"}
+    if not viewer: return {"error": "viewer required"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, cancelled_at, renews_at::text AS renews_at FROM vip_subscriptions WHERE user_name = %s FOR UPDATE", (viewer,))
+        sub = cursor.fetchone()
+        if not sub or sub["status"] != "active":
+            conn.rollback(); return {"error": "no active membership to cancel"}
+        if sub["cancelled_at"]:
+            conn.rollback(); return {"message": "cancellation already scheduled", "access_until": sub["renews_at"]}
+        cursor.execute("UPDATE vip_subscriptions SET cancelled_at = CURRENT_TIMESTAMP WHERE user_name = %s", (viewer,))
+        conn.commit()   # tier stays 'vip' until renews_at — the sweep lapses it then
+        return {"message": "membership will end at the close of the current period", "access_until": sub["renews_at"]}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
+
+@app.get("/vip/status")
+def vip_status(viewer: str = ""):
+    """Light, canonical VIP truth. Sweeps, then returns the subscription + balance
+    so the pricing page can warn 'your balance won't cover the next renewal'."""
+    if not viewer: return {"error": "viewer required"}
     conn = get_db(); cursor = conn.cursor()
-    cursor.execute("UPDATE users SET tier = 'standard' WHERE username = %s", (viewer,))
+    tier = _sweep_vip(cursor, viewer)
+    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
+    bal = cursor.fetchone()["bal"]
+    cursor.execute(
+        """SELECT status, price::text AS price, renews_at::text AS renews_at,
+                  cancelled_at::text AS cancelled_at, periods_paid, failure_reason
+           FROM vip_subscriptions WHERE user_name = %s""", (viewer,))
+    sub = cursor.fetchone()
     conn.commit(); conn.close()
-    return {"message": "membership paused", "tier": "standard"}
+    return {"vip": tier == "vip", "tier": tier, "balance": bal, "price": VIP_PRICE, "subscription": sub}
+
+# ==========================================
+# WALLET — balance, history, mock top-up, paddle recovery.
+# Top-up sweeps after crediting, so adding funds revives a past_due membership
+# without the user touching the pricing page.
+# ==========================================
+@app.get("/wallet")
+def wallet(viewer: str = ""):
+    if not viewer: return {"error": "viewer required"}
+    conn = get_db(); cursor = conn.cursor()
+    tier = _sweep_vip(cursor, viewer)
+    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
+    bal = cursor.fetchone()["bal"]
+    cursor.execute('''SELECT id, amount::text AS amount, kind, reference, created_at::text AS created_at
+                      FROM ledger_entries WHERE user_name = %s ORDER BY created_at DESC, id DESC LIMIT 50''', (viewer,))
+    rows = cursor.fetchall()
+    cursor.execute(
+        """SELECT status, price::text AS price, renews_at::text AS renews_at,
+                  cancelled_at::text AS cancelled_at, periods_paid, failure_reason
+           FROM vip_subscriptions WHERE user_name = %s""", (viewer,))
+    sub = cursor.fetchone()
+    conn.commit(); conn.close()
+    return {"balance": bal, "tier": tier, "vip_price": VIP_PRICE, "entries": rows, "subscription": sub}
+
+@app.post("/wallet/topup")
+def wallet_topup(data: dict):
+    viewer = data.get("viewer", "")
+    if not viewer: return {"error": "viewer required"}
+    amount = _valid_amount(data.get("amount"))
+    if amount is None: return {"error": "enter a positive amount"}
+    if amount > 10000: return {"error": "single top-up capped at $10,000"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        ok, err, bal = credit(cursor, viewer, amount, "top_up", "Add funds")
+        if not ok: conn.rollback(); return {"error": err}
+        _sweep_vip(cursor, viewer)   # revive a past_due membership with the fresh funds
+        conn.commit()
+        cursor.execute("SELECT COALESCE(SUM(amount),0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
+        return {"message": "funds added", "balance": cursor.fetchone()["bal"], "added": amount}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
+
+@app.get("/wallet/paddles")
+def wallet_paddles(viewer: str = ""):
+    if not viewer: return {"error": "viewer required"}
+    conn = get_db(); cursor = conn.cursor()
+    cursor.execute('''SELECT t.auction_id, t.code, a.title, a.status, a.host_username,
+                             a.ends_at::text AS ends_at, t.purchased_at::text AS obtained_at
+                      FROM tickets t JOIN auctions a ON a.id = t.auction_id
+                      WHERE t.user_name = %s
+                      ORDER BY (a.status = 'live') DESC, (a.status = 'upcoming') DESC, t.purchased_at DESC''', (viewer,))
+    rows = cursor.fetchall(); conn.close()
+    return {"paddles": rows}
 
 if __name__ == "__main__":
     import uvicorn

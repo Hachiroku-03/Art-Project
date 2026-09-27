@@ -73,6 +73,7 @@
 .roomGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1.2rem; }
 .empty { font-family: var(--font-label); font-style: italic; font-size: 1.05rem; color: var(--ink-soft); text-align: center; margin: 3rem 0; }
 .hiddenInput { display: none; }
+.zoomable { cursor: zoom-in; }
 
 @media (max-width: 820px) {
   .banner { height: 180px; border-radius: 0; }

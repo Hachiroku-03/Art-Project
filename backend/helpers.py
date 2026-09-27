@@ -2,9 +2,16 @@ def auction_access(cursor, auction, viewer):
     tier = auction["tier"]
     is_vip = False
     if viewer:
-        cursor.execute("SELECT tier FROM users WHERE username = %s", (viewer,))
-        urow = cursor.fetchone()
-        is_vip = bool(urow and urow["tier"] == "vip")
+        # Monthly: VIP is a TIME fact, not a flag. Read the subscription, not the
+        # users.tier cache, so the gate can never honour a lapsed membership.
+        # (users.tier still exists as the cheap display cache the navbar pill reads;
+        # _sweep_vip() re-syncs it authoritatively on every money/session touch.)
+        cursor.execute(
+            "SELECT EXISTS(SELECT 1 FROM vip_subscriptions WHERE user_name = %s AND status = 'active' AND renews_at > CURRENT_TIMESTAMP) AS vip",
+            (viewer,),
+        )
+        row = cursor.fetchone()
+        is_vip = bool(row and row["vip"])
 
     cursor.execute("SELECT 1 FROM invitations WHERE auction_id=%s AND user_name=%s", (auction["id"], viewer))
     is_invited = cursor.fetchone() is not None

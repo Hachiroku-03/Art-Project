@@ -10,6 +10,9 @@ import { HouseApplicationPage } from './pages/HouseApplicationPage'
 import { PricingPage } from './pages/PricingPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { WalletPage } from './pages/WalletPage'
+import { ChatDebugPage } from './pages/ChatDebugPage'
+import { MessengerPage } from './pages/MessengerPage'
 // SalesRoomPage removed — /sales/:id now renders AuctionRoomPage
 
 function Gate() {
@@ -31,6 +34,9 @@ function App() {
         <Route path="/sales/:id/control" element={<ControlRoomPage />} />     
         <Route path="/house/apply" element={<HouseApplicationPage />} />
         <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/messenger" element={<MessengerPage />} />
+        <Route path="/chat-debug" element={<ChatDebugPage />} />
         <Route path="/profile/:username" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="*" element={<Gate />} />
       </Routes>

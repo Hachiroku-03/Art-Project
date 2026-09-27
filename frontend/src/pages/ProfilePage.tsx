@@ -4,6 +4,7 @@ import { Heart, MessageCircle, Landmark, Crown, ArrowRight, Camera, Pencil, Chec
 import { Navbar } from '../components/Navbar'
 import { Preloader } from '../components/Preloader'
 import { SaleCard } from '../components/auctions/SaleCard'
+import { Lightbox } from '../components/Lightbox'
 import { fetchProfile, type ProfilePayload, type ProfilePost } from '../lib/profile'
 import { API } from '../lib/sales'
 import styles from './ProfilePage.module.css'
@@ -23,10 +24,11 @@ export function ProfilePage() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [note, setNote] = useState('')
 
-  const [editing, setEditing] = useState(false)          // details form open?
+  const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editBio, setEditBio] = useState('')
   const [saving, setSaving] = useState(false)
+  const [lightbox, setLightbox] = useState<{ items: string[]; index: number } | null>(null)   // ← NEW, top block
   const bannerInputRef = useRef<HTMLInputElement>(null)
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
@@ -65,26 +67,25 @@ export function ProfilePage() {
 
   const { user, counts } = data
   const houseStatus = user.house_status || 'none'
-  const isHouse = user.role === 'house' || houseStatus === 'approved'   // synced with the floor
+  const isHouse = user.role === 'house' || houseStatus === 'approved'
   const isVip = user.tier === 'vip'
   const bannerSrc = user.banner_url || data.posts.find(p => p.image_url)?.image_url || null
   const initial = (user.display_name || user.username || '?')[0].toUpperCase()
   const followerWord = isHouse ? 'collectors' : 'followers'
+
+  // plain fns (not hooks) → legal after the early returns
+  function previewBanner() { if (bannerSrc) setLightbox({ items: [bannerSrc], index: 0 }) }
+  function previewAvatar() { if (user.avatar_url) setLightbox({ items: [user.avatar_url], index: 0 }) }
 
   async function toggleFollow() {
     const res = await fetch(`${API}/follow`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, target: user.username }) })
     const d = await res.json()
     setData(prev => prev ? { ...prev, user: { ...prev.user, followed_by_viewer: !!d.following }, counts: { ...prev.counts, followers: prev.counts.followers + (d.following ? 1 : -1) } } : prev)
   }
-
   async function putProfile(fields: Record<string, string>) {
-    const res = await fetch(`${API}/profile/${encodeURIComponent(user.username)}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ viewer, ...fields }),
-    })
+    const res = await fetch(`${API}/profile/${encodeURIComponent(user.username)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, ...fields }) })
     return res.json()
   }
-
   async function uploadAndSet(file: File, field: 'avatarUrl' | 'bannerUrl') {
     const form = new FormData(); form.append('file', file)
     try {
@@ -95,14 +96,8 @@ export function ProfilePage() {
       setData(prev => prev ? { ...prev, user: { ...prev.user, [field === 'avatarUrl' ? 'avatar_url' : 'banner_url']: up.url } } : prev)
     } catch { setNote('Could not reach the server.') }
   }
-
-  function pickBanner(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]; if (f) uploadAndSet(f, 'bannerUrl'); e.target.value = ''
-  }
-  function pickAvatar(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]; if (f) uploadAndSet(f, 'avatarUrl'); e.target.value = ''
-  }
-
+  function pickBanner(e: React.ChangeEvent<HTMLInputElement>) { const f = e.target.files?.[0]; if (f) uploadAndSet(f, 'bannerUrl'); e.target.value = '' }
+  function pickAvatar(e: React.ChangeEvent<HTMLInputElement>) { const f = e.target.files?.[0]; if (f) uploadAndSet(f, 'avatarUrl'); e.target.value = '' }
   function openEdit() { setEditName(user.display_name || ''); setEditBio(user.bio || ''); setEditing(true); setNote('') }
   async function saveDetails() {
     setSaving(true); setNote('')
@@ -112,7 +107,6 @@ export function ProfilePage() {
     setData(prev => prev ? { ...prev, user: { ...prev.user, display_name: editName.trim() || null, bio: editBio.trim() || null } } : prev)
     setEditing(false)
   }
-
   function renderWorkTile(p: ProfilePost) {
     return (
       <button key={p.id} className={styles.tile} onClick={() => navigate(`/post/${p.id}`)}>
@@ -124,8 +118,6 @@ export function ProfilePage() {
       </button>
     )
   }
-
-  // self rostrum button mirrors the floor's three states exactly
   const rostrumBtn = isHouse
     ? { label: 'Enter the control room', to: '/sales/control', disabled: false, icon: <Landmark size={14} /> }
     : houseStatus === 'pending'
@@ -138,17 +130,18 @@ export function ProfilePage() {
       <div className={styles.wall}>
 
         <div className={styles.banner}>
-          {bannerSrc ? <img src={bannerSrc} alt="" className={styles.bannerImg} /> : <div className={styles.bannerBlank} />}
+          {bannerSrc
+            ? <img src={bannerSrc} alt="" className={`${styles.bannerImg} ${styles.zoomable}`} onClick={previewBanner} />
+            : <div className={styles.bannerBlank} />}
           <div className={styles.bannerScrim} />
           {user.is_self && (
-            <button className={styles.bannerEdit} onClick={() => bannerInputRef.current?.click()} aria-label="Change banner">
+            <button className={styles.bannerEdit} onClick={(e) => { e.stopPropagation(); bannerInputRef.current?.click() }} aria-label="Change banner">
               <Camera size={14} /> Banner
             </button>
           )}
           <input ref={bannerInputRef} type="file" accept="image/*" className={styles.hiddenInput} onChange={pickBanner} />
         </div>
 
-        {/* essay left, portrait right — only the disc straddles the banner now */}
         <div className={styles.identity}>
           <div className={styles.essay}>
             <h1 className={styles.displayName}>{user.display_name || user.username}</h1>
@@ -177,11 +170,14 @@ export function ProfilePage() {
             </p>
           </div>
           <div className={styles.portrait}>
-            <div className={`${styles.avatarDisc} ${isVip ? styles.vipRing : ''} ${isHouse ? styles.houseRing : ''}`}>
+            <div
+              className={`${styles.avatarDisc} ${isVip ? styles.vipRing : ''} ${isHouse ? styles.houseRing : ''} ${user.avatar_url ? styles.zoomable : ''}`}
+              onClick={previewAvatar}
+            >
               {user.avatar_url ? <img src={user.avatar_url} alt="" className={styles.avatarImg} /> : initial}
             </div>
             {user.is_self && (
-              <button className={styles.avatarEdit} onClick={() => avatarInputRef.current?.click()} aria-label="Change profile picture">
+              <button className={styles.avatarEdit} onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click() }} aria-label="Change profile picture">
                 <Camera size={13} />
               </button>
             )}
@@ -189,15 +185,10 @@ export function ProfilePage() {
           </div>
         </div>
 
-        {/* actions */}
         <div className={styles.actions}>
           {user.is_self ? (
             <>
-              <button
-                className={`${styles.solidBtn} ${rostrumBtn.disabled ? styles.btnQuiet : ''}`}
-                disabled={rostrumBtn.disabled}
-                onClick={() => rostrumBtn.to && navigate(rostrumBtn.to)}
-              >
+              <button className={`${styles.solidBtn} ${rostrumBtn.disabled ? styles.btnQuiet : ''}`} disabled={rostrumBtn.disabled} onClick={() => rostrumBtn.to && navigate(rostrumBtn.to)}>
                 {rostrumBtn.icon} {rostrumBtn.label}
               </button>
               <button className={styles.outlineBtn} onClick={openEdit}><Pencil size={13} /> Edit wall</button>
@@ -215,7 +206,6 @@ export function ProfilePage() {
           )}
         </div>
 
-        {/* inline details editor (self only) */}
         {editing && (
           <div className={styles.editPanel}>
             <label className={styles.editLabel}>Display name</label>
@@ -230,7 +220,6 @@ export function ProfilePage() {
         )}
         {note && <p className={styles.note}>{note}</p>}
 
-        {/* tabs */}
         <div className={styles.tabs}>
           {(['works', 'rooms', 'collects'] as Tab[]).map(t => (
             <button key={t} className={`${styles.tab} ${tab === t ? styles.tabOn : ''}`} onClick={() => setTab(t)}>
@@ -261,6 +250,8 @@ export function ProfilePage() {
         </div>
 
       </div>
+
+      {lightbox && <Lightbox items={lightbox.items} index={lightbox.index} onClose={() => setLightbox(null)} />}
     </main>
   )
 }

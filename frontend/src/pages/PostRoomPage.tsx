@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef, useMemo, type FormEvent, type ChangeEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Heart, Share2, Bookmark, Image as ImageIcon, Send, ArrowLeft, X, ChevronDown } from 'lucide-react'
+import { Heart, Share2, Bookmark, Image as ImageIcon, Send, ArrowLeft, X, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import { Preloader } from '../components/Preloader'
 import { VoiceRecorder } from '../components/VoiceRecorder'
 import { VoiceNote } from '../components/VoiceNote'
+import { Lightbox } from '../components/Lightbox'
 import { translateMany } from '../lib/translate'
 import styles from './PostRoomPage.module.css'
 
@@ -13,9 +14,12 @@ const FEED_API = 'http://localhost:8001'
 
 type PostData = {
   id: number; type: string; title: string; description: string; image_url: string;
-  price?: string; current_bid?: string; created_at: string;
+  images?: string[];
+  price?: string; current_bid?: string;
+  created_at: string;
   username: string; role: string; tier: string; display_name: string;
   like_count: number; comment_count: number; liked_by_viewer: boolean; followed_by_viewer: boolean;
+  bookmarked_by_viewer?: boolean; bookmark_count?: number;
 }
 type CommentRow = {
   id: number; user_name: string; body: string; kind: string; parent_id: number | null; created_at: string;
@@ -26,7 +30,6 @@ function exactTime(raw: string) {
   const d = new Date(raw.replace(' ', 'T'))
   return d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
-
 function shortTime(raw: string) {
   const d = new Date(raw.replace(' ', 'T'))
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -46,6 +49,13 @@ export function PostRoomPage() {
   const [likeCount, setLikeCount] = useState(0)
   const [following, setFollowing] = useState(false)
 
+  // ---- top block, ABOVE every early return (Rules of Hooks) ----
+  const [bookmarked, setBookmarked] = useState(false)
+  const [bmCount, setBmCount] = useState(0)
+  const [galleryIndex, setGalleryIndex] = useState(0)
+  const [lightbox, setLightbox] = useState<{ items: string[]; index: number } | null>(null)   // ← NEW
+  const trackRef = useRef<HTMLDivElement>(null)
+
   const [draft, setDraft] = useState('')
   const [replyingTo, setReplyingTo] = useState<CommentRow | null>(null)
   const [expandedThreads, setExpandedThreads] = useState<Record<number, boolean>>({})
@@ -60,7 +70,6 @@ export function PostRoomPage() {
   const [threadTranslated, setThreadTranslated] = useState(true)
   const [commentTranslations, setCommentTranslations] = useState<Record<number, string>>({})
 
-  // All hooks live above the early returns (Rules of Hooks).
   const topLevelComments = useMemo(() => {
     if (!post) return []
     const base = comments.filter(c => !c.parent_id)
@@ -93,6 +102,9 @@ export function PostRoomPage() {
           setLiked(data.post.liked_by_viewer)
           setLikeCount(data.post.like_count)
           setFollowing(data.post.followed_by_viewer)
+          setBookmarked(!!data.post.bookmarked_by_viewer)
+          setBmCount(data.post.bookmark_count ?? 0)
+          setGalleryIndex(0)
           if (data.post.description) {
             try {
               const t = (await translateMany([data.post.description], language))[0]
@@ -133,20 +145,23 @@ export function PostRoomPage() {
     const data = await res.json()
     setLiked(data.liked); setLikeCount(data.count)
   }
-
+  async function toggleBookmark() {
+    if (!post) return
+    const res = await fetch(`${FEED_API}/posts/${post.id}/bookmark`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer }) })
+    const data = await res.json()
+    setBookmarked(!!data.bookmarked); setBmCount(data.count ?? 0)
+  }
   async function toggleCommentLike(c: CommentRow) {
     const res = await fetch(`${FEED_API}/comments/${c.id}/like`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer }) })
     const data = await res.json()
     setCommentLikes(prev => ({ ...prev, [c.id]: { liked: data.liked, count: data.count } }))
   }
-
   async function toggleFollow() {
     if (!post) return
     const res = await fetch(`${FEED_API}/follow`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, target: post.username }) })
     const data = await res.json()
     setFollowing(data.following)
   }
-
   async function uploadFile(file: File): Promise<string | null> {
     const form = new FormData(); form.append('file', file)
     try {
@@ -155,7 +170,6 @@ export function PostRoomPage() {
       return data.url ?? null
     } catch { return null }
   }
-
   async function postComment(body: string, kind: 'text' | 'image' | 'voice') {
     if (!post) return
     const res = await fetch(`${FEED_API}/posts/${post.id}/comments`, {
@@ -176,26 +190,22 @@ export function PostRoomPage() {
       }
     }
   }
-
   async function handleVoiceSend(blob: Blob) {
     const file = new File([blob], 'voice.webm', { type: blob.type || 'audio/webm' })
     const url = await uploadFile(file)
     if (url) await postComment(url, 'voice')
   }
-
   async function submitComment(e: FormEvent) {
     e.preventDefault()
     if (!draft.trim()) return
     const text = draft.trim(); setDraft('')
     await postComment(text, 'text')
   }
-
   function handleImagePick(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     uploadFile(file).then(url => { if (url) postComment(url, 'image') })
     e.target.value = ''
   }
-
   function handleReplyClick(comment: CommentRow) {
     setReplyingTo(comment)
     composerRef.current?.focus()
@@ -217,8 +227,24 @@ export function PostRoomPage() {
     </main>
   )
 
+  // ---- derived + plain handlers, AFTER the early returns (not hooks → legal) ----
   const hasAutoDesc = !!autoDesc && autoDesc.trim() !== (post.description || '').trim()
   const getReplies = (parentId: number) => comments.filter(c => c.parent_id === parentId)
+  const gallery = (post.images && post.images.length) ? post.images : (post.image_url ? [post.image_url] : [])
+  const multi = gallery.length > 1
+
+  function scrollToIndex(i: number) {
+    const el = trackRef.current; if (!el) return
+    const n = Math.max(0, Math.min(gallery.length - 1, i))
+    el.scrollTo({ left: n * el.clientWidth, behavior: 'smooth' })
+    setGalleryIndex(n)
+  }
+  function onTrackScroll() {
+    const el = trackRef.current; if (!el) return
+    const i = Math.round(el.scrollLeft / el.clientWidth)
+    if (i !== galleryIndex) setGalleryIndex(i)
+  }
+  function openLightbox(i: number) { if (gallery.length) setLightbox({ items: gallery, index: i }) }
 
   function renderComment(c: CommentRow) {
     const lk = commentLikes[c.id] || { liked: false, count: 0 }
@@ -232,7 +258,7 @@ export function PostRoomPage() {
             {isAuthor && <span className={styles.authorTag}>Author</span>}
           </p>
           {c.kind === 'image' && c.body ? (
-            <img className={styles.commentImage} src={c.body} alt="attachment" />
+            <img className={styles.commentImage} src={c.body} alt="attachment" onClick={() => setLightbox({ items: [c.body], index: 0 })} />
           ) : c.kind === 'voice' && c.body ? (
             <VoiceNote src={c.body} seed={c.id} />
           ) : (
@@ -243,11 +269,7 @@ export function PostRoomPage() {
             <button className={styles.metaBtn} onClick={() => handleReplyClick(c)}>Reply</button>
           </div>
         </div>
-        <button
-          className={`${styles.cLike} ${lk.liked ? styles.cLiked : ''}`}
-          onClick={() => toggleCommentLike(c)}
-          aria-label="Like comment"
-        >
+        <button className={`${styles.cLike} ${lk.liked ? styles.cLiked : ''}`} onClick={() => toggleCommentLike(c)} aria-label="Like comment">
           <Heart size={18} fill={lk.liked ? 'currentColor' : 'none'} />
           <span className={styles.cLikeCount}>{lk.count > 0 ? lk.count : ''}</span>
         </button>
@@ -258,100 +280,124 @@ export function PostRoomPage() {
   return (
     <main className={styles.layout}>
       <Navbar />
-
       <div className={styles.container}>
 
-        {/* 1. MEDIA STAGE */}
-        <div className={styles.stage}>
-          {post.image_url ? (
-            <img src={post.image_url} alt={post.title} className={styles.stageImage} />
-          ) : (
-            <div className={styles.stagePlaceholder}>canvas awaiting its first layer</div>
-          )}
-          <button className={styles.backBtnFloat} onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft size={20} /></button>
-        </div>
+        {/* ONE fused card: stage + info + comments share a single frame (no floating stack) */}
+        <div className={styles.piece}>
 
-        {/* 2. CONTENT INFO */}
-        <div className={styles.contentBlock}>
-          <header className={styles.header}>
-            <div className={styles.who}>
-              <div className={`${styles.avatar} ${post.tier === 'vip' ? styles.vipRing : ''}`}>
-                {(post.display_name || post.username)[0].toUpperCase()}
-              </div>
-              <div>
-                <p className={styles.name}>{post.display_name || post.username}</p>
-                <p className={styles.meta}>{post.type.toUpperCase()} · {exactTime(post.created_at)}</p>
-              </div>
-            </div>
-            {viewer !== post.username && (
-              <button className={`${styles.followBtn} ${following ? styles.following : ''}`} onClick={toggleFollow}>
-                {following ? 'Following' : 'Follow'}
-              </button>
-            )}
-          </header>
-
-          <div className={styles.infoBlock}>
-            <h1 className={styles.artTitle}>"{post.title}"</h1>
-            <p className={styles.medium}>{hasAutoDesc ? autoDesc : post.description}</p>
-          </div>
-
-          <div className={styles.actions}>
-            <button className={`${styles.actionBtn} ${liked ? styles.liked : ''}`} onClick={toggleLike}>
-              <Heart size={20} fill={liked ? 'currentColor' : 'none'} /><span>{likeCount}</span>
-            </button>
-            <button className={styles.actionBtn}><Share2 size={20} /></button>
-            <button className={`${styles.actionBtn} ${styles.right}`}><Bookmark size={20} /></button>
-          </div>
-        </div>
-
-        {/* 3. COMMENTS THREAD */}
-        <div className={styles.commentsSection}>
-          <div className={styles.commentsHead}>
-            <span className={styles.commentsTitle}>Comments · {comments.length}</span>
-            {comments.length > 0 && (
-              <div className={styles.headActions}>
-                <button className={styles.sortBtn} onClick={() => setSortBy(s => s === 'top' ? 'newest' : 'top')}>
-                  {sortBy === 'top' ? 'Top' : 'Newest'}
-                </button>
-                <button className={styles.translateBtn} onClick={() => setThreadTranslated(!threadTranslated)}>
-                  {threadTranslated ? 'Original' : 'Translate'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {topLevelComments.length === 0 ? (
-            <p className={styles.noComments}>Be the first to comment on this piece.</p>
-          ) : (
-            topLevelComments.map(c => {
-              const replies = getReplies(c.id)
-              const isExpanded = expandedThreads[c.id]
-              return (
-                <div key={c.id} className={styles.threadContainer}>
-                  {renderComment(c)}
-                  {replies.length > 0 && (
-                    <div className={styles.repliesWrap}>
-                      {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
-                      {replies.length > 1 && !isExpanded && (
-                        <button className={styles.viewReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: true }))}>
-                          View {replies.length} replies
-                          <ChevronDown size={14} />
-                        </button>
-                      )}
-                      {isExpanded && replies.length > 1 && (
-                        <button className={styles.hideReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: false }))}>
-                          Hide replies
-                        </button>
-                      )}
-                    </div>
-                  )}
+          {/* 1. MEDIA STAGE */}
+          <div className={styles.stage}>
+            {gallery.length === 0 ? (
+              <div className={styles.stagePlaceholder}>canvas awaiting its first layer</div>
+            ) : (
+              <>
+                <div ref={trackRef} className={styles.track} onScroll={onTrackScroll}>
+                  {gallery.map((u, i) => (
+                    <img key={u + i} src={u} alt={post.title} className={styles.trackImg} onClick={() => openLightbox(i)} />
+                  ))}
                 </div>
-              )
-            })
-          )}
-        </div>
+                {multi && (
+                  <>
+                    <button className={`${styles.galArrow} ${styles.galPrev}`} onClick={() => scrollToIndex(galleryIndex - 1)} aria-label="Previous image" disabled={galleryIndex === 0}><ChevronLeft size={22} /></button>
+                    <button className={`${styles.galArrow} ${styles.galNext}`} onClick={() => scrollToIndex(galleryIndex + 1)} aria-label="Next image" disabled={galleryIndex === gallery.length - 1}><ChevronRight size={22} /></button>
+                    <span className={styles.galCount}>{galleryIndex + 1} / {gallery.length}</span>
+                    <div className={styles.dots}>
+                      {gallery.map((_, i) => (
+                        <button key={i} className={`${styles.dot} ${i === galleryIndex ? styles.dotOn : ''}`} onClick={() => scrollToIndex(i)} aria-label={`Image ${i + 1}`} />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            <button className={styles.backBtnFloat} onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft size={20} /></button>
+          </div>
 
-        {/* 4. COMPOSER — recorder docks itself on top of this row via CSS */}
+          {/* 2. CONTENT INFO */}
+          <div className={styles.contentBlock}>
+            <header className={styles.header}>
+              <div className={styles.who}>
+                <div className={`${styles.avatar} ${post.tier === 'vip' ? styles.vipRing : ''}`}>
+                  {(post.display_name || post.username)[0].toUpperCase()}
+                </div>
+                <div>
+                  <button className={styles.name} onClick={() => navigate(`/profile/${post.username}`)}>{post.display_name || post.username}</button>
+                  <p className={styles.meta}>{post.type.toUpperCase()} · {exactTime(post.created_at)}</p>
+                </div>
+              </div>
+              {viewer !== post.username && (
+                <button className={`${styles.followBtn} ${following ? styles.following : ''}`} onClick={toggleFollow}>
+                  {following ? 'Following' : 'Follow'}
+                </button>
+              )}
+            </header>
+
+            <div className={styles.infoBlock}>
+              <h1 className={styles.artTitle}>"{post.title}"</h1>
+              <p className={styles.medium}>{hasAutoDesc ? autoDesc : post.description}</p>
+            </div>
+
+            <div className={styles.actions}>
+              <button className={`${styles.actionBtn} ${liked ? styles.liked : ''}`} onClick={toggleLike}>
+                <Heart size={20} fill={liked ? 'currentColor' : 'none'} /><span>{likeCount}</span>
+              </button>
+              <button className={styles.actionBtn}><Share2 size={20} /></button>
+              <button className={`${styles.actionBtn} ${styles.right} ${bookmarked ? styles.bookmarked : ''}`} onClick={toggleBookmark}>
+                <Bookmark size={20} fill={bookmarked ? 'currentColor' : 'none'} /><span>{bmCount || ''}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 3. COMMENTS THREAD */}
+          <div className={styles.commentsSection}>
+            <div className={styles.commentsHead}>
+              <span className={styles.commentsTitle}>Comments · {comments.length}</span>
+              {comments.length > 0 && (
+                <div className={styles.headActions}>
+                  <button className={styles.sortBtn} onClick={() => setSortBy(s => s === 'top' ? 'newest' : 'top')}>
+                    {sortBy === 'top' ? 'Top' : 'Newest'}
+                  </button>
+                  <button className={styles.translateBtn} onClick={() => setThreadTranslated(!threadTranslated)}>
+                    {threadTranslated ? 'Original' : 'Translate'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {topLevelComments.length === 0 ? (
+              <p className={styles.noComments}>Be the first to comment on this piece.</p>
+            ) : (
+              topLevelComments.map(c => {
+                const replies = getReplies(c.id)
+                const isExpanded = expandedThreads[c.id]
+                return (
+                  <div key={c.id} className={styles.threadContainer}>
+                    {renderComment(c)}
+                    {replies.length > 0 && (
+                      <div className={styles.repliesWrap}>
+                        {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
+                        {replies.length > 1 && !isExpanded && (
+                          <button className={styles.viewReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: true }))}>
+                            View {replies.length} replies
+                            <ChevronDown size={14} />
+                          </button>
+                        )}
+                        {isExpanded && replies.length > 1 && (
+                          <button className={styles.hideReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: false }))}>
+                            Hide replies
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+            )}
+          </div>
+
+        </div>{/* /.piece */}
+
+        {/* 4. COMPOSER (fixed, outside the card) */}
         <div className={styles.composerWrapper}>
           {replyingTo && (
             <div className={styles.replyingBanner}>
@@ -381,6 +427,8 @@ export function PostRoomPage() {
         </div>
 
       </div>
+
+      {lightbox && <Lightbox items={lightbox.items} index={lightbox.index} onClose={() => setLightbox(null)} onIndex={setGalleryIndex} />}
     </main>
   )
 }
