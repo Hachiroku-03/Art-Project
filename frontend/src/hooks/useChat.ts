@@ -12,9 +12,26 @@ import {
   createDirect,
   createGroup,
   addMember,
+  editMessage as apiEditMessage,
+  deleteMessageForEveryone as apiDeleteMessageForEveryone,
+  hideMessageForMe as apiHideMessageForMe,
+  reactToMessage as apiReactToMessage,
+  unreactToMessage as apiUnreactToMessage,
+  starMessage as apiStarMessage,
+  unstarMessage as apiUnstarMessage,
+  forwardMessage as apiForwardMessage,
+  saveDraft as apiSaveDraft,
+  deleteDraft as apiDeleteDraft,
+  updateConversationPrefs as apiUpdateConversationPrefs,
+  leaveConversation as apiLeaveConversation,
+  removeGroupMember as apiRemoveGroupMember,
+  promoteGroupMember as apiPromoteGroupMember,
+  demoteGroupMember as apiDemoteGroupMember,
+  updateConversation as apiUpdateConversation,
   type ChatMessage,
   type ChatEvent,
   type Conversation,
+  type SendOptions,
 } from '../lib/chat'
 
 type OptStatus = 'sending' | 'failed'
@@ -27,6 +44,9 @@ export type OptimisticMsg = {
   status: OptStatus
   error?: string
   created_at: string
+  reply_to_id?: number | null
+  forwarded_from_id?: number | null
+  meta?: Record<string, unknown>
 }
 
 export type ThreadItem = ChatMessage | OptimisticMsg
@@ -36,6 +56,18 @@ export const isOptimistic = (t: ThreadItem): t is OptimisticMsg => 'temp_id' in 
 const TYPING_TTL = 7000
 const TYPING_PRUNE_MS = 3000
 const TRANSLATE_DEBOUNCE = 250
+const REACTION_SUPPRESS_MS = 2000
+
+function messagePreview(kind: ChatMessage['kind'], body: string): string {
+  if (kind === 'text') return body
+  if (kind === 'image') return '📷 Photo'
+  if (kind === 'voice') return '🎤 Voice note'
+  if (kind === 'video') return '🎬 Video'
+  if (kind === 'file') return '📎 File'
+  if (kind === 'location') return '📍 Location'
+  if (kind === 'contact') return '👤 Contact'
+  return body || 'System message'
+}
 
 export function useChat(viewer: string, lang: string) {
   // ---- state ----
@@ -45,6 +77,7 @@ export function useChat(viewer: string, lang: string) {
   const [typing, setTyping] = useState<Record<number, Record<string, number>>>({})
   const [readCursors, setReadCursors] = useState<Record<number, Record<string, number>>>({})
   const [deliveredCursors, setDeliveredCursors] = useState<Record<number, Record<string, number>>>({})
+  const [hasMoreOlder, setHasMoreOlder] = useState<Record<number, boolean>>({})
   const [translations, setTranslations] = useState<Record<string, string>>({})
   const [activeConvId, setActiveConvId] = useState<number | null>(null)
   const [online, setOnline] = useState(false)
@@ -59,6 +92,9 @@ export function useChat(viewer: string, lang: string) {
 
   // temp_id -> conversation_id
   const tempConv = useRef<Map<string, number>>(new Map())
+
+  // Prevent double-counting reactions when the actor also receives the broadcast frame.
+  const reactionSuppress = useRef<Map<number, number>>(new Map())
 
   // translation bookkeeping
   const doneTranslate = useRef<Set<string>>(new Set())
@@ -185,30 +221,161 @@ export function useChat(viewer: string, lang: string) {
       }))
 
       setConversations(prev =>
-        prev.map(c => (c.id === convId ? { ...c, unread: 0 } : c)),
+        prev.map(c => (c.id === convId ? { ...c, unread: 0, mark_unread: false } : c)),
       )
     },
     [viewer],
   )
 
   // ---------------------------------------------------------------------
-  // commit authoritative message
+  // message state helpers
   // ---------------------------------------------------------------------
-  const commitMessage = useCallback(
+  const upsertMessage = useCallback(
     (msg: ChatMessage) => {
       const cid = msg.conversation_id
 
+      const normalized: ChatMessage = {
+        ...msg,
+        meta: msg.meta || {},
+        reactions: msg.reactions || [],
+        starred_by_viewer: !!msg.starred_by_viewer,
+        reply_to_id: msg.reply_to_id ?? null,
+        forwarded_from_id: msg.forwarded_from_id ?? null,
+        edited_at: msg.edited_at ?? null,
+      }
+
       setMessages(prev => {
         const arr = prev[cid] || []
-        if (arr.some(m => m.id === msg.id)) return prev
+        const idx = arr.findIndex(m => m.id === normalized.id)
+
+        if (idx >= 0) {
+          const existing = arr[idx]
+          const merged: ChatMessage = {
+            ...existing,
+            ...normalized,
+            starred_by_viewer: normalized.starred_by_viewer ?? existing.starred_by_viewer,
+          }
+
+          const next = [...arr]
+          next[idx] = merged
+
+          return { ...prev, [cid]: next }
+        }
 
         return {
           ...prev,
-          [cid]: [...arr, msg].sort((a, b) => a.id - b.id),
+          [cid]: [...arr, normalized].sort((a, b) => a.id - b.id),
         }
       })
 
-      if (msg.kind === 'text') queueTranslate([msg.body])
+      if (normalized.kind === 'text') queueTranslate([normalized.body])
+    },
+    [queueTranslate],
+  )
+
+  const removeMessage = useCallback((convId: number, messageId: number) => {
+    setMessages(prev => {
+      const arr = prev[convId]
+      if (!arr) return prev
+
+      const next = arr.filter(m => m.id !== messageId)
+      if (next.length === arr.length) return prev
+
+      return { ...prev, [convId]: next }
+    })
+  }, [])
+
+  const setStarredLocal = useCallback((convId: number, messageId: number, starred: boolean) => {
+    setMessages(prev => {
+      const arr = prev[convId]
+      if (!arr) return prev
+
+      const next = arr.map(m => (m.id === messageId ? { ...m, starred_by_viewer: starred } : m))
+      return { ...prev, [convId]: next }
+    })
+  }, [])
+
+  const applyReaction = useCallback(
+    (convId: number, messageId: number, userName: string, emoji: string, added: boolean) => {
+      const suppressUntil = reactionSuppress.current.get(messageId)
+      if (suppressUntil && Date.now() < suppressUntil) return
+
+      setMessages(prev => {
+        const arr = prev[convId]
+        if (!arr) return prev
+
+        let changed = false
+
+        const next = arr.map(m => {
+          if (m.id !== messageId) return m
+
+          const reactions = [...(m.reactions || [])]
+          const idx = reactions.findIndex(r => r.emoji === emoji)
+
+          if (added) {
+            if (idx >= 0) {
+              const r = reactions[idx]
+
+              if (userName === viewer && r.viewer_reacted) return m
+
+              reactions[idx] = {
+                ...r,
+                count: r.count + 1,
+                viewer_reacted: r.viewer_reacted || userName === viewer,
+              }
+            } else {
+              reactions.push({
+                emoji,
+                count: 1,
+                viewer_reacted: userName === viewer,
+              })
+            }
+
+            changed = true
+            return { ...m, reactions }
+          }
+
+          if (idx < 0) return m
+
+          const r = reactions[idx]
+
+          if (userName === viewer && !r.viewer_reacted) return m
+
+          const count = Math.max(0, r.count - 1)
+          const viewer_reacted = userName === viewer ? false : r.viewer_reacted
+
+          if (count <= 0) {
+            reactions.splice(idx, 1)
+          } else {
+            reactions[idx] = { ...r, count, viewer_reacted }
+          }
+
+          changed = true
+          return { ...m, reactions }
+        })
+
+        return changed ? { ...prev, [convId]: next } : prev
+      })
+    },
+    [viewer],
+  )
+
+  const findMessage = useCallback((messageId: number) => {
+    for (const [cidStr, arr] of Object.entries(messagesRef.current)) {
+      const msg = arr.find(m => m.id === messageId)
+      if (msg) return { cid: Number(cidStr), message: msg }
+    }
+    return null
+  }, [])
+
+  const commitMessage = useCallback(
+    (msg: ChatMessage) => {
+      const cid = msg.conversation_id
+      const known = (messagesRef.current[cid] || []).some(m => m.id === msg.id)
+
+      upsertMessage(msg)
+
+      if (known) return
 
       const isActive = cid === activeConvIdRef.current
 
@@ -216,27 +383,21 @@ export function useChat(viewer: string, lang: string) {
         prev.map(c => {
           if (c.id !== cid) return c
 
-          const next: Conversation = {
+          return {
             ...c,
-            last_body:
-              msg.kind === 'text'
-                ? msg.body
-                : msg.kind === 'image'
-                  ? '📷 Photo'
-                  : '🎤 Voice note',
+            last_body: messagePreview(msg.kind, msg.body),
             last_kind: msg.kind,
             last_sender: msg.sender,
             last_at: msg.created_at,
             unread: isActive ? 0 : (c.unread || 0) + (msg.sender === viewer ? 0 : 1),
+            mark_unread: isActive ? false : c.mark_unread,
           }
-
-          return next
         }),
       )
 
       if (isActive) doMarkRead(cid, msg.id)
     },
-    [viewer, queueTranslate, doMarkRead],
+    [viewer, upsertMessage, doMarkRead],
   )
 
   const markFailed = useCallback((convId: number, tempId: string, error: string) => {
@@ -260,6 +421,20 @@ export function useChat(viewer: string, lang: string) {
 
       return { ...prev, [convId]: nextArr }
     })
+  }, [])
+
+  // ---------------------------------------------------------------------
+  // conversation refresh
+  // ---------------------------------------------------------------------
+  const refreshConversations = useCallback(() => {
+    fetchConversations(viewer)
+      .then(setConversations)
+      .catch(() => {})
+  }, [viewer])
+
+  const closeConversation = useCallback(() => {
+    activeConvIdRef.current = null
+    setActiveConvId(null)
   }, [])
 
   // ---------------------------------------------------------------------
@@ -301,10 +476,9 @@ export function useChat(viewer: string, lang: string) {
         case 'error': {
           if (!e.temp_id) break
 
-          const cid = tempConv.current.get(e.temp_id)
+          const cid = e.conversation_id ?? tempConv.current.get(e.temp_id)
           if (cid != null) {
             markFailed(cid, e.temp_id, e.error)
-            tempConv.current.delete(e.temp_id)
           }
           break
         }
@@ -341,6 +515,35 @@ export function useChat(viewer: string, lang: string) {
           }
           break
 
+        case 'message_edited':
+          upsertMessage(e.message)
+          break
+
+        case 'message_deleted':
+          removeMessage(e.conversation_id, e.message_id)
+          break
+
+        case 'reaction_added':
+          applyReaction(e.conversation_id, e.message_id, e.user_name, e.emoji, true)
+          break
+
+        case 'reaction_removed':
+          applyReaction(e.conversation_id, e.message_id, e.user_name, e.emoji, false)
+          break
+
+        case 'member_removed':
+          if (e.user_name === viewer) {
+            closeConversation()
+          }
+          refreshConversations()
+          break
+
+        case 'conversation_updated':
+          setConversations(prev =>
+            prev.map(c => (c.id === e.conversation.id ? ({ ...c, ...e.conversation } as Conversation) : c)),
+          )
+          break
+
         case 'reconnect':
           fetchConversations(viewer)
             .then(setConversations)
@@ -351,9 +554,9 @@ export function useChat(viewer: string, lang: string) {
             const arr = messagesRef.current[cid] || []
             const since = arr.length ? arr[arr.length - 1].id : 0
 
-            fetchHistory(cid, viewer, since)
+            fetchHistory(cid, viewer, { since })
               .then(p => {
-                p.messages.forEach(commitMessage)
+                p.messages.forEach(upsertMessage)
 
                 setReadCursors(prev => ({
                   ...prev,
@@ -364,6 +567,10 @@ export function useChat(viewer: string, lang: string) {
                   ...prev,
                   [cid]: { ...(prev[cid] || {}), ...(p.delivered_cursors || {}) },
                 }))
+
+                if (p.messages.length && activeConvIdRef.current === cid) {
+                  doMarkRead(cid, p.messages[p.messages.length - 1].id)
+                }
               })
               .catch(() => {})
           }
@@ -381,7 +588,18 @@ export function useChat(viewer: string, lang: string) {
     })
 
     return off
-  }, [viewer, commitMessage, dropOptimistic, markFailed])
+  }, [
+    viewer,
+    commitMessage,
+    dropOptimistic,
+    markFailed,
+    upsertMessage,
+    removeMessage,
+    applyReaction,
+    refreshConversations,
+    closeConversation,
+    doMarkRead,
+  ])
 
   // prune typing flags
   useEffect(() => {
@@ -429,27 +647,25 @@ export function useChat(viewer: string, lang: string) {
   )
 
   // ---------------------------------------------------------------------
-  // actions
+  // conversation open/load/pagination
   // ---------------------------------------------------------------------
-  const refreshConversations = useCallback(() => {
-    fetchConversations(viewer)
-      .then(setConversations)
-      .catch(() => {})
-  }, [viewer])
-
   const openConversation = useCallback(
     (cid: number) => {
       activeConvIdRef.current = cid
       setActiveConvId(cid)
 
       setConversations(prev =>
-        prev.map(c => (c.id === cid ? { ...c, unread: 0 } : c)),
+        prev.map(c => (c.id === cid ? { ...c, unread: 0, mark_unread: false } : c)),
       )
 
-      const load = (since: number) =>
-        fetchHistory(cid, viewer, since)
+      const load = (since: number, initial: boolean) =>
+        fetchHistory(cid, viewer, { since, limit: 50 })
           .then(p => {
-            p.messages.forEach(commitMessage)
+            p.messages.forEach(upsertMessage)
+
+            if (initial) {
+              setHasMoreOlder(prev => ({ ...prev, [cid]: p.has_more_older }))
+            }
 
             setReadCursors(prev => ({
               ...prev,
@@ -470,21 +686,38 @@ export function useChat(viewer: string, lang: string) {
       const existing = messagesRef.current[cid]
 
       if (!existing) {
-        load(0)
+        load(0, true)
       } else {
-        load(existing.length ? existing[existing.length - 1].id : 0)
+        load(existing.length ? existing[existing.length - 1].id : 0, false)
       }
     },
-    [viewer, commitMessage, doMarkRead],
+    [viewer, upsertMessage, doMarkRead],
   )
 
-  const closeConversation = useCallback(() => {
-    activeConvIdRef.current = null
-    setActiveConvId(null)
-  }, [])
+  const loadOlder = useCallback(
+    (cid: number) => {
+      if (!hasMoreOlder[cid]) return
 
+      const arr = messagesRef.current[cid] || []
+      if (!arr.length) return
+
+      const oldest = arr[0].id
+
+      fetchHistory(cid, viewer, { beforeId: oldest, limit: 50 })
+        .then(p => {
+          p.messages.forEach(upsertMessage)
+          setHasMoreOlder(prev => ({ ...prev, [cid]: p.has_more_older }))
+        })
+        .catch(() => {})
+    },
+    [viewer, hasMoreOlder, upsertMessage],
+  )
+
+  // ---------------------------------------------------------------------
+  // sending
+  // ---------------------------------------------------------------------
   const send = useCallback(
-    (cid: number, kind: ChatMessage['kind'], body: string): string => {
+    (cid: number, kind: ChatMessage['kind'], body: string, options: SendOptions = {}): string => {
       const tempId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const seq = ++seqRef.current
 
@@ -495,6 +728,9 @@ export function useChat(viewer: string, lang: string) {
         body,
         status: 'sending',
         created_at: new Date().toISOString(),
+        reply_to_id: options.reply_to_id ?? null,
+        forwarded_from_id: options.forwarded_from_id ?? null,
+        meta: options.meta || {},
       }
 
       tempConv.current.set(tempId, cid)
@@ -512,12 +748,15 @@ export function useChat(viewer: string, lang: string) {
           kind,
           body,
           temp_id: tempId,
+          reply_to_id: options.reply_to_id ?? null,
+          forwarded_from_id: options.forwarded_from_id ?? null,
+          meta: options.meta || {},
         })
       ) {
         return tempId
       }
 
-      sendMessageRest(cid, viewer, kind, body)
+      sendMessageRest(cid, viewer, kind, body, options)
         .then(d => {
           dropOptimistic(cid, tempId)
 
@@ -540,7 +779,11 @@ export function useChat(viewer: string, lang: string) {
       if (!opt) return
 
       dropOptimistic(cid, tempId)
-      send(cid, opt.kind, opt.body)
+      send(cid, opt.kind, opt.body, {
+        reply_to_id: opt.reply_to_id,
+        forwarded_from_id: opt.forwarded_from_id,
+        meta: opt.meta,
+      })
     },
     [optimistic, dropOptimistic, send],
   )
@@ -560,6 +803,182 @@ export function useChat(viewer: string, lang: string) {
     wsSend({ type: 'typing', conversation_id: cid })
   }, [])
 
+  // ---------------------------------------------------------------------
+  // message feature actions
+  // ---------------------------------------------------------------------
+  const editMessage = useCallback(
+    async (messageId: number, body: string) => {
+      const d = await apiEditMessage(messageId, viewer, body)
+      if (d.message) upsertMessage(d.message)
+      return d
+    },
+    [viewer, upsertMessage],
+  )
+
+  const deleteMessageForEveryone = useCallback(
+    async (messageId: number) => {
+      const found = findMessage(messageId)
+      const d = await apiDeleteMessageForEveryone(messageId, viewer)
+
+      if (found) removeMessage(found.cid, messageId)
+
+      return d
+    },
+    [viewer, findMessage, removeMessage],
+  )
+
+  const hideMessageForMe = useCallback(
+    async (messageId: number) => {
+      const found = findMessage(messageId)
+      const d = await apiHideMessageForMe(messageId, viewer)
+
+      if (!d.error && found) removeMessage(found.cid, messageId)
+
+      return d
+    },
+    [viewer, findMessage, removeMessage],
+  )
+
+  const react = useCallback(
+    async (messageId: number, emoji: string) => {
+      const d = await apiReactToMessage(messageId, viewer, emoji)
+
+      if (d.message) {
+        upsertMessage(d.message)
+        reactionSuppress.current.set(messageId, Date.now() + REACTION_SUPPRESS_MS)
+      }
+
+      return d
+    },
+    [viewer, upsertMessage],
+  )
+
+  const unreact = useCallback(
+    async (messageId: number, emoji: string) => {
+      const d = await apiUnreactToMessage(messageId, viewer, emoji)
+
+      if (d.message) {
+        upsertMessage(d.message)
+        reactionSuppress.current.set(messageId, Date.now() + REACTION_SUPPRESS_MS)
+      }
+
+      return d
+    },
+    [viewer, upsertMessage],
+  )
+
+  const star = useCallback(
+    async (messageId: number) => {
+      const found = findMessage(messageId)
+      const d = await apiStarMessage(messageId, viewer)
+
+      if (!d.error && found) setStarredLocal(found.cid, messageId, true)
+
+      return d
+    },
+    [viewer, findMessage, setStarredLocal],
+  )
+
+  const unstar = useCallback(
+    async (messageId: number) => {
+      const found = findMessage(messageId)
+      const d = await apiUnstarMessage(messageId, viewer)
+
+      if (!d.error && found) setStarredLocal(found.cid, messageId, false)
+
+      return d
+    },
+    [viewer, findMessage, setStarredLocal],
+  )
+
+  const forward = useCallback(
+    async (messageId: number, toConversationIds: number[]) => {
+      const d = await apiForwardMessage(messageId, viewer, toConversationIds)
+
+      if (d.messages) {
+        d.messages.forEach(upsertMessage)
+      }
+
+      refreshConversations()
+      return d
+    },
+    [viewer, upsertMessage, refreshConversations],
+  )
+
+  // ---------------------------------------------------------------------
+  // drafts
+  // ---------------------------------------------------------------------
+  const saveDraft = useCallback(
+    async (cid: number, body: string) => {
+      const d = await apiSaveDraft(viewer, cid, body)
+
+      if (!d.error) {
+        setConversations(prev =>
+          prev.map(c => (c.id === cid ? { ...c, draft: d.draft?.body ?? null } : c)),
+        )
+      }
+
+      return d
+    },
+    [viewer],
+  )
+
+  const deleteDraft = useCallback(
+    async (cid: number) => {
+      const d = await apiDeleteDraft(viewer, cid)
+
+      if (!d.error) {
+        setConversations(prev => prev.map(c => (c.id === cid ? { ...c, draft: null } : c)))
+      }
+
+      return d
+    },
+    [viewer],
+  )
+
+  // ---------------------------------------------------------------------
+  // conversation prefs
+  // ---------------------------------------------------------------------
+  const updatePrefs = useCallback(
+    async (
+      cid: number,
+      prefs: Partial<{
+        archived: boolean
+        muted: boolean
+        pinned: boolean
+        muted_until: string | null
+        mark_unread: boolean
+      }>,
+    ) => {
+      const d = await apiUpdateConversationPrefs(viewer, cid, prefs)
+
+      if (!d.error && d.prefs) {
+        setConversations(prev =>
+          prev.map(c =>
+            c.id === cid
+              ? {
+                  ...c,
+                  archived: d.prefs!.archived,
+                  muted: d.prefs!.muted,
+                  pinned: d.prefs!.pinned,
+                  pinned_at: d.prefs!.pinned_at,
+                  mark_unread: d.prefs!.mark_unread,
+                }
+              : c,
+          ),
+        )
+
+        refreshConversations()
+      }
+
+      return d
+    },
+    [viewer, refreshConversations],
+  )
+
+  // ---------------------------------------------------------------------
+  // conversation creation / group actions
+  // ---------------------------------------------------------------------
   const startDirect = useCallback(
     async (target: string) => {
       const d = await createDirect(viewer, target)
@@ -570,8 +989,8 @@ export function useChat(viewer: string, lang: string) {
   )
 
   const startGroup = useCallback(
-    async (name: string, members: string[], image_url?: string) => {
-      const d = await createGroup(viewer, name, members, image_url)
+    async (name: string, members: string[], image_url?: string, description?: string) => {
+      const d = await createGroup(viewer, name, members, image_url, description)
       if (!d.error && d.conversation_id != null) refreshConversations()
       return d
     },
@@ -585,6 +1004,69 @@ export function useChat(viewer: string, lang: string) {
       return d
     },
     [viewer, refreshConversations],
+  )
+
+  const leaveConversation = useCallback(
+    async (cid: number) => {
+      const d = await apiLeaveConversation(viewer, cid)
+
+      if (!d.error) {
+        if (activeConvIdRef.current === cid) closeConversation()
+        refreshConversations()
+      }
+
+      return d
+    },
+    [viewer, closeConversation, refreshConversations],
+  )
+
+  const removeMember = useCallback(
+    async (cid: number, userName: string) => {
+      const d = await apiRemoveGroupMember(viewer, cid, userName)
+      if (!d.error) refreshConversations()
+      return d
+    },
+    [viewer, refreshConversations],
+  )
+
+  const promoteMember = useCallback(
+    async (cid: number, userName: string) => {
+      const d = await apiPromoteGroupMember(viewer, cid, userName)
+      if (!d.error) refreshConversations()
+      return d
+    },
+    [viewer, refreshConversations],
+  )
+
+  const demoteMember = useCallback(
+    async (cid: number, userName: string) => {
+      const d = await apiDemoteGroupMember(viewer, cid, userName)
+      if (!d.error) refreshConversations()
+      return d
+    },
+    [viewer, refreshConversations],
+  )
+
+  const updateConversationInfo = useCallback(
+    async (
+      cid: number,
+      data: {
+        name?: string
+        description?: string | null
+        image_url?: string | null
+      },
+    ) => {
+      const d = await apiUpdateConversation(viewer, cid, data)
+
+      if (!d.error && d.conversation) {
+        setConversations(prev =>
+          prev.map(c => (c.id === cid ? ({ ...c, ...d.conversation } as Conversation) : c)),
+        )
+      }
+
+      return d
+    },
+    [viewer],
   )
 
   // ---------------------------------------------------------------------
@@ -624,11 +1106,13 @@ export function useChat(viewer: string, lang: string) {
     online,
     readCursors,
     deliveredCursors,
+    hasMoreOlder,
     translations,
 
     refreshConversations,
     openConversation,
     closeConversation,
+    loadOlder,
 
     send,
     retrySend,
@@ -638,8 +1122,26 @@ export function useChat(viewer: string, lang: string) {
     typingNames,
     textFor,
 
+    editMessage,
+    deleteMessageForEveryone,
+    hideMessageForMe,
+    react,
+    unreact,
+    star,
+    unstar,
+    forward,
+
+    saveDraft,
+    deleteDraft,
+    updatePrefs,
+
     startDirect,
     startGroup,
     inviteMember,
+    leaveConversation,
+    removeMember,
+    promoteMember,
+    demoteMember,
+    updateConversationInfo,
   }
 }

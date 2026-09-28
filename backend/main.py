@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from routers import feed, auctions, sales, profile, chat
+from routers import feed, auctions, sales, profile, chat, chat_features
 import os
 
 from db import init_db
@@ -25,6 +25,8 @@ app.include_router(feed.router)
 app.include_router(sales.router)
 app.include_router(profile.router)  
 app.include_router(chat.router)
+app.include_router(chat_features.router)
+app.include_router(auctions.router)
 
 init_db()
 

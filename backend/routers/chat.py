@@ -5,9 +5,55 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from db import get_db
 
+import datetime as _dt
+from zoneinfo import ZoneInfo
+
+_TZ_CACHE = None
+
+def _db_tz():
+    global _TZ_CACHE
+    if _TZ_CACHE is None:
+        try:
+            c = get_db(); cur = c.cursor()
+            cur.execute("SHOW TIME ZONE")
+            row = cur.fetchone()
+            c.close()
+            name = (row or {}).get("TimeZone") or (row or {}).get("timezone")
+            _TZ_CACHE = ZoneInfo(name) if name else ZoneInfo("UTC")
+        except Exception:
+            _TZ_CACHE = ZoneInfo("UTC")
+    return _TZ_CACHE
+
+def _iso(v):
+    if isinstance(v, _dt.datetime):
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=_db_tz())
+        return v.isoformat()
+    return v
+
+def _localize(row, *keys):
+    if not row:
+        return row
+    for k in keys:
+        if k in row:
+            row[k] = _iso(row[k])
+    return row
+
 router = APIRouter()
 
-VALID_KINDS = {"text", "image", "voice"}
+MESSAGE_KINDS = {
+    "text",
+    "image",
+    "voice",
+    "file",
+    "video",
+    "location",
+    "contact",
+    "system",
+}
+
+# Users may not forge system messages through normal send endpoints.
+USER_KINDS = MESSAGE_KINDS - {"system"}
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +113,15 @@ def _pair_key(a: str, b: str) -> str:
     return "|".join(sorted([a.strip().lower(), b.strip().lower()]))
 
 
+def _optional_int(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        raise ValueError("invalid integer")
+
+
 def _canonical_username(cursor, name: str):
     """
     Resolve a username exactly first, then case-insensitively.
@@ -84,6 +139,16 @@ def _canonical_username(cursor, name: str):
     cursor.execute("SELECT username FROM users WHERE lower(username) = lower(%s)", (name,))
     row = cursor.fetchone()
     return row["username"] if row else None
+
+
+def _resolve_viewer(viewer_raw: str):
+    if not viewer_raw:
+        return None
+    conn = get_db()
+    cursor = conn.cursor()
+    viewer = _canonical_username(cursor, viewer_raw)
+    conn.close()
+    return viewer
 
 
 def _is_member(cursor, conv_id: int, user: str) -> bool:
@@ -107,24 +172,90 @@ def _member_names_from_id(conv_id: int) -> list[str]:
     return names
 
 
-def _message_row(cursor, msg_id: int) -> dict | None:
-    """Re-select a message joined with profile so the bubble has display+avatar."""
+def _is_blocked_direct(cursor, conv_id: int, viewer: str) -> bool:
+    """
+    For direct conversations, block both directions if either user blocked the other.
+    Group blocking policy is deferred.
+    """
     cursor.execute(
-        '''
-        SELECT m.id, m.conversation_id, m.sender, m.kind, m.body,
-               m.created_at::text AS created_at,
-               p.display_name AS sender_display,
-               p.avatar_url   AS sender_avatar,
-               u.tier         AS sender_tier
-        FROM chat_messages m
-        JOIN users u ON u.username = m.sender
-        LEFT JOIN profiles p ON p.user_id = u.id
-        WHERE m.id = %s
-        ''',
-        (msg_id,),
+        """
+        SELECT 1
+        FROM chat_conversations c
+        JOIN chat_members other_m
+          ON other_m.conversation_id = c.id
+         AND other_m.user_name <> %s
+        WHERE c.id = %s
+          AND c.kind = 'direct'
+          AND EXISTS (
+              SELECT 1
+              FROM chat_blocks b
+              WHERE (b.blocker = %s AND b.blocked = other_m.user_name)
+                 OR (b.blocker = other_m.user_name AND b.blocked = %s)
+          )
+        LIMIT 1
+        """,
+        (viewer, conv_id, viewer, viewer),
     )
-    row = cursor.fetchone()
-    return dict(row) if row else None
+    return cursor.fetchone() is not None
+
+
+def _set_presence(cursor, user: str, online: bool):
+    if online:
+        cursor.execute(
+            """
+            INSERT INTO chat_presence (user_name, online, last_seen_at, updated_at)
+            VALUES (%s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_name)
+            DO UPDATE SET
+                online = TRUE,
+                last_seen_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user,),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO chat_presence (user_name, online, last_seen_at, updated_at)
+            VALUES (%s, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_name)
+            DO UPDATE SET
+                online = FALSE,
+                last_seen_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user,),
+        )
+
+
+def _touch_conversation_open(cursor, conv_id: int, user: str):
+    """
+    Opening/reading a chat clears per-user mark-unread and records last opened time.
+    Does not alter archive/mute/pin.
+    """
+    cursor.execute(
+        """
+        INSERT INTO chat_conversation_prefs (
+            conversation_id,
+            user_name,
+            archived,
+            muted,
+            pinned,
+            pinned_at,
+            muted_until,
+            last_opened_at,
+            mark_unread,
+            updated_at
+        )
+        VALUES (%s, %s, FALSE, FALSE, FALSE, NULL, NULL, CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP)
+        ON CONFLICT (conversation_id, user_name)
+        DO UPDATE SET
+            last_opened_at = CURRENT_TIMESTAMP,
+            mark_unread = FALSE,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (conv_id, user),
+    )
 
 
 def _record_delivery(cursor, conv_id: int, user_name: str, msg_id: int):
@@ -133,25 +264,25 @@ def _record_delivery(cursor, conv_id: int, user_name: str, msg_id: int):
     Delivery is separate from read. Read implies delivered.
     """
     cursor.execute(
-        '''
+        """
         INSERT INTO chat_reads (conversation_id, user_name, last_read_id, last_delivered_id, updated_at)
         VALUES (%s, %s, 0, %s, CURRENT_TIMESTAMP)
         ON CONFLICT (conversation_id, user_name)
         DO UPDATE SET
             last_delivered_id = GREATEST(chat_reads.last_delivered_id, EXCLUDED.last_delivered_id),
             updated_at = CURRENT_TIMESTAMP
-        ''',
+        """,
         (conv_id, user_name, msg_id),
     )
 
 
 def _cursors_for_conv(cursor, conv_id: int):
     cursor.execute(
-        '''
+        """
         SELECT user_name, last_read_id, last_delivered_id
         FROM chat_reads
         WHERE conversation_id = %s
-        ''',
+        """,
         (conv_id,),
     )
 
@@ -163,6 +294,281 @@ def _cursors_for_conv(cursor, conv_id: int):
         delivered_cursors[row["user_name"]] = int(row["last_delivered_id"] or 0)
 
     return read_cursors, delivered_cursors
+
+
+def _clean_message(row):
+    if row is None:
+        return None
+
+    row = dict(row)
+    row = _localize(row, "created_at", "edited_at")
+
+    if isinstance(row.get("meta"), str):
+        try:
+            row["meta"] = json.loads(row["meta"])
+        except Exception:
+            row["meta"] = {}
+    if row.get("meta") is None:
+        row["meta"] = {}
+
+    if isinstance(row.get("reactions"), str):
+        try:
+            row["reactions"] = json.loads(row["reactions"])
+        except Exception:
+            row["reactions"] = []
+    if row.get("reactions") is None:
+        row["reactions"] = []
+
+    return row
+
+
+_MESSAGE_SELECT_FIELDS = """
+    SELECT m.id, m.conversation_id, m.sender, m.kind, m.body,
+           m.reply_to_id, m.forwarded_from_id, m.meta,
+           m.edited_at,
+           m.created_at,
+           p.display_name AS sender_display,
+           p.avatar_url   AS sender_avatar,
+           u.tier         AS sender_tier,
+           CASE WHEN rp.deleted_at IS NULL THEN rp.body ELSE NULL END AS reply_to_body,
+           CASE WHEN rp.deleted_at IS NULL THEN rp.kind ELSE NULL END AS reply_to_kind,
+           CASE WHEN rp.deleted_at IS NULL THEN rp.sender ELSE NULL END AS reply_to_sender,
+           CASE WHEN rp.deleted_at IS NULL THEN COALESCE(prp.display_name, rpu.username) ELSE NULL END AS reply_to_sender_display,
+           COALESCE((
+               SELECT json_agg(
+                   json_build_object(
+                       'emoji', sub.emoji,
+                       'count', sub.c,
+                       'viewer_reacted', sub.viewer_reacted
+                   )
+                   ORDER BY sub.c DESC, sub.emoji
+               )
+               FROM (
+                   SELECT r.emoji,
+                          COUNT(*)::int AS c,
+                          BOOL_OR(r.user_name = %s) AS viewer_reacted
+                   FROM chat_reactions r
+                   WHERE r.message_id = m.id
+                   GROUP BY r.emoji
+               ) sub
+           ), '[]'::json) AS reactions,
+           EXISTS(
+               SELECT 1
+               FROM chat_starred_messages s
+               WHERE s.message_id = m.id
+                 AND s.user_name = %s
+           ) AS starred_by_viewer
+    FROM chat_messages m
+    JOIN users u ON u.username = m.sender
+    LEFT JOIN profiles p ON p.user_id = u.id
+    LEFT JOIN chat_messages rp ON rp.id = m.reply_to_id
+    LEFT JOIN users rpu ON rpu.username = rp.sender
+    LEFT JOIN profiles prp ON prp.user_id = rpu.id
+"""
+
+
+def _message_row(cursor, msg_id: int, viewer: str = ""):
+    cursor.execute(
+        _MESSAGE_SELECT_FIELDS + " WHERE m.id = %s",
+        (viewer, viewer, msg_id),
+    )
+    return _clean_message(cursor.fetchone())
+
+
+def _message_rows(cursor, ids: list[int], viewer: str = ""):
+    if not ids:
+        return []
+
+    cursor.execute(
+        _MESSAGE_SELECT_FIELDS + " WHERE m.id = ANY(%s) ORDER BY m.id ASC",
+        (viewer, viewer, ids),
+    )
+
+    return [_clean_message(r) for r in cursor.fetchall()]
+
+
+def _insert_message(
+    cursor,
+    conv_id: int,
+    sender: str,
+    kind: str,
+    body: str,
+    reply_to_id: int | None = None,
+    forwarded_from_id: int | None = None,
+    meta: dict | None = None,
+):
+    if kind not in MESSAGE_KINDS:
+        raise ValueError("invalid message kind")
+
+    body = (body or "").strip()
+    if not body:
+        raise ValueError("message body required")
+
+    if reply_to_id is not None:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM chat_messages
+            WHERE id = %s
+              AND conversation_id = %s
+              AND deleted_at IS NULL
+            """,
+            (reply_to_id, conv_id),
+        )
+        if cursor.fetchone() is None:
+            raise ValueError("reply target not found")
+
+    if forwarded_from_id is not None:
+        cursor.execute("SELECT 1 FROM chat_messages WHERE id = %s", (forwarded_from_id,))
+        if cursor.fetchone() is None:
+            raise ValueError("forward source not found")
+
+    if not isinstance(meta, dict):
+        meta = {}
+
+    meta_json = json.dumps(meta, default=str)
+
+    cursor.execute(
+        """
+        INSERT INTO chat_messages (
+            conversation_id,
+            sender,
+            kind,
+            body,
+            reply_to_id,
+            forwarded_from_id,
+            meta
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+        RETURNING id
+        """,
+        (conv_id, sender, kind, body, reply_to_id, forwarded_from_id, meta_json),
+    )
+
+    msg_id = cursor.fetchone()["id"]
+
+    cursor.execute(
+        "UPDATE chat_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (conv_id,),
+    )
+
+    return msg_id
+
+
+async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: WebSocket | None = None):
+    if not row:
+        return
+
+    members = set(_member_names_from_id(conv_id))
+    msg_id = row["id"]
+
+    # Do not leak the sender's personal starred/reaction state to other recipients.
+    broadcast_row = dict(row)
+    broadcast_row["starred_by_viewer"] = False
+
+    if isinstance(broadcast_row.get("reactions"), list):
+        broadcast_row["reactions"] = [
+            {**x, "viewer_reacted": False}
+            for x in broadcast_row["reactions"]
+        ]
+
+    payload = json.dumps({"type": "message", "message": broadcast_row}, default=str)
+    delivered = await manager.send_to_users(members, payload, exclude=sender_ws)
+
+    recipient_deliveries = delivered - {sender}
+
+    # Record live delivery receipts for recipients who were online.
+    if recipient_deliveries:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        try:
+            for u in recipient_deliveries:
+                _record_delivery(cursor, conv_id, u, msg_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
+
+        # Tell the sender's sockets which recipients received it.
+        for u in recipient_deliveries:
+            frame = json.dumps({
+                "type": "delivery",
+                "conversation_id": conv_id,
+                "user_name": u,
+                "last_delivered_id": msg_id,
+            }, default=str)
+
+            # Current sender tab.
+            if sender_ws is not None:
+                try:
+                    await sender_ws.send_text(frame)
+                except Exception:
+                    pass
+
+            # Other sender tabs.
+            await manager.send_to_users([sender], frame, exclude=sender_ws)
+
+    # Create in-app notifications for members who were not live-delivered.
+    undelivered = members - delivered - {sender}
+
+    if undelivered:
+        kind = row.get("kind")
+
+        if kind == "text":
+            preview = (row.get("body") or "")[:120]
+        elif kind == "image":
+            preview = "Photo"
+        elif kind == "voice":
+            preview = "Voice note"
+        elif kind == "video":
+            preview = "Video"
+        elif kind == "file":
+            preview = "File"
+        elif kind == "location":
+            preview = "Location"
+        elif kind == "contact":
+            preview = "Contact"
+        else:
+            preview = "New message"
+
+        title = row.get("sender_display") or sender
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        try:
+            for u in undelivered:
+                cursor.execute(
+                    "SELECT muted FROM chat_conversation_prefs WHERE conversation_id = %s AND user_name = %s",
+                    (conv_id, u),
+                )
+                pref = cursor.fetchone()
+
+                if pref and pref["muted"]:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO chat_notifications (
+                        user_name,
+                        conversation_id,
+                        message_id,
+                        type,
+                        title,
+                        body
+                    )
+                    VALUES (%s, %s, %s, 'message', %s, %s)
+                    """,
+                    (u, conv_id, msg_id, title, preview),
+                )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +584,9 @@ async def chat_ws(websocket: WebSocket):
     conn = get_db()
     cursor = conn.cursor()
     viewer = _canonical_username(cursor, raw_viewer)
+    if viewer:
+        _set_presence(cursor, viewer, True)
+        conn.commit()
     conn.close()
 
     if not viewer:
@@ -206,9 +615,32 @@ async def chat_ws(websocket: WebSocket):
                 body = (data.get("body") or "").strip()
                 temp_id = data.get("temp_id")
 
-                if conv_id is None or kind not in VALID_KINDS or not body:
+                try:
+                    reply_to_id = _optional_int(data.get("reply_to_id"))
+                    forwarded_from_id = _optional_int(data.get("forwarded_from_id"))
+                except Exception:
                     await websocket.send_text(
-                        json.dumps({"type": "error", "temp_id": temp_id, "error": "invalid message"})
+                        json.dumps({
+                            "type": "error",
+                            "temp_id": temp_id,
+                            "conversation_id": conv_id,
+                            "error": "invalid message id",
+                        })
+                    )
+                    continue
+
+                meta = data.get("meta") or {}
+                if not isinstance(meta, dict):
+                    meta = {}
+
+                if conv_id is None or kind not in USER_KINDS or not body:
+                    await websocket.send_text(
+                        json.dumps({
+                            "type": "error",
+                            "temp_id": temp_id,
+                            "conversation_id": conv_id,
+                            "error": "invalid message",
+                        })
                     )
                     continue
 
@@ -218,22 +650,48 @@ async def chat_ws(websocket: WebSocket):
                 try:
                     if not _is_member(cursor, conv_id, viewer):
                         await websocket.send_text(
-                            json.dumps({"type": "error", "temp_id": temp_id, "error": "not a member"})
+                            json.dumps({
+                                "type": "error",
+                                "temp_id": temp_id,
+                                "conversation_id": conv_id,
+                                "error": "not a member",
+                            })
                         )
                         continue
 
-                    cursor.execute(
-                        "INSERT INTO chat_messages (conversation_id, sender, kind, body) VALUES (%s,%s,%s,%s) RETURNING id",
-                        (conv_id, viewer, kind, body),
+                    if _is_blocked_direct(cursor, conv_id, viewer):
+                        await websocket.send_text(
+                            json.dumps({
+                                "type": "error",
+                                "temp_id": temp_id,
+                                "conversation_id": conv_id,
+                                "error": "this chat is blocked",
+                            })
+                        )
+                        continue
+
+                    msg_id = _insert_message(
+                        cursor=cursor,
+                        conv_id=conv_id,
+                        sender=viewer,
+                        kind=kind,
+                        body=body,
+                        reply_to_id=reply_to_id,
+                        forwarded_from_id=forwarded_from_id,
+                        meta=meta,
                     )
-                    msg_id = cursor.fetchone()["id"]
-                    row = _message_row(cursor, msg_id)
-                    members = _member_names(cursor, conv_id)
+
+                    row = _message_row(cursor, msg_id, viewer)
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
                     await websocket.send_text(
-                        json.dumps({"type": "error", "temp_id": temp_id, "error": str(e)})
+                        json.dumps({
+                            "type": "error",
+                            "temp_id": temp_id,
+                            "conversation_id": conv_id,
+                            "error": str(e),
+                        })
                     )
                     continue
                 finally:
@@ -241,50 +699,21 @@ async def chat_ws(websocket: WebSocket):
 
                 if row is None:
                     await websocket.send_text(
-                        json.dumps({"type": "error", "temp_id": temp_id, "error": "message not found after insert"})
+                        json.dumps({
+                            "type": "error",
+                            "temp_id": temp_id,
+                            "conversation_id": conv_id,
+                            "error": "message not found after insert",
+                        })
                     )
                     continue
 
                 # Ack the sending tab so it can replace its optimistic bubble.
-                await websocket.send_text(json.dumps({"type": "ack", "temp_id": temp_id, "message": row}))
+                await websocket.send_text(
+                    json.dumps({"type": "ack", "temp_id": temp_id, "message": row}, default=str)
+                )
 
-                # Broadcast the real message to all members except this exact sending socket.
-                payload = json.dumps({"type": "message", "message": row})
-                delivered = await manager.send_to_users(members, payload, exclude=websocket)
-
-                # Remove sender from delivery recipients.
-                recipient_deliveries = delivered - {viewer}
-
-                if recipient_deliveries:
-                    conn2 = get_db()
-                    cursor2 = conn2.cursor()
-
-                    try:
-                        for u in recipient_deliveries:
-                            _record_delivery(cursor2, conv_id, u, msg_id)
-                        conn2.commit()
-                    except Exception:
-                        conn2.rollback()
-                    finally:
-                        conn2.close()
-
-                    # Tell the sender's sockets which recipients received it.
-                    for u in recipient_deliveries:
-                        frame = json.dumps({
-                            "type": "delivery",
-                            "conversation_id": conv_id,
-                            "user_name": u,
-                            "last_delivered_id": msg_id,
-                        })
-
-                        # Current sender tab.
-                        try:
-                            await websocket.send_text(frame)
-                        except Exception:
-                            pass
-
-                        # Other sender tabs.
-                        await manager.send_to_users([viewer], frame, exclude=websocket)
+                await _broadcast_message(row, conv_id, viewer, sender_ws=websocket)
 
             # ---- mark read ----
             elif ctype == "read":
@@ -307,17 +736,19 @@ async def chat_ws(websocket: WebSocket):
 
                     # Reading implies delivered.
                     cursor.execute(
-                        '''
+                        """
                         INSERT INTO chat_reads (conversation_id, user_name, last_read_id, last_delivered_id, updated_at)
                         VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
                         ON CONFLICT (conversation_id, user_name)
                         DO UPDATE SET
-                            last_read_id = EXCLUDED.last_read_id,
+                            last_read_id = GREATEST(chat_reads.last_read_id, EXCLUDED.last_read_id),
                             last_delivered_id = GREATEST(chat_reads.last_delivered_id, EXCLUDED.last_read_id),
                             updated_at = CURRENT_TIMESTAMP
-                        ''',
+                        """,
                         (conv_id, viewer, last_id, last_id),
                     )
+
+                    _touch_conversation_open(cursor, conv_id, viewer)
                     conn.commit()
                 except Exception:
                     conn.rollback()
@@ -333,7 +764,7 @@ async def chat_ws(websocket: WebSocket):
                         "conversation_id": conv_id,
                         "user_name": viewer,
                         "last_read_id": last_id,
-                    }),
+                    }, default=str),
                     exclude=websocket,
                 )
 
@@ -344,6 +775,14 @@ async def chat_ws(websocket: WebSocket):
                 if conv_id is None:
                     continue
 
+                conn = get_db()
+                cursor = conn.cursor()
+                member = _is_member(cursor, conv_id, viewer)
+                conn.close()
+
+                if not member:
+                    continue
+
                 members = _member_names_from_id(conv_id)
                 await manager.send_to_users(
                     members,
@@ -351,18 +790,29 @@ async def chat_ws(websocket: WebSocket):
                         "type": "typing",
                         "conversation_id": conv_id,
                         "user_name": viewer,
-                    }),
+                    }, default=str),
                     exclude=websocket,
                 )
 
             else:
-                await websocket.send_text(json.dumps({"type": "error", "error": f"unknown type {ctype}"}))
+                await websocket.send_text(
+                    json.dumps({"type": "error", "error": f"unknown type {ctype}"})
+                )
 
     except WebSocketDisconnect:
         pass
     except Exception:
         pass
     finally:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            _set_presence(cursor, viewer, False)
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
         await manager.disconnect(viewer, websocket)
 
 
@@ -370,7 +820,8 @@ async def chat_ws(websocket: WebSocket):
 # REST: conversation list
 # ---------------------------------------------------------------------------
 @router.get("/chat/conversations")
-def list_conversations(viewer: str = ""):
+def list_conversations(viewer: str = "", include_archived: bool = False):
+    viewer = _resolve_viewer(viewer)
     if not viewer:
         return {"error": "viewer required"}
 
@@ -378,35 +829,116 @@ def list_conversations(viewer: str = ""):
     cursor = conn.cursor()
 
     cursor.execute(
-        '''
-        SELECT c.id, c.kind, c.name, c.image_url,
-               (SELECT m.body   FROM chat_messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_body,
-               (SELECT m.kind   FROM chat_messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_kind,
-               (SELECT m.sender FROM chat_messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_sender,
-               (SELECT m.created_at::text FROM chat_messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_at,
-               (SELECT COUNT(*) FROM chat_messages m
-                 WHERE m.conversation_id=c.id AND m.sender <> %s
-                   AND m.id > COALESCE((SELECT r.last_read_id FROM chat_reads r
-                                        WHERE r.conversation_id=c.id AND r.user_name=%s),0)) AS unread,
+        """
+        SELECT c.id, c.kind, c.name, c.image_url, c.description,
+               c.updated_at,
 
-               (SELECT COALESCE(p.display_name, u.username)
-                  FROM chat_members cm JOIN users u ON u.username=cm.user_name
-                  LEFT JOIN profiles p ON p.user_id=u.id
-                 WHERE cm.conversation_id=c.id AND cm.user_name <> %s LIMIT 1) AS counterpart,
+               COALESCE(p.archived, FALSE) AS archived,
+               COALESCE(p.muted, FALSE) AS muted,
+               COALESCE(p.pinned, FALSE) AS pinned,
+               p.pinned_at,
+               COALESCE(p.mark_unread, FALSE) AS mark_unread,
+               d.body AS draft,
 
-               (SELECT p2.avatar_url
-                  FROM chat_members cm2 JOIN users u2 ON u2.username=cm2.user_name
-                  LEFT JOIN profiles p2 ON p2.user_id=u2.id
-                 WHERE cm2.conversation_id=c.id AND cm2.user_name <> %s LIMIT 1) AS counterpart_avatar
+               lm.body AS last_body,
+               lm.kind AS last_kind,
+               lm.sender AS last_sender,
+               lm.created_at::text AS last_at,
+
+               (
+                   SELECT COUNT(*)
+                   FROM chat_messages m
+                   WHERE m.conversation_id = c.id
+                     AND m.sender <> %s
+                     AND m.deleted_at IS NULL
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM chat_message_hidden h
+                         WHERE h.message_id = m.id
+                           AND h.user_name = %s
+                     )
+                     AND (
+                         COALESCE(p.mark_unread, FALSE)
+                         OR m.id > COALESCE((
+                             SELECT r.last_read_id
+                             FROM chat_reads r
+                             WHERE r.conversation_id = c.id
+                               AND r.user_name = %s
+                         ), 0)
+                     )
+               ) AS unread,
+
+               CASE WHEN c.kind = 'direct' THEN cp.display_name ELSE NULL END AS counterpart,
+               CASE WHEN c.kind = 'direct' THEN cp.avatar_url ELSE NULL END AS counterpart_avatar,
+               CASE WHEN c.kind = 'direct' THEN cp.username ELSE NULL END AS counterpart_username,
+
+               (
+                   SELECT COUNT(*)
+                   FROM chat_members cmc
+                   WHERE cmc.conversation_id = c.id
+               ) AS member_count
 
         FROM chat_conversations c
-        WHERE c.id IN (SELECT conversation_id FROM chat_members WHERE user_name = %s)
-        ORDER BY last_at DESC NULLS LAST, c.id DESC
-        ''',
-        (viewer, viewer, viewer, viewer, viewer),
+        LEFT JOIN chat_conversation_prefs p
+               ON p.conversation_id = c.id
+              AND p.user_name = %s
+        LEFT JOIN chat_drafts d
+               ON d.conversation_id = c.id
+              AND d.user_name = %s
+        LEFT JOIN LATERAL (
+            SELECT m.id, m.body, m.kind, m.sender, m.created_at
+            FROM chat_messages m
+            WHERE m.conversation_id = c.id
+              AND m.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM chat_message_hidden h
+                  WHERE h.message_id = m.id
+                    AND h.user_name = %s
+              )
+            ORDER BY m.id DESC
+            LIMIT 1
+        ) lm ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COALESCE(p2.display_name, u2.username) AS display_name,
+                   p2.avatar_url,
+                   u2.username AS username
+            FROM chat_members cm2
+            JOIN users u2 ON u2.username = cm2.user_name
+            LEFT JOIN profiles p2 ON p2.user_id = u2.id
+            WHERE cm2.conversation_id = c.id
+              AND cm2.user_name <> %s
+            LIMIT 1
+        ) cp ON TRUE
+        WHERE c.id IN (
+            SELECT conversation_id
+            FROM chat_members
+            WHERE user_name = %s
+        )
+          AND (%s::boolean OR COALESCE(p.archived, FALSE) = FALSE)
+        ORDER BY COALESCE(p.pinned, FALSE) DESC,
+                 p.pinned_at DESC NULLS LAST,
+                 lm.created_at DESC NULLS LAST,
+                 c.id DESC
+        """,
+        (
+            viewer,  # unread sender
+            viewer,  # unread hidden
+            viewer,  # unread last_read
+            viewer,  # prefs
+            viewer,  # draft
+            viewer,  # last message hidden
+            viewer,  # counterpart other
+            viewer,  # membership
+            include_archived,
+        ),
     )
 
     rows = [dict(r) for r in cursor.fetchall()]
+
+    for r in rows:
+        _localize(r, "updated_at", "pinned_at", "last_at")
+
     conn.close()
     return {"conversations": rows}
 
@@ -438,6 +970,19 @@ def create_conversation(data: dict):
             if target == viewer:
                 conn.rollback()
                 return {"error": "you cannot message yourself"}
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM chat_blocks
+                WHERE (blocker = %s AND blocked = %s)
+                   OR (blocker = %s AND blocked = %s)
+                """,
+                (viewer, target, target, viewer),
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                return {"error": "this chat is blocked"}
 
             pk = _pair_key(viewer, target)
 
@@ -480,6 +1025,9 @@ def create_conversation(data: dict):
                 conn.rollback()
                 return {"error": "group needs a name"}
 
+            description = (data.get("description") or "").strip() or None
+            image_url = (data.get("image_url") or "").strip() or None
+
             raw_members = data.get("members") or []
             resolved = []
             unknown = []
@@ -497,11 +1045,11 @@ def create_conversation(data: dict):
 
             cursor.execute(
                 """
-                INSERT INTO chat_conversations (kind, name, image_url, created_by)
-                VALUES ('group', %s, %s, %s)
+                INSERT INTO chat_conversations (kind, name, image_url, description, created_by)
+                VALUES ('group', %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (name, (data.get("image_url") or "").strip() or None, viewer),
+                (name, image_url, description, viewer),
             )
             conv_id = cursor.fetchone()["id"]
 
@@ -538,6 +1086,57 @@ def create_conversation(data: dict):
         return {"error": str(e)}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# REST: group members
+# ---------------------------------------------------------------------------
+@router.get("/chat/conversations/{conv_id}/members")
+def get_members(conv_id: int, viewer: str = ""):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if not _is_member(cursor, conv_id, viewer):
+        conn.close()
+        return {"error": "not a member"}
+
+    cursor.execute(
+        """
+        SELECT cm.user_name,
+               cm.role,
+               cm.joined_at,
+               COALESCE(p.display_name, u.username) AS display_name,
+               p.avatar_url,
+               u.tier,
+               COALESCE(pr.online, FALSE) AS online,
+               pr.last_seen_at
+        FROM chat_members cm
+        JOIN users u ON u.username = cm.user_name
+        LEFT JOIN profiles p ON p.user_id = u.id
+        LEFT JOIN chat_presence pr ON pr.user_name = cm.user_name
+        WHERE cm.conversation_id = %s
+        ORDER BY
+            CASE cm.role
+                WHEN 'owner' THEN 0
+                WHEN 'admin' THEN 1
+                ELSE 2
+            END,
+            COALESCE(p.display_name, u.username)
+        """,
+        (conv_id,),
+    )
+
+    rows = [dict(r) for r in cursor.fetchall()]
+
+    for r in rows:
+        _localize(r, "joined_at", "last_seen_at")
+
+    conn.close()
+    return {"members": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -588,12 +1187,23 @@ def add_member(conv_id: int, data: dict):
 
 
 # ---------------------------------------------------------------------------
-# REST: history (incremental with ?since=, latest page otherwise)
+# REST: history
 # ---------------------------------------------------------------------------
 @router.get("/chat/conversations/{conv_id}/messages")
-def history(conv_id: int, viewer: str = "", since: int = 0, limit: int = 50):
+def history(
+    conv_id: int,
+    viewer: str = "",
+    since: int = 0,
+    after_id: int = 0,
+    before_id: int = 0,
+    limit: int = 50,
+):
+    viewer = _resolve_viewer(viewer)
     if not viewer:
         return {"error": "viewer required"}
+
+    if after_id and not since:
+        since = after_id
 
     conn = get_db()
     cursor = conn.cursor()
@@ -602,42 +1212,83 @@ def history(conv_id: int, viewer: str = "", since: int = 0, limit: int = 50):
         conn.close()
         return {"error": "not a member"}
 
-    if since > 0:
-        cursor.execute(
-            '''
-            SELECT m.id, m.conversation_id, m.sender, m.kind, m.body, m.created_at::text AS created_at,
-                   p.display_name AS sender_display, p.avatar_url AS sender_avatar, u.tier AS sender_tier
-            FROM chat_messages m
-            JOIN users u ON u.username = m.sender
-            LEFT JOIN profiles p ON p.user_id = u.id
-            WHERE m.conversation_id = %s AND m.id > %s
-            ORDER BY m.id ASC
-            ''',
-            (conv_id, since),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-    else:
-        cursor.execute(
-            '''
-            SELECT m.id, m.conversation_id, m.sender, m.kind, m.body, m.created_at::text AS created_at,
-                   p.display_name AS sender_display, p.avatar_url AS sender_avatar, u.tier AS sender_tier
-            FROM chat_messages m
-            JOIN users u ON u.username = m.sender
-            LEFT JOIN profiles p ON p.user_id = u.id
-            WHERE m.conversation_id = %s
-            ORDER BY m.id DESC LIMIT %s
-            ''',
-            (conv_id, max(1, min(limit, 200))),
-        )
-        rows = [dict(r) for r in cursor.fetchall()][::-1]
+    page_limit = max(1, min(limit, 200))
+    fetch_limit = page_limit + 1
 
+    base_where = """
+        WHERE m.conversation_id = %s
+          AND m.deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM chat_message_hidden h
+              WHERE h.message_id = m.id
+                AND h.user_name = %s
+          )
+    """
+
+    if before_id > 0:
+        sql = f"""
+            SELECT m.id
+            FROM chat_messages m
+            {base_where}
+              AND m.id < %s
+            ORDER BY m.id DESC
+            LIMIT %s
+        """
+        params = (conv_id, viewer, before_id, fetch_limit)
+        cursor.execute(sql, params)
+        ids = [r["id"] for r in cursor.fetchall()]
+
+        has_more_older = len(ids) > page_limit
+        ids = ids[:page_limit]
+        ids.reverse()
+
+        has_more_newer = False
+    elif since > 0:
+        sql = f"""
+            SELECT m.id
+            FROM chat_messages m
+            {base_where}
+              AND m.id > %s
+            ORDER BY m.id ASC
+            LIMIT %s
+        """
+        params = (conv_id, viewer, since, fetch_limit)
+        cursor.execute(sql, params)
+        ids = [r["id"] for r in cursor.fetchall()]
+
+        has_more_newer = len(ids) > page_limit
+        ids = ids[:page_limit]
+
+        has_more_older = False
+    else:
+        sql = f"""
+            SELECT m.id
+            FROM chat_messages m
+            {base_where}
+            ORDER BY m.id DESC
+            LIMIT %s
+        """
+        params = (conv_id, viewer, fetch_limit)
+        cursor.execute(sql, params)
+        ids = [r["id"] for r in cursor.fetchall()]
+
+        has_more_older = len(ids) > page_limit
+        ids = ids[:page_limit]
+        ids.reverse()
+
+        has_more_newer = False
+
+    messages = _message_rows(cursor, ids, viewer)
     read_cursors, delivered_cursors = _cursors_for_conv(cursor, conv_id)
     conn.close()
 
     return {
-        "messages": rows,
+        "messages": messages,
         "read_cursors": read_cursors,
         "delivered_cursors": delivered_cursors,
+        "has_more_older": has_more_older,
+        "has_more_newer": has_more_newer,
     }
 
 
@@ -650,8 +1301,18 @@ async def send_rest(conv_id: int, data: dict):
     kind = data.get("kind", "text")
     body = (data.get("body") or "").strip()
 
-    if not viewer_raw or kind not in VALID_KINDS or not body:
+    if not viewer_raw or kind not in USER_KINDS or not body:
         return {"error": "invalid message"}
+
+    try:
+        reply_to_id = _optional_int(data.get("reply_to_id"))
+        forwarded_from_id = _optional_int(data.get("forwarded_from_id"))
+    except Exception:
+        return {"error": "invalid message id"}
+
+    meta = data.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
 
     conn = get_db()
     cursor = conn.cursor()
@@ -666,13 +1327,22 @@ async def send_rest(conv_id: int, data: dict):
             conn.rollback()
             return {"error": "not a member"}
 
-        cursor.execute(
-            "INSERT INTO chat_messages (conversation_id, sender, kind, body) VALUES (%s,%s,%s,%s) RETURNING id",
-            (conv_id, viewer, kind, body),
+        if _is_blocked_direct(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "this chat is blocked"}
+
+        msg_id = _insert_message(
+            cursor=cursor,
+            conv_id=conv_id,
+            sender=viewer,
+            kind=kind,
+            body=body,
+            reply_to_id=reply_to_id,
+            forwarded_from_id=forwarded_from_id,
+            meta=meta,
         )
-        msg_id = cursor.fetchone()["id"]
-        row = _message_row(cursor, msg_id)
-        members = _member_names(cursor, conv_id)
+
+        row = _message_row(cursor, msg_id, viewer)
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -683,32 +1353,7 @@ async def send_rest(conv_id: int, data: dict):
     if row is None:
         return {"error": "message not found after insert"}
 
-    payload = json.dumps({"type": "message", "message": row})
-    delivered = await manager.send_to_users(members, payload)
-
-    recipient_deliveries = delivered - {viewer}
-
-    if recipient_deliveries:
-        conn2 = get_db()
-        cursor2 = conn2.cursor()
-
-        try:
-            for u in recipient_deliveries:
-                _record_delivery(cursor2, conv_id, u, msg_id)
-            conn2.commit()
-        except Exception:
-            conn2.rollback()
-        finally:
-            conn2.close()
-
-        for u in recipient_deliveries:
-            frame = json.dumps({
-                "type": "delivery",
-                "conversation_id": conv_id,
-                "user_name": u,
-                "last_delivered_id": msg_id,
-            })
-            await manager.send_to_users([viewer], frame)
+    await _broadcast_message(row, conv_id, viewer, sender_ws=None)
 
     return {"message": row}
 
@@ -742,17 +1387,19 @@ async def mark_read(conv_id: int, data: dict):
             return {"error": "not a member"}
 
         cursor.execute(
-            '''
+            """
             INSERT INTO chat_reads (conversation_id, user_name, last_read_id, last_delivered_id, updated_at)
             VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (conversation_id, user_name)
             DO UPDATE SET
-                last_read_id = EXCLUDED.last_read_id,
+                last_read_id = GREATEST(chat_reads.last_read_id, EXCLUDED.last_read_id),
                 last_delivered_id = GREATEST(chat_reads.last_delivered_id, EXCLUDED.last_read_id),
                 updated_at = CURRENT_TIMESTAMP
-            ''',
+            """,
             (conv_id, viewer, last_id, last_id),
         )
+
+        _touch_conversation_open(cursor, conv_id, viewer)
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -768,7 +1415,7 @@ async def mark_read(conv_id: int, data: dict):
             "conversation_id": conv_id,
             "user_name": viewer,
             "last_read_id": last_id,
-        }),
+        }, default=str),
     )
 
     return {"message": "read"}

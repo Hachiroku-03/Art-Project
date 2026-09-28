@@ -122,7 +122,7 @@ def init_db():
         )
     ''')
 
-        # ============ CHAT (1:1 + groups, websocket-delivered) ============
+    # ============ CHAT (1:1 + groups, websocket-delivered) ============
     # A conversation is 'direct' (exactly 2 members, pair_key set & unique) or
     # 'group' (N members, pair_key NULL — Postgres unique indexes treat NULLs as
     # distinct, so many groups coexist). Members live in chat_members.
@@ -132,11 +132,17 @@ def init_db():
             kind TEXT NOT NULL DEFAULT 'direct',          -- direct | group
             name TEXT,                                     -- group name; NULL for direct
             image_url TEXT,                                -- group avatar; NULL for direct
+            description TEXT,                              -- group description
             pair_key TEXT,                                 -- 'a|b' sorted for direct; NULL for group
             created_by TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS description TEXT")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
     # No duplicate 1:1 rooms, enforced at the DB (races included). Groups skip this
     # entirely because their pair_key is NULL and NULLs never collide in a unique index.
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_direct_pair ON chat_conversations (pair_key) WHERE pair_key IS NOT NULL")
@@ -145,7 +151,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS chat_members (
             conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
             user_name TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'member',           -- owner | member
+            role TEXT NOT NULL DEFAULT 'member',           -- owner | admin | member
             joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (conversation_id, user_name)
         )
@@ -157,12 +163,26 @@ def init_db():
             id BIGSERIAL PRIMARY KEY,
             conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
             sender TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'text',             -- text | image | voice
-            body TEXT NOT NULL,                            -- text, or uploaded URL for image/voice
+            kind TEXT NOT NULL DEFAULT 'text',             -- text | image | voice | file | video | location | contact | system
+            body TEXT NOT NULL,                            -- text, or uploaded URL for media, or structured payload for location/contact
+            reply_to_id BIGINT REFERENCES chat_messages(id) ON DELETE SET NULL,
+            forwarded_from_id BIGINT REFERENCES chat_messages(id) ON DELETE SET NULL,
+            meta JSONB NOT NULL DEFAULT '{}'::jsonb,       -- file_name, file_size, mime_type, duration, lat/lng, caption, etc.
+            edited_at TIMESTAMP,
+            deleted_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    cursor.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_to_id BIGINT REFERENCES chat_messages(id) ON DELETE SET NULL")
+    cursor.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS forwarded_from_id BIGINT REFERENCES chat_messages(id) ON DELETE SET NULL")
+    cursor.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}'::jsonb")
+    cursor.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP")
+    cursor.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages (conversation_id, id DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_reply ON chat_messages (reply_to_id) WHERE reply_to_id IS NOT NULL")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_forwarded ON chat_messages (forwarded_from_id) WHERE forwarded_from_id IS NOT NULL")
 
     # Per-member read cursor. Unread = messages with id > last_read_id and sender != me.
     # Kept separate from messages so sending never mutates history and reads never
@@ -172,12 +192,136 @@ def init_db():
             conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
             user_name TEXT NOT NULL,
             last_read_id BIGINT NOT NULL DEFAULT 0,
+            last_delivered_id BIGINT NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (conversation_id, user_name)
         )
     ''')
 
     cursor.execute("ALTER TABLE chat_reads ADD COLUMN IF NOT EXISTS last_delivered_id BIGINT NOT NULL DEFAULT 0")
+
+    # ============ MESSENGER FEATURE SCHEMA ============
+
+    # Delete for me: hides a message from one user's view without deleting it globally.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_message_hidden (
+            message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (message_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_hidden_user ON chat_message_hidden (user_name)")
+
+    # Starred / saved messages, private per user.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_starred_messages (
+            message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            starred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (message_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_starred_user ON chat_starred_messages (user_name, starred_at DESC)")
+
+    # Emoji reactions.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_reactions (
+            message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (message_id, user_name, emoji)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_reactions_message ON chat_reactions (message_id)")
+
+    # Drafts per user per conversation.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_drafts (
+            conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (conversation_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_drafts_user ON chat_drafts (user_name)")
+
+    # Per-user conversation preferences: archive, mute, pin, mark unread, last opened.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_conversation_prefs (
+            conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            archived BOOLEAN NOT NULL DEFAULT FALSE,
+            muted BOOLEAN NOT NULL DEFAULT FALSE,
+            pinned BOOLEAN NOT NULL DEFAULT FALSE,
+            pinned_at TIMESTAMP,
+            muted_until TIMESTAMP,
+            last_opened_at TIMESTAMP,
+            mark_unread BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (conversation_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_prefs_user ON chat_conversation_prefs (user_name)")
+
+    # User blocks. For MVP, blocking disables direct messaging both ways.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_blocks (
+            blocker TEXT NOT NULL,
+            blocked TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (blocker, blocked)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_blocks_blocked ON chat_blocks (blocked)")
+
+    # Reports for moderation. target_type can be message | conversation | user.
+    # target_id is used for message/conversation ids; target_text is used for usernames.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_reports (
+            id SERIAL PRIMARY KEY,
+            reporter TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id BIGINT,
+            target_text TEXT,
+            reason TEXT NOT NULL,
+            details TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_reports_reporter ON chat_reports (reporter, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_reports_status ON chat_reports (status, created_at DESC)")
+
+    # Presence / last seen.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_presence (
+            user_name TEXT PRIMARY KEY,
+            online BOOLEAN NOT NULL DEFAULT FALSE,
+            last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # In-app notifications. Browser push is deferred; this powers the bell/notification center.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_notifications (
+            id SERIAL PRIMARY KEY,
+            user_name TEXT NOT NULL,
+            conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            message_id BIGINT REFERENCES chat_messages(id) ON DELETE CASCADE,
+            type TEXT NOT NULL,
+            title TEXT,
+            body TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            read_at TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_notifications_user ON chat_notifications (user_name, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_notifications_unread ON chat_notifications (user_name, read_at, created_at DESC)")
 
     conn.commit()
     conn.close()
