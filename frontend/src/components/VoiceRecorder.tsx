@@ -6,7 +6,13 @@ type Phase = 'idle' | 'recording' | 'paused' | 'preview'
 
 const BAR_COUNT = 48 // clipped gracefully on narrow screens via overflow
 
-export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void }) {
+type Props = {
+  onSend: (audioBlob: Blob) => void
+  onStart?: () => void
+  onStop?: () => void
+}
+
+export function VoiceRecorder({ onSend, onStart, onStop }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [duration, setDuration] = useState(0)
   const [bars, setBars] = useState<number[]>(Array(BAR_COUNT).fill(3))
@@ -24,49 +30,102 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const blobRef = useRef<Blob | null>(null)
 
+  const onStartRef = useRef(onStart)
+  const onStopRef = useRef(onStop)
+  const activeRef = useRef(false)
+
+  useEffect(() => {
+    onStartRef.current = onStart
+  }, [onStart])
+
+  useEffect(() => {
+    onStopRef.current = onStop
+  }, [onStop])
+
+  function setActive(active: boolean) {
+    if (activeRef.current === active) return
+
+    activeRef.current = active
+
+    if (active) {
+      onStartRef.current?.()
+    } else {
+      onStopRef.current?.()
+    }
+  }
+
   // One central teardown — EVERY exit path calls this so the mic never leaks.
   function teardown() {
-    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = undefined }
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current)
+      timerRef.current = undefined
+    }
+
     cancelAnimationFrame(rafRef.current)
     streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
-    if (ctxRef.current && ctxRef.current.state !== 'closed') ctxRef.current.close().catch(() => {})
+
+    if (ctxRef.current && ctxRef.current.state !== 'closed') {
+      ctxRef.current.close().catch(() => {})
+    }
+
     ctxRef.current = null
     analyserRef.current = null
   }
 
-  // Safety net: if the component unmounts mid-recording, kill the mic.
-  useEffect(() => teardown, [])
+  // Safety net: if the component unmounts mid-recording, kill the mic and stop broadcast.
+  useEffect(() => {
+    return () => {
+      teardown()
+      setActive(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function startTimer() {
     timerRef.current = window.setInterval(() => setDuration(d => d + 1), 1000)
   }
+
   function stopTimer() {
-    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = undefined }
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current)
+      timerRef.current = undefined
+    }
   }
 
   function drawLoop() {
     const an = analyserRef.current
+
     if (an) {
       const data = new Uint8Array(an.fftSize)
       an.getByteTimeDomainData(data)
+
       let sum = 0
-      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128
+        sum += v * v
+      }
+
       const rms = Math.sqrt(sum / data.length)
       const h = Math.min(34, 3 + rms * 130)
+
       barsRef.current = [...barsRef.current.slice(1), h]
       setBars(barsRef.current)
     }
+
     rafRef.current = requestAnimationFrame(drawLoop)
   }
 
   async function startRecording() {
     if (phase !== 'idle') return
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
+
       const ctx = new AudioContext()
       ctxRef.current = ctx
+
       const an = ctx.createAnalyser()
       an.fftSize = 512
       ctx.createMediaStreamSource(stream).connect(an)
@@ -74,12 +133,19 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
 
       const rec = new MediaRecorder(stream)
       chunksRef.current = []
-      rec.ondataavailable = ev => { if (ev.data.size > 0) chunksRef.current.push(ev.data) }
+
+      rec.ondataavailable = ev => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data)
+      }
+
       // The handler that builds the preview the moment we stop.
       rec.onstop = () => {
         teardown()
+        setActive(false)
+
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
         chunksRef.current = []
+
         if (blob.size > 0) {
           blobRef.current = blob
           setPreviewUrl(URL.createObjectURL(blob))
@@ -88,12 +154,17 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
           resetAll()
         }
       }
+
       rec.start()
       recRef.current = rec
+
       barsRef.current = Array(BAR_COUNT).fill(3)
       setBars(barsRef.current)
       setDuration(0)
+
+      setActive(true)
       setPhase('recording')
+
       startTimer()
       rafRef.current = requestAnimationFrame(drawLoop)
     } catch {
@@ -104,7 +175,14 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
 
   function pauseRec() {
     const rec = recRef.current
-    if (rec && rec.state === 'recording') { try { rec.pause() } catch { /* unsupported (Safari) */ } }
+    if (rec && rec.state === 'recording') {
+      try {
+        rec.pause()
+      } catch {
+        /* unsupported (Safari) */
+      }
+    }
+
     stopTimer()
     cancelAnimationFrame(rafRef.current)
     setPhase('paused')
@@ -112,7 +190,14 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
 
   function resumeRec() {
     const rec = recRef.current
-    if (rec && rec.state === 'paused') { try { rec.resume() } catch { /* unsupported */ } }
+    if (rec && rec.state === 'paused') {
+      try {
+        rec.resume()
+      } catch {
+        /* unsupported */
+      }
+    }
+
     startTimer()
     rafRef.current = requestAnimationFrame(drawLoop)
     setPhase('recording')
@@ -120,48 +205,77 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
 
   function stopToPreview() {
     stopTimer()
+
     const rec = recRef.current
-    if (rec && rec.state !== 'inactive') rec.stop() // onstop → preview
-    else resetAll()
+    if (rec && rec.state !== 'inactive') {
+      rec.stop() // onstop → preview
+    } else {
+      resetAll()
+    }
   }
 
   function trashIt() {
     stopTimer()
+
     const rec = recRef.current
+
     if (rec && rec.state !== 'inactive') {
-      rec.onstop = () => teardown() // discard: don't build a preview
+      rec.onstop = () => {
+        teardown()
+        setActive(false)
+      }
       rec.stop()
     } else {
       teardown()
+      setActive(false)
     }
+
     resetAll()
   }
 
   function resetAll() {
-    setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+    setActive(false)
+
+    setPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev)
+      return null
+    })
+
     setPreviewPlaying(false)
     setPhase('idle')
     setDuration(0)
+
     barsRef.current = Array(BAR_COUNT).fill(3)
     setBars(barsRef.current)
+
     blobRef.current = null
   }
 
   function sendIt() {
     const blob = blobRef.current
+
     teardown()
     resetAll()
+
     if (blob) onSend(blob)
   }
 
   function togglePreview() {
     const el = audioRef.current
     if (!el) return
-    if (previewPlaying) { el.pause(); setPreviewPlaying(false) }
-    else { el.play(); setPreviewPlaying(true) }
+
+    if (previewPlaying) {
+      el.pause()
+      setPreviewPlaying(false)
+    } else {
+      el.play()
+      setPreviewPlaying(true)
+    }
   }
 
-  function fmt(s: number) { return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}` }
+  function fmt(s: number) {
+    return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`
+  }
 
   if (phase === 'idle') {
     return (
@@ -175,16 +289,23 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
     return (
       <div className={styles.panel}>
         <audio ref={audioRef} src={previewUrl ?? undefined} onEnded={() => setPreviewPlaying(false)} />
+
         <button type="button" className={styles.playBtn} onClick={togglePreview} aria-label="Play or pause preview">
           {previewPlaying ? <Pause size={16} /> : <Play size={16} />}
         </button>
+
         <div className={styles.wave}>
-          {bars.map((h, i) => <span key={i} style={{ height: `${h}px` }} />)}
+          {bars.map((h, i) => (
+            <span key={i} style={{ height: `${h}px` }} />
+          ))}
         </div>
+
         <span className={styles.timer}>{fmt(duration)}</span>
+
         <button type="button" className={`${styles.ctrlBtn} ${styles.danger}`} onClick={trashIt} aria-label="Discard recording">
           <Trash2 size={16} />
         </button>
+
         <button type="button" className={styles.sendBtn} onClick={sendIt} aria-label="Send voice comment">
           <Send size={16} />
         </button>
@@ -197,15 +318,26 @@ export function VoiceRecorder({ onSend }: { onSend: (audioBlob: Blob) => void })
     <div className={styles.panel}>
       <span className={styles.pulse} />
       <span className={styles.timer}>{fmt(duration)}</span>
+
       <div className={styles.wave}>
-        {bars.map((h, i) => <span key={i} style={{ height: `${h}px` }} />)}
+        {bars.map((h, i) => (
+          <span key={i} style={{ height: `${h}px` }} />
+        ))}
       </div>
-      <button type="button" className={styles.ctrlBtn} onClick={phase === 'recording' ? pauseRec : resumeRec} aria-label="Pause or resume">
+
+      <button
+        type="button"
+        className={styles.ctrlBtn}
+        onClick={phase === 'recording' ? pauseRec : resumeRec}
+        aria-label="Pause or resume"
+      >
         {phase === 'recording' ? <Pause size={16} /> : <Play size={16} />}
       </button>
+
       <button type="button" className={`${styles.ctrlBtn} ${styles.danger}`} onClick={trashIt} aria-label="Discard recording">
         <Trash2 size={16} />
       </button>
+
       <button type="button" className={styles.stopBtn} onClick={stopToPreview} aria-label="Stop and preview">
         <Square size={16} />
       </button>

@@ -76,6 +76,72 @@
   transform: translateY(-1px);
 }
 
+.filterRow {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 1rem 0.2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.filterRow::-webkit-scrollbar {
+  display: none;
+}
+
+.filterChip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  background: #f1f0ed;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.filterChip:hover {
+  background: #e7e6e2;
+  color: var(--ink);
+}
+
+.filterChipOn {
+  background: var(--ink);
+  color: var(--wall);
+  border-color: var(--ink);
+}
+
+.filterChipOn:hover {
+  background: var(--ink);
+  color: var(--wall);
+}
+
+.filterCount {
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(14, 14, 14, 0.1);
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.3rem;
+}
+
+.filterChipOn .filterCount {
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--wall);
+}
+
 .searchWrap {
   position: relative;
   flex: 0 0 auto;
@@ -359,53 +425,6 @@
   color: var(--ink);
 }
 
-.convMenu,
-.threadConvMenu,
-.messageMenu,
-.reactionPicker {
-  position: absolute;
-  z-index: 30;
-  background: rgba(255, 255, 255, 0.98);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 18px 45px rgba(20, 18, 15, 0.16);
-  backdrop-filter: blur(14px);
-  padding: 0.35rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 190px;
-}
-
-.convMenu {
-  right: 0.55rem;
-  top: calc(100% - 8px);
-}
-
-.convMenu button,
-.threadConvMenu button,
-.messageMenu button {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  border: none;
-  background: none;
-  color: var(--ink);
-  font-family: var(--font-ui);
-  font-size: 0.82rem;
-  padding: 0.55rem 0.6rem;
-  border-radius: 10px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.convMenu button:hover,
-.threadConvMenu button:hover,
-.messageMenu button:hover {
-  background: rgba(14, 14, 14, 0.05);
-}
-
 .searchSection {
   padding: 0.75rem 0 1rem;
   border-top: 1px solid rgba(14, 14, 14, 0.06);
@@ -482,77 +501,6 @@
   color: var(--ink-soft);
 }
 
-/* ----------------------------- ARCHIVED ENTRY ----------------------------- */
-.archivedRow {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 44px 1fr auto;
-  gap: 0.75rem;
-  align-items: center;
-  padding: 0.8rem 1rem;
-  background: none;
-  border: none;
-  border-bottom: 1px solid rgba(14, 14, 14, 0.06);
-  cursor: pointer;
-  text-align: left;
-  color: var(--ink);
-}
-
-.archivedRow:hover {
-  background: rgba(14, 14, 14, 0.035);
-}
-
-.archivedIcon {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--wall);
-  border: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ink-soft);
-}
-
-.archivedLabel {
-  font-size: 0.92rem;
-  font-weight: 650;
-}
-
-.archivedCount {
-  min-width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  background: rgba(14, 14, 14, 0.08);
-  color: var(--ink-soft);
-  font-size: 0.68rem;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 0.35rem;
-}
-
-.backBtnInline {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  background: none;
-  border: none;
-  color: var(--ink);
-  font-family: var(--font-label);
-  font-style: italic;
-  font-size: 1.2rem;
-  cursor: pointer;
-}
-
-.menuOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 29;
-  background: transparent;
-}
-
 /* ----------------------------- THREAD ----------------------------- */
 .threadWrap {
   min-width: 0;
@@ -592,6 +540,35 @@
   display: none;
 }
 
+.threadIdentityBtn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: none;
+  background: none;
+  padding: 0.1rem 0.25rem;
+  margin-left: -0.25rem;
+  border-radius: 10px;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.threadIdentityBtn:hover {
+  background: rgba(14, 14, 14, 0.05);
+}
+
+.threadIdentityBtn .threadTitleBlock {
+  flex: 1 1 auto;
+}
+
+.threadInfoIcon {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+}
+
 .threadMenuBtn {
   margin-left: auto;
   width: 34px;
@@ -601,12 +578,6 @@
 
 .threadMenuBtn:hover {
   background: rgba(14, 14, 14, 0.06);
-}
-
-.threadConvMenu {
-  position: absolute;
-  right: 1rem;
-  top: calc(100% - 4px);
 }
 
 .threadTitleBlock {
@@ -1077,32 +1048,6 @@
   background: rgba(91, 58, 142, 0.12);
 }
 
-.reactionPicker {
-  bottom: auto;
-  top: calc(100% + 4px);
-  min-width: auto;
-  flex-direction: row;
-  padding: 0.3rem;
-  gap: 0.15rem;
-}
-
-.reactionPicker button {
-  width: 34px;
-  height: 34px;
-  border: none;
-  background: none;
-  border-radius: 10px;
-  font-size: 1.05rem;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.reactionPicker button:hover {
-  background: rgba(14, 14, 14, 0.06);
-}
-
 /* ----------------------------- MESSAGE META ----------------------------- */
 .msgMeta {
   display: flex;
@@ -1195,24 +1140,80 @@
   background: rgba(109, 26, 36, 0.08);
 }
 
-.messageMenu {
-  top: calc(100% + 4px);
+/* ----------------------------- FLOATING MENUS ----------------------------- */
+.floatingBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: transparent;
 }
 
-.mine .messageMenu {
-  right: 0;
+.floatingMenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 190px;
+  max-width: min(280px, calc(100vw - 1rem));
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 18px 45px rgba(20, 18, 15, 0.16);
+  backdrop-filter: blur(14px);
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
 }
 
-.other .messageMenu {
-  left: 0;
+.floatingAlignRight {
+  transform: translateX(-100%);
 }
 
-.mine .reactionPicker {
-  right: 0;
+.floatingUp {
+  transform: translateY(-100%);
 }
 
-.other .reactionPicker {
-  left: 0;
+.floatingAlignRight.floatingUp {
+  transform: translate(-100%, -100%);
+}
+
+.floatingMenu button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  padding: 0.55rem 0.6rem;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.floatingMenu button:hover {
+  background: rgba(14, 14, 14, 0.05);
+}
+
+.floatingReaction {
+  min-width: auto;
+  flex-direction: row;
+  padding: 0.3rem;
+  gap: 0.15rem;
+}
+
+.floatingReaction button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 1.05rem;
+  justify-content: center;
+}
+
+.floatingReaction button:hover {
+  background: rgba(14, 14, 14, 0.06);
 }
 
 /* ----------------------------- BANNERS + COMPOSER ----------------------------- */
@@ -1546,73 +1547,6 @@
 .primaryBtn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-/* ----------------------------- FILTER TABS ----------------------------- */
-.filterRow {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.6rem 1rem 0.2rem;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.filterRow::-webkit-scrollbar {
-  display: none;
-}
-
-.filterChip {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  border: 1px solid var(--line);
-  background: #f1f0ed;
-  color: var(--ink-soft);
-  border-radius: 999px;
-  padding: 0.35rem 0.7rem;
-  font-family: var(--font-ui);
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.filterChip:hover {
-  background: #e7e6e2;
-  color: var(--ink);
-}
-
-.filterChipOn {
-  background: var(--ink);
-  color: var(--wall);
-  border-color: var(--ink);
-}
-
-.filterChipOn:hover {
-  background: var(--ink);
-  color: var(--wall);
-}
-
-.filterCount {
-  min-width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background: rgba(14, 14, 14, 0.1);
-  color: var(--ink-soft);
-  font-size: 0.62rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 0.3rem;
-}
-
-.filterChipOn .filterCount {
-  background: rgba(255, 255, 255, 0.22);
-  color: var(--wall);
 }
 
 /* ----------------------------- TOUCH ----------------------------- */

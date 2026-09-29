@@ -80,6 +80,7 @@ export type ChatEvent =
   | { type: 'read'; conversation_id: number; user_name: string; last_read_id: number }
   | { type: 'delivery'; conversation_id: number; user_name: string; last_delivered_id: number }
   | { type: 'typing'; conversation_id: number; user_name: string }
+  | { type: 'recording'; conversation_id: number; user_name: string; active: boolean }
   | { type: 'message_edited'; message: ChatMessage }
   | { type: 'message_deleted'; conversation_id: number; message_id: number }
   | { type: 'reaction_added'; conversation_id: number; message_id: number; user_name: string; emoji: string }

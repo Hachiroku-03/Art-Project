@@ -794,6 +794,34 @@ async def chat_ws(websocket: WebSocket):
                     exclude=websocket,
                 )
 
+            # ---- recording voice note ----
+            elif ctype == "recording":
+                conv_id = data.get("conversation_id")
+                active = bool(data.get("active", False))
+
+                if conv_id is None:
+                    continue
+
+                conn = get_db()
+                cursor = conn.cursor()
+                member = _is_member(cursor, conv_id, viewer)
+                conn.close()
+
+                if not member:
+                    continue
+
+                members = _member_names_from_id(conv_id)
+                await manager.send_to_users(
+                    members,
+                    json.dumps({
+                        "type": "recording",
+                        "conversation_id": conv_id,
+                        "user_name": viewer,
+                        "active": active,
+                    }, default=str),
+                    exclude=websocket,
+                )
+
             else:
                 await websocket.send_text(
                     json.dumps({"type": "error", "error": f"unknown type {ctype}"})
@@ -843,7 +871,7 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
                lm.body AS last_body,
                lm.kind AS last_kind,
                lm.sender AS last_sender,
-               lm.created_at::text AS last_at,
+               lm.created_at AS last_at,
 
                (
                    SELECT COUNT(*)

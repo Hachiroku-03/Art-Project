@@ -877,43 +877,23 @@ def update_conversation_prefs(conv_id: int, data: dict):
 # search
 # ---------------------------------------------------------------------------
 @router.get("/chat/search")
-def search_messages(
-    viewer: str = "",
-    q: str = "",
-    conversation_id: int = 0,
-    limit: int = 50,
-):
+def search_messages(viewer: str = "", q: str = "", conversation_id: int = 0, limit: int = 50):
     viewer = _resolve_viewer(viewer)
-
     if not viewer:
         return {"error": "viewer required"}
-
     query = (q or "").strip()
     if not query:
         return {"messages": []}
-
     limit = max(1, min(limit, 100))
     pattern = f"%{query}%"
-
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = get_db(); cursor = conn.cursor()
     cursor.execute(
         """
         SELECT m.id
         FROM chat_messages m
         WHERE m.deleted_at IS NULL
-          AND NOT EXISTS (
-              SELECT 1
-              FROM chat_message_hidden h
-              WHERE h.message_id = m.id
-                AND h.user_name = %s
-          )
-          AND m.conversation_id IN (
-              SELECT conversation_id
-              FROM chat_members
-              WHERE user_name = %s
-          )
+          AND NOT EXISTS (SELECT 1 FROM chat_message_hidden h WHERE h.message_id=m.id AND h.user_name=%s)
+          AND m.conversation_id IN (SELECT conversation_id FROM chat_members WHERE user_name=%s)
           AND (%s::int = 0 OR m.conversation_id = %s)
           AND m.body ILIKE %s
         ORDER BY m.id DESC
@@ -921,16 +901,47 @@ def search_messages(
         """,
         (viewer, viewer, conversation_id, conversation_id, pattern, limit),
     )
-
     ids = [r["id"] for r in cursor.fetchall()]
-    messages = _message_rows(cursor, ids, viewer)
-
-    # Search results should be newest-first.
-    messages.reverse()
-
+    messages = _message_rows(cursor, ids, viewer)   # full + localized rows
+    messages.reverse()                              # newest-first for results
     conn.close()
-
     return {"messages": messages}
+
+
+@router.get("/chat/conversations/{conv_id}/media")
+def conversation_media(conv_id: int, viewer: str = "", kind: str = "all", before_id: int = 0, limit: int = 50):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+    kind = (kind or "all").strip().lower()
+    if kind != "all" and kind not in MEDIA_KINDS:
+        return {"error": "kind must be all, image, video, voice, or file"}
+    limit = max(1, min(limit, 100)); fetch_limit = limit + 1
+    conn = get_db(); cursor = conn.cursor()
+    if not _is_member(cursor, conv_id, viewer):
+        conn.close(); return {"error": "not a member"}
+    base_where = """
+        WHERE m.conversation_id = %s
+          AND m.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM chat_message_hidden h WHERE h.message_id=m.id AND h.user_name=%s)
+    """
+    params = [conv_id, viewer]
+    if kind == "all":
+        base_where += " AND m.kind = ANY(%s)"; params.append(list(MEDIA_KINDS))
+    else:
+        base_where += " AND m.kind = %s"; params.append(kind)
+    if before_id > 0:
+        base_where += " AND m.id < %s"; params.append(before_id)
+    params.append(fetch_limit)
+    cursor.execute(f"SELECT m.id FROM chat_messages m {base_where} ORDER BY m.id DESC LIMIT %s", tuple(params))
+    rows = cursor.fetchall()
+    ids = [r["id"] for r in rows]
+    has_more = len(ids) > limit
+    ids = ids[:limit]
+    messages = _message_rows(cursor, ids, viewer)   # full + localized rows
+    messages.reverse()                              # newest-first grid
+    conn.close()
+    return {"messages": messages, "has_more": has_more}
 
 
 # ---------------------------------------------------------------------------

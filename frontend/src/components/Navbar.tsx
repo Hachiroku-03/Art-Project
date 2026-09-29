@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Home, Gavel, Crown, Menu, X, User, LogOut, Ticket, MessageCircle } from 'lucide-react'
 import { WalletPanel } from './WalletPanel'
+import { NotificationBell } from './NotificationBell'
 import { API } from '../lib/sales'
 import { teardown } from '../lib/chat'
 import styles from './Navbar.module.css'
@@ -80,6 +81,8 @@ export function Navbar() {
         </div>
 
         <div className={styles.userCluster}>
+          <NotificationBell />
+
           <button className={`${styles.iconBtn} ${walletOpen ? styles.iconBtnOn : ''}`} onClick={() => setWalletOpen(o => !o)} aria-label="Wallet">
             <Ticket size={18} />
           </button>
