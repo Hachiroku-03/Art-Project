@@ -6,9 +6,12 @@ import {
   ArrowLeft,
   BellOff,
   Check,
+  CheckCheck,
   Clock,
   Copy,
   Download,
+  Eraser,
+  ExternalLink,
   Forward,
   Image as ImageIcon,
   Info,
@@ -17,6 +20,7 @@ import {
   MoreVertical,
   Pencil,
   Pin,
+  PinOff,
   Plus,
   Reply,
   RotateCcw,
@@ -42,11 +46,20 @@ import {
   searchMessages,
   fetchConversationMembers,
   fetchConversations,
+  fetchStarredMessages,
+  fetchPinnedMessages,
+  fetchMessageReactions,
+  pinMessage,
+  unpinMessage,
+  clearConversationForMe,
+  markAllChatsRead,
+  muteConversation,
   subscribe,
   wsSend,
   type ChatMessage,
   type Conversation,
   type GroupMember,
+  type ReactionDetail,
 } from '../lib/chat'
 import styles from './MessengerPage.module.css'
 
@@ -56,11 +69,12 @@ const QUICK_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🙏']
 const RECORDING_TTL = 15000
 const RECORDING_HEARTBEAT = 7000
 
-type Filter = 'all' | 'unread' | 'groups' | 'archived'
+type Filter = 'all' | 'unread' | 'starred' | 'groups' | 'archived'
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'unread', label: 'Unread' },
+  { key: 'starred', label: 'Starred' },
   { key: 'groups', label: 'Groups' },
   { key: 'archived', label: 'Archived' },
 ]
@@ -75,6 +89,11 @@ type ActiveMenu = {
   align: 'left' | 'right'
   vertical: 'up' | 'down'
 } | null
+
+type LinkItem = {
+  url: string
+  domain: string
+}
 
 function parseDate(raw?: string | null) {
   if (!raw) return new Date(NaN)
@@ -161,6 +180,61 @@ function convMatches(c: Conversation, q: string) {
 
 function isUnread(c: Conversation) {
   return (c.unread || 0) > 0 || c.mark_unread
+}
+
+function extractLinks(body: string): LinkItem[] {
+  const matches = body.match(/https?:\/\/[^\s<>"')\]]+/g) || []
+
+  return matches.slice(0, 5).map(url => {
+    let domain = url
+    try {
+      domain = new URL(url).hostname
+    } catch {
+      domain = url
+    }
+    return { url, domain }
+  })
+}
+
+function getLinks(msg: ChatMessage | null, body: string): LinkItem[] {
+  const metaLinks = (msg?.meta as Record<string, unknown> | undefined)?.links
+
+  if (Array.isArray(metaLinks)) {
+    return metaLinks
+      .filter(x => typeof x === 'object' && x !== null && 'url' in x)
+      .map(x => {
+        const item = x as { url?: unknown; domain?: unknown }
+        const url = String(item.url || '')
+        let domain = String(item.domain || '')
+
+        if (!domain) {
+          try {
+            domain = new URL(url).hostname
+          } catch {
+            domain = url
+          }
+        }
+
+        return { url, domain }
+      })
+      .filter(x => x.url)
+  }
+
+  return extractLinks(body)
+}
+
+function renderTextWithMentions(text: string) {
+  const parts = text.split(/(@[A-Za-z0-9_.\-]+)/g)
+
+  return parts.map((part, i) =>
+    part.startsWith('@') ? (
+      <span key={`${part}-${i}`} className={styles.mention}>
+        {part}
+      </span>
+    ) : (
+      part
+    ),
+  )
 }
 
 function Avatar({
@@ -252,11 +326,40 @@ export function MessengerPage() {
   const localRecordingCidRef = useRef<number | null>(null)
   const localRecordingTimerRef = useRef<number | null>(null)
 
+  const [starredMessages, setStarredMessages] = useState<ChatMessage[]>([])
+  const [loadingStarred, setLoadingStarred] = useState(false)
+
+  const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
+  const [showPinned, setShowPinned] = useState(true)
+
+  const [threadSearchOpen, setThreadSearchOpen] = useState(false)
+  const [threadQuery, setThreadQuery] = useState('')
+  const [threadResults, setThreadResults] = useState<ChatMessage[]>([])
+  const [searchingThread, setSearchingThread] = useState(false)
+  const [jumpToMessageId, setJumpToMessageId] = useState<number | null>(null)
+
+  const [reactionDetail, setReactionDetail] = useState<{ messageId: number; items: ReactionDetail[] } | null>(null)
+
   const fileRef = useRef<HTMLInputElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const draftTimer = useRef<number | null>(null)
   const lastDraftSaved = useRef<string>('')
+  const audioCtxRef = useRef<AudioContext | null>(null)
+
+  const autosizeComposer = useCallback(() => {
+  const el = inputRef.current
+  if (!el) return
+
+  el.style.height = 'auto'
+
+  const maxHeight = window.matchMedia('(max-width: 900px)').matches ? 132 : 180
+  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+}, [])
+
+useEffect(() => {
+  autosizeComposer()
+}, [autosizeComposer, cid, draft, editing])
 
   const activeConv = useMemo(() => {
     if (cid == null) return undefined
@@ -283,6 +386,7 @@ export function MessengerPage() {
 
   const canStartDirect =
     filter !== 'archived' &&
+    filter !== 'starred' &&
     !!cleanTarget &&
     !conversations.some(
       c =>
@@ -294,10 +398,11 @@ export function MessengerPage() {
     () => ({
       all: conversations.length,
       unread: conversations.filter(isUnread).length,
+      starred: starredMessages.length,
       groups: conversations.filter(c => c.kind === 'group').length,
       archived: archivedConvs.length,
     }),
-    [conversations, archivedConvs],
+    [conversations, archivedConvs, starredMessages],
   )
 
   const listRows = useMemo(() => {
@@ -320,9 +425,13 @@ export function MessengerPage() {
       ? 'Nothing archived.'
       : filter === 'unread'
         ? 'No unread chats.'
-        : filter === 'groups'
-          ? 'No group chats yet.'
-          : 'No conversations yet.'
+        : filter === 'starred'
+          ? 'No starred messages.'
+          : filter === 'groups'
+            ? 'No group chats yet.'
+            : 'No conversations yet.'
+
+  const pinnedIds = useMemo(() => new Set(pinnedMessages.map(m => m.id)), [pinnedMessages])
 
   const closeMenu = useCallback(() => setActiveMenu(null), [])
 
@@ -455,97 +564,92 @@ export function MessengerPage() {
     await reloadArchived()
   }, [refreshConversations, reloadArchived])
 
-  const clearLocalRecordingTimer = useCallback(() => {
-    if (localRecordingTimerRef.current != null) {
-      window.clearInterval(localRecordingTimerRef.current)
-      localRecordingTimerRef.current = null
+  const loadPinned = useCallback(
+    async (conversationId: number) => {
+      if (!viewer) return
+
+      try {
+        const rows = await fetchPinnedMessages(viewer, conversationId)
+        setPinnedMessages(rows)
+      } catch {
+        setPinnedMessages([])
+      }
+    },
+    [viewer],
+  )
+
+  const playPing = useCallback(() => {
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+      if (!Ctx) return
+
+      audioCtxRef.current = audioCtxRef.current || new Ctx()
+      const ctx = audioCtxRef.current
+
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {})
+      }
+
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(880, ctx.currentTime)
+
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01)
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18)
+
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+
+      osc.start()
+      osc.stop(ctx.currentTime + 0.2)
+    } catch {
+      // audio blocked
     }
   }, [])
 
-  const stopLocalRecording = useCallback(
-    (conversationId?: number) => {
-      const target = localRecordingCidRef.current ?? conversationId
+  useEffect(() => {
+    return subscribe(e => {
+      if (e.type !== 'recording') return
 
-      if (target != null) {
-        wsSend({
-          type: 'recording',
-          conversation_id: target,
-          active: false,
-        })
+      setRemoteRecording(prev => {
+        const forConv = { ...(prev[e.conversation_id] || {}) }
 
-        setRemoteRecording(prev => {
-          const forConv = { ...(prev[target] || {}) }
+        if (e.active) {
+          forConv[e.user_name] = Date.now()
+        } else {
+          delete forConv[e.user_name]
+        }
 
-          if (viewer in forConv) {
-            delete forConv[viewer]
-            return { ...prev, [target]: forConv }
-          }
-
-          return prev
-        })
-      }
-
-      clearLocalRecordingTimer()
-      localRecordingCidRef.current = null
-    },
-    [clearLocalRecordingTimer, viewer],
-  )
-
-  const startLocalRecording = useCallback(
-    (conversationId: number) => {
-      if (localRecordingCidRef.current != null && localRecordingCidRef.current !== conversationId) {
-        stopLocalRecording(localRecordingCidRef.current)
-      }
-
-      localRecordingCidRef.current = conversationId
-
-      wsSend({
-        type: 'recording',
-        conversation_id: conversationId,
-        active: true,
+        return { ...prev, [e.conversation_id]: forConv }
       })
-
-      clearLocalRecordingTimer()
-
-      localRecordingTimerRef.current = window.setInterval(() => {
-        const activeCid = localRecordingCidRef.current
-        if (activeCid == null) return
-
-        wsSend({
-          type: 'recording',
-          conversation_id: activeCid,
-          active: true,
-        })
-      }, RECORDING_HEARTBEAT)
-    },
-    [clearLocalRecordingTimer, stopLocalRecording],
-  )
-
-  const handleRecorderStart = useCallback(() => {
-    if (cid != null) startLocalRecording(cid)
-  }, [cid, startLocalRecording])
-
-  const handleRecorderStop = useCallback(() => {
-    stopLocalRecording(cid ?? undefined)
-  }, [cid, stopLocalRecording])
+    })
+  }, [])
 
   useEffect(() => {
     return subscribe(e => {
-      if (e.type === 'recording') {
-        setRemoteRecording(prev => {
-          const forConv = { ...(prev[e.conversation_id] || {}) }
+      if (e.type !== 'message') return
 
-          if (e.active) {
-            forConv[e.user_name] = Date.now()
-          } else {
-            delete forConv[e.user_name]
-          }
+      const m = e.message
+      if (m.sender === viewer) return
 
-          return { ...prev, [e.conversation_id]: forConv }
-        })
-      }
+      const conv =
+        conversations.find(c => c.id === m.conversation_id) ||
+        archivedConvs.find(c => c.id === m.conversation_id)
+
+      if (conv?.muted) return
+
+      const isInActiveChat = cid === m.conversation_id && document.hasFocus() && !document.hidden
+      if (isInActiveChat) return
+
+      playPing()
     })
-  }, [])
+  }, [archivedConvs, cid, conversations, playPing, viewer])
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -623,8 +727,17 @@ export function MessengerPage() {
 
     closeMenu()
     setInfoOpen(false)
+    setThreadSearchOpen(false)
+    setThreadQuery('')
+    setThreadResults([])
+    setShowPinned(true)
 
-    if (cid == null) return
+    if (cid == null) {
+      setPinnedMessages([])
+      return
+    }
+
+    void loadPinned(cid)
 
     const conv = conversations.find(c => c.id === cid) || archivedConvs.find(c => c.id === cid)
     const initialDraft = conv?.draft || ''
@@ -654,7 +767,7 @@ export function MessengerPage() {
   useEffect(() => {
     const q = query.trim()
 
-    if (!viewer || q.length < 2 || filter === 'archived') {
+    if (!viewer || q.length < 2 || filter === 'archived' || filter === 'starred') {
       setSearchResults([])
       setSearching(false)
       return
@@ -681,6 +794,60 @@ export function MessengerPage() {
       window.clearTimeout(timer)
     }
   }, [query, viewer, filter])
+
+  useEffect(() => {
+    if (filter !== 'starred' || !viewer) return
+
+    setLoadingStarred(true)
+
+    fetchStarredMessages(viewer, 100)
+      .then(setStarredMessages)
+      .catch(() => setStarredMessages([]))
+      .finally(() => setLoadingStarred(false))
+  }, [filter, viewer])
+
+  useEffect(() => {
+    if (!threadSearchOpen || cid == null || threadQuery.trim().length < 2) {
+      setThreadResults([])
+      setSearchingThread(false)
+      return
+    }
+
+    let alive = true
+    setSearchingThread(true)
+
+    const timer = window.setTimeout(() => {
+      searchMessages(viewer, threadQuery.trim(), cid, 50)
+        .then(rows => {
+          if (alive) setThreadResults(rows)
+        })
+        .catch(() => {
+          if (alive) setThreadResults([])
+        })
+        .finally(() => {
+          if (alive) setSearchingThread(false)
+        })
+    }, 250)
+
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [threadSearchOpen, threadQuery, cid, viewer])
+
+  useEffect(() => {
+    if (jumpToMessageId == null || !activeThread.length) return
+
+    const id = jumpToMessageId
+
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-message-id="${id}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setJumpToMessageId(null)
+    })
+
+    return () => cancelAnimationFrame(raf)
+  }, [jumpToMessageId, activeThread])
 
   const scheduleDraftSave = useCallback(
     (value: string) => {
@@ -720,10 +887,19 @@ export function MessengerPage() {
     [openConversation],
   )
 
+  const openChatAndJump = useCallback(
+    (conversationId: number, messageId?: number) => {
+      openChat(conversationId)
+      if (messageId != null) setJumpToMessageId(messageId)
+    },
+    [openChat],
+  )
+
   const backToList = useCallback(() => {
     closeConversation()
     setShowThreadMobile(false)
     setInfoOpen(false)
+    setThreadSearchOpen(false)
     closeMenu()
     setNote('')
   }, [closeConversation, closeMenu])
@@ -806,9 +982,22 @@ export function MessengerPage() {
     if (d.conversation_id != null) openChat(d.conversation_id)
   }, [groupDescription, groupName, groupMemberText, openChat, startGroup])
 
-  const openImagePreview = useCallback((url: string) => {
-    setLightbox({ items: [url], index: 0 })
-  }, [])
+  const openMediaCarousel = useCallback(
+    (url: string) => {
+      const items = activeThread
+        .filter(t => t.kind === 'image')
+        .map(t => t.body)
+
+      const unique = Array.from(new Set(items))
+      const idx = unique.indexOf(url)
+
+      setLightbox({
+        items: unique.length ? unique : [url],
+        index: idx >= 0 ? idx : 0,
+      })
+    },
+    [activeThread],
+  )
 
   const downloadImage = useCallback(async (url: string) => {
     try {
@@ -889,48 +1078,59 @@ export function MessengerPage() {
     setReplyTo(null)
   }
 
-  const sendMessage = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault()
+const sendMessage = useCallback(
+  async (e: React.FormEvent<HTMLFormElement> | React.KeyboardEvent<HTMLTextAreaElement>) => {
+    e.preventDefault()
 
-      const body = draft.trim()
-      if (!body || cid == null) return
+    const body = draft.trim()
+    if (!body || cid == null) return
 
-      if (draftTimer.current !== null) {
-        window.clearTimeout(draftTimer.current)
-        draftTimer.current = null
-      }
+    if (draftTimer.current !== null) {
+      window.clearTimeout(draftTimer.current)
+      draftTimer.current = null
+    }
 
-      setNote('')
+    setNote('')
 
-      if (editing) {
-        const d = await editMessage(editing.id, body)
+    if (editing) {
+      const d = await editMessage(editing.id, body)
 
-        if (d.error) {
-          setNote(d.error)
-          return
-        }
-
-        setEditing(null)
-        setDraft('')
-        lastDraftSaved.current = ''
-
-        if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
+      if (d.error) {
+        setNote(d.error)
         return
       }
 
-      send(cid, 'text', body, replyTo ? { reply_to_id: replyTo.id } : {})
-
+      setEditing(null)
       setDraft('')
-      setReplyTo(null)
-
-      await deleteDraft(cid)
       lastDraftSaved.current = ''
 
       if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
-    },
-    [cid, deleteDraft, draft, editMessage, editing, replyTo, send],
-  )
+      return
+    }
+
+    send(cid, 'text', body, replyTo ? { reply_to_id: replyTo.id } : {})
+
+    setDraft('')
+    setReplyTo(null)
+
+    await deleteDraft(cid)
+    lastDraftSaved.current = ''
+
+    if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
+  },
+  [cid, deleteDraft, draft, editMessage, editing, replyTo, send],
+)
+
+const handleComposerKeyDown = useCallback(
+  (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) {
+      return
+    }
+
+    void sendMessage(e)
+  },
+  [sendMessage],
+)
 
   const onDraftChange = useCallback(
     (value: string) => {
@@ -989,9 +1189,50 @@ export function MessengerPage() {
       if (msg.starred_by_viewer) await unstar(msg.id)
       else await star(msg.id)
 
+      if (filter === 'starred') {
+        setStarredMessages(prev => prev.filter(x => x.id !== msg.id))
+      }
+
       closeMenu()
     },
-    [star, unstar, closeMenu],
+    [star, unstar, closeMenu, filter],
+  )
+
+  const togglePin = useCallback(
+    async (msg: ChatMessage) => {
+      if (!viewer) return
+
+      const pinned = pinnedIds.has(msg.id)
+      const d = pinned ? await unpinMessage(viewer, msg.id) : await pinMessage(viewer, msg.id)
+
+      if (d.error) {
+        setNote(d.error)
+        closeMenu()
+        return
+      }
+
+      if (cid != null) void loadPinned(cid)
+      closeMenu()
+    },
+    [cid, closeMenu, loadPinned, pinnedIds, viewer],
+  )
+
+  const openReactionDetail = useCallback(
+    async (msg: ChatMessage) => {
+      if (!viewer) return
+
+      const d = await fetchMessageReactions(viewer, msg.id)
+
+      if (d.error) {
+        setNote(d.error)
+        closeMenu()
+        return
+      }
+
+      setReactionDetail({ messageId: msg.id, items: d.reactions || [] })
+      closeMenu()
+    },
+    [closeMenu, viewer],
   )
 
   const handleDeleteForEveryone = useCallback(
@@ -1057,8 +1298,53 @@ export function MessengerPage() {
     setForwardTargets([])
   }, [forward, forwardMessage, forwardTargets])
 
+  const doMute = useCallback(
+    async (conversationId: number, hours: number | null) => {
+      const d = await muteConversation(viewer, conversationId, hours)
+
+      if (d.error) {
+        setNote(d.error)
+        closeMenu()
+        return
+      }
+
+      closeMenu()
+      await refreshAll()
+    },
+    [closeMenu, refreshAll, viewer],
+  )
+
+  const clearChat = useCallback(
+    async (conversationId: number) => {
+      const d = await clearConversationForMe(viewer, conversationId)
+
+      if (d.error) {
+        setNote(d.error)
+        closeMenu()
+        return
+      }
+
+      closeMenu()
+      openConversation(conversationId)
+      setNote('Chat cleared for you.')
+    },
+    [closeMenu, openConversation, viewer],
+  )
+
+  const markAllChats = useCallback(async () => {
+    const d = await markAllChatsRead(viewer)
+
+    if (d.error) {
+      setNote(d.error)
+      return
+    }
+
+    await refreshAll()
+    setNote('All chats marked read.')
+  }, [refreshAll, viewer])
+
   const conversationAction = useCallback(
-    async (conversationId: number, action: 'pin' | 'mute' | 'archive' | 'unread' | 'leave') => {
+    async (conversationId: number, action: 'pin' | 'archive' | 'unread' | 'leave') => {
       const conv =
         conversations.find(c => c.id === conversationId) ||
         archivedConvs.find(c => c.id === conversationId)
@@ -1069,7 +1355,6 @@ export function MessengerPage() {
       const isArchivingNow = action === 'archive' && !conv.archived
 
       if (action === 'pin') await updatePrefs(conversationId, { pinned: !conv.pinned })
-      else if (action === 'mute') await updatePrefs(conversationId, { muted: !conv.muted })
       else if (action === 'archive') await updatePrefs(conversationId, { archived: !conv.archived })
       else if (action === 'unread') await updatePrefs(conversationId, { mark_unread: true })
       else if (action === 'leave') {
@@ -1088,8 +1373,6 @@ export function MessengerPage() {
 
       closeMenu()
 
-      // On mobile, archiving the currently open chat should return to the chat list.
-      // Otherwise the user can get stuck on an empty thread screen.
       if (isArchivingNow && wasActive && !isDesktop()) {
         backToList()
       }
@@ -1110,6 +1393,80 @@ export function MessengerPage() {
     ],
   )
 
+  const clearLocalRecordingTimer = useCallback(() => {
+    if (localRecordingTimerRef.current != null) {
+      window.clearInterval(localRecordingTimerRef.current)
+      localRecordingTimerRef.current = null
+    }
+  }, [])
+
+  const stopLocalRecording = useCallback(
+    (conversationId?: number) => {
+      const target = localRecordingCidRef.current ?? conversationId
+
+      if (target != null) {
+        wsSend({
+          type: 'recording',
+          conversation_id: target,
+          active: false,
+        })
+
+        setRemoteRecording(prev => {
+          const forConv = { ...(prev[target] || {}) }
+
+          if (viewer in forConv) {
+            delete forConv[viewer]
+            return { ...prev, [target]: forConv }
+          }
+
+          return prev
+        })
+      }
+
+      clearLocalRecordingTimer()
+      localRecordingCidRef.current = null
+    },
+    [clearLocalRecordingTimer, viewer],
+  )
+
+  const startLocalRecording = useCallback(
+    (conversationId: number) => {
+      if (localRecordingCidRef.current != null && localRecordingCidRef.current !== conversationId) {
+        stopLocalRecording(localRecordingCidRef.current)
+      }
+
+      localRecordingCidRef.current = conversationId
+
+      wsSend({
+        type: 'recording',
+        conversation_id: conversationId,
+        active: true,
+      })
+
+      clearLocalRecordingTimer()
+
+      localRecordingTimerRef.current = window.setInterval(() => {
+        const activeCid = localRecordingCidRef.current
+        if (activeCid == null) return
+
+        wsSend({
+          type: 'recording',
+          conversation_id: activeCid,
+          active: true,
+        })
+      }, RECORDING_HEARTBEAT)
+    },
+    [clearLocalRecordingTimer, stopLocalRecording],
+  )
+
+  const handleRecorderStart = useCallback(() => {
+    if (cid != null) startLocalRecording(cid)
+  }, [cid, startLocalRecording])
+
+  const handleRecorderStop = useCallback(() => {
+    stopLocalRecording(cid ?? undefined)
+  }, [cid, stopLocalRecording])
+
   const typing = cid != null ? typingNames(cid) : []
 
   const recordingNames = useCallback(
@@ -1125,9 +1482,26 @@ export function MessengerPage() {
 
   const recording = cid != null ? recordingNames(cid) : []
 
-  const readCursor = cid != null && counterpartUser ? readCursors[cid]?.[counterpartUser] || 0 : 0
-  const deliveredCursor =
+  const counterpartRead =
+    cid != null && counterpartUser ? readCursors[cid]?.[counterpartUser] || 0 : 0
+  const counterpartDelivered =
     cid != null && counterpartUser ? deliveredCursors[cid]?.[counterpartUser] || 0 : 0
+
+  const groupRead = useMemo(() => {
+    if (cid == null || !activeConv || activeConv.kind !== 'group') return 0
+    const map = readCursors[cid] || {}
+    let m = 0
+    for (const [name, v] of Object.entries(map)) if (name !== viewer && v > m) m = v
+    return m
+  }, [cid, activeConv, readCursors, viewer])
+
+  const groupDelivered = useMemo(() => {
+    if (cid == null || !activeConv || activeConv.kind !== 'group') return 0
+    const map = deliveredCursors[cid] || {}
+    let m = 0
+    for (const [name, v] of Object.entries(map)) if (name !== viewer && v > m) m = v
+    return m
+  }, [cid, activeConv, deliveredCursors, viewer])
 
   const headerSub = (() => {
     if (recording.length) return `${recording.join(', ')} recording voice note…`
@@ -1138,11 +1512,25 @@ export function MessengerPage() {
       return `${activeConv.member_count || (cid != null ? members[cid]?.length : 0) || 2} members`
     }
 
-    if (counterpartMember?.online) return 'online'
-    if (counterpartMember?.last_seen_at) return `last seen ${fromNow(counterpartMember.last_seen_at)}`
+    if (counterpartMember?.online || activeConv.counterpart_online) return 'online'
+
+    const lastSeen = counterpartMember?.last_seen_at || activeConv.counterpart_last_seen_at
+    if (lastSeen) return `last seen ${fromNow(lastSeen)}`
 
     return 'Direct message'
   })()
+
+  const reactionGroups = useMemo(() => {
+    const map = new Map<string, ReactionDetail[]>()
+
+    for (const r of reactionDetail?.items || []) {
+      const arr = map.get(r.emoji) || []
+      arr.push(r)
+      map.set(r.emoji, arr)
+    }
+
+    return Array.from(map.entries()).map(([emoji, users]) => ({ emoji, users }))
+  }, [reactionDetail])
 
   const renderBody = (item: (typeof activeThread)[number]) => {
     const committed = isOptimistic(item) ? null : item
@@ -1150,11 +1538,34 @@ export function MessengerPage() {
     if (item.kind === 'text') {
       const translation = committed ? textFor(committed.body) : ''
       const showTranslated = !!translation && translation !== item.body
+      const links = getLinks(committed, item.body)
 
       return (
         <>
-          {showTranslated && <p className={styles.translated}>{translation}</p>}
-          <p className={showTranslated ? styles.original : styles.text}>{item.body}</p>
+          {showTranslated && (
+            <p className={styles.translated}>{renderTextWithMentions(translation)}</p>
+          )}
+
+          <p className={showTranslated ? styles.original : styles.text}>
+            {renderTextWithMentions(item.body)}
+          </p>
+
+          {links.length > 0 && (
+            <div className={styles.linkList}>
+              {links.map(l => (
+                <a
+                  key={l.url}
+                  href={l.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.linkCard}
+                >
+                  <ExternalLink size={13} />
+                  <span className={styles.linkDomain}>{l.domain}</span>
+                </a>
+              ))}
+            </div>
+          )}
         </>
       )
     }
@@ -1165,7 +1576,7 @@ export function MessengerPage() {
           <button
             type="button"
             className={styles.imagePreviewBtn}
-            onClick={() => openImagePreview(item.body)}
+            onClick={() => openMediaCarousel(item.body)}
             aria-label="Preview image"
           >
             <img src={item.body} alt="attachment" className={styles.imageMsg} />
@@ -1177,7 +1588,7 @@ export function MessengerPage() {
               className={styles.imageAction}
               onClick={e => {
                 e.stopPropagation()
-                openImagePreview(item.body)
+                openMediaCarousel(item.body)
               }}
               aria-label="Expand image"
               title="Preview"
@@ -1273,14 +1684,25 @@ export function MessengerPage() {
               </p>
             </div>
 
-            <button
-              className={styles.newGroupBtn}
-              onClick={() => setShowGroupModal(true)}
-              aria-label="Create group"
-              title="Create group"
-            >
-              <Users size={16} />
-            </button>
+            <div className={styles.listHeadActions}>
+              <button
+                className={styles.newGroupBtn}
+                onClick={() => void markAllChats()}
+                aria-label="Mark all chats read"
+                title="Mark all chats read"
+              >
+                <CheckCheck size={16} />
+              </button>
+
+              <button
+                className={styles.newGroupBtn}
+                onClick={() => setShowGroupModal(true)}
+                aria-label="Create group"
+                title="Create group"
+              >
+                <Users size={16} />
+              </button>
+            </div>
           </div>
 
           <div className={styles.filterRow} role="tablist" aria-label="Chat filters">
@@ -1327,81 +1749,123 @@ export function MessengerPage() {
 
           <ErrorBoundary fallback={<p className={styles.rest}>Conversation list is resting.</p>}>
             <div className={styles.convList}>
-              {canStartDirect && (
-                <button className={styles.startRow} onClick={startDirectWith}>
-                  <span className={styles.startAvatar}>
-                    <Plus size={18} />
-                  </span>
-                  <span className={styles.startText}>
-                    Start chat with <strong>@{cleanTarget}</strong>
-                  </span>
-                </button>
-              )}
-
-              {listRows.length === 0 ? (
-                <p className={styles.empty}>{emptyText}</p>
-              ) : (
-                listRows.map(c => {
-                  const title = c.kind === 'group' ? c.name || 'Group' : c.counterpart || 'Direct message'
-                  const avatarSrc = c.kind === 'group' ? c.image_url : c.counterpart_avatar
-                  const preview = previewForKind(c.last_kind, c.last_body || '')
-
-                  return (
-                    <div key={c.id} className={styles.convRowWrap}>
-                      <button
-                        className={`${styles.convRow} ${cid === c.id ? styles.convRowOn : ''}`}
-                        onClick={() => openChat(c.id)}
-                      >
-                        <Avatar src={avatarSrc} name={title} className={styles.convAvatar} />
-
-                        <span className={styles.convMid}>
-                          <span className={styles.convTop}>
-                            <strong className={styles.convName}>{title}</strong>
-                            {c.last_at && <span className={styles.convTime}>{shortTime(c.last_at)}</span>}
-                          </span>
-
-                          <span className={styles.convPreview}>{preview}</span>
-
-                          {(c.pinned || c.muted || c.draft || c.archived) && (
-                            <span className={styles.convBadges}>
-                              {c.pinned && <Pin size={12} />}
-                              {c.muted && <BellOff size={12} />}
-                              {c.archived && <Archive size={12} />}
-                              {c.draft && <em>Draft</em>}
-                            </span>
-                          )}
-                        </span>
-
-                        {c.unread > 0 && <span className={styles.unread}>{c.unread}</span>}
-                      </button>
-
-                      <button
-                        className={styles.convRowMenuBtn}
-                        onClick={e => toggleMenu(e, 'conversation', c.id, 'right')}
-                        aria-label="Conversation options"
-                      >
-                        <MoreVertical size={16} />
-                      </button>
-                    </div>
-                  )
-                })
-              )}
-
-              {filter === 'all' && (searching || searchResults.length > 0) && (
-                <div className={styles.searchSection}>
-                  <p className={styles.searchTitle}>{searching ? 'Searching messages…' : 'Message results'}</p>
-
-                  {searchResults.map(m => (
-                    <button key={m.id} className={styles.searchResult} onClick={() => openChat(m.conversation_id)}>
-                      <Avatar src={m.sender_avatar} name={m.sender_display || m.sender} className={styles.searchResultAvatar} />
+              {filter === 'starred' ? (
+                loadingStarred ? (
+                  <p className={styles.empty}>Loading starred messages…</p>
+                ) : starredMessages.length === 0 ? (
+                  <p className={styles.empty}>No starred messages.</p>
+                ) : (
+                  starredMessages.map(m => (
+                    <button
+                      key={m.id}
+                      className={styles.searchResult}
+                      onClick={() => openChatAndJump(m.conversation_id, m.id)}
+                    >
+                      <Avatar
+                        src={m.sender_avatar}
+                        name={m.sender_display || m.sender}
+                        className={styles.searchResultAvatar}
+                      />
                       <span className={styles.searchResultBody}>
                         <strong>{m.sender_display || m.sender}</strong>
                         <span>{previewForKind(m.kind, m.body)}</span>
                         {m.created_at && <em>{shortTime(m.created_at)}</em>}
                       </span>
                     </button>
-                  ))}
-                </div>
+                  ))
+                )
+              ) : (
+                <>
+                  {canStartDirect && (
+                    <button className={styles.startRow} onClick={startDirectWith}>
+                      <span className={styles.startAvatar}>
+                        <Plus size={18} />
+                      </span>
+                      <span className={styles.startText}>
+                        Start chat with <strong>@{cleanTarget}</strong>
+                      </span>
+                    </button>
+                  )}
+
+                  {listRows.length === 0 ? (
+                    <p className={styles.empty}>{emptyText}</p>
+                  ) : (
+                    listRows.map(c => {
+                      const title = c.kind === 'group' ? c.name || 'Group' : c.counterpart || 'Direct message'
+                      const avatarSrc = c.kind === 'group' ? c.image_url : c.counterpart_avatar
+                      const preview = previewForKind(c.last_kind, c.last_body || '')
+
+                      return (
+                        <div key={c.id} className={styles.convRowWrap}>
+                          <button
+                            className={`${styles.convRow} ${cid === c.id ? styles.convRowOn : ''}`}
+                            onClick={() => openChat(c.id)}
+                          >
+                            <span className={styles.convAvatarWrap}>
+                              <Avatar src={avatarSrc} name={title} className={styles.convAvatar} />
+                              {c.kind === 'direct' && c.counterpart_online && (
+                                <span className={styles.presenceDot} />
+                              )}
+                            </span>
+
+                            <span className={styles.convMid}>
+                              <span className={styles.convTop}>
+                                <strong className={styles.convName}>{title}</strong>
+                                {c.last_at && <span className={styles.convTime}>{shortTime(c.last_at)}</span>}
+                              </span>
+
+                              <span className={styles.convPreview}>{preview}</span>
+
+                              {(c.pinned || c.muted || c.draft || c.archived) && (
+                                <span className={styles.convBadges}>
+                                  {c.pinned && <Pin size={12} />}
+                                  {c.muted && <BellOff size={12} />}
+                                  {c.archived && <Archive size={12} />}
+                                  {c.draft && <em>Draft</em>}
+                                </span>
+                              )}
+                            </span>
+
+                            {c.unread > 0 && <span className={styles.unread}>{c.unread}</span>}
+                          </button>
+
+                          <button
+                            className={styles.convRowMenuBtn}
+                            onClick={e => toggleMenu(e, 'conversation', c.id, 'right')}
+                            aria-label="Conversation options"
+                          >
+                            <MoreVertical size={16} />
+                          </button>
+                        </div>
+                      )
+                    })
+                  )}
+
+                  {filter === 'all' && (searching || searchResults.length > 0) && (
+                    <div className={styles.searchSection}>
+                      <p className={styles.searchTitle}>{searching ? 'Searching messages…' : 'Message results'}</p>
+
+                      {searchResults.map(m => (
+                        <button
+                          key={m.id}
+                          className={styles.searchResult}
+                          onClick={() => openChatAndJump(m.conversation_id, m.id)}
+                        >
+                          <Avatar
+                            src={m.sender_avatar}
+                            name={m.sender_display || m.sender}
+                            className={styles.searchResultAvatar}
+                          />
+                          <span className={styles.searchResultBody}>
+                            <strong>{m.sender_display || m.sender}</strong>
+                            <span>{previewForKind(m.kind, m.body)}</span>
+                            {m.created_at && <em>{shortTime(m.created_at)}</em>}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </ErrorBoundary>
@@ -1442,6 +1906,18 @@ export function MessengerPage() {
                   </button>
 
                   <button
+                    className={styles.threadSearchBtn}
+                    onClick={() => {
+                      closeMenu()
+                      setThreadSearchOpen(o => !o)
+                    }}
+                    aria-label="Search in chat"
+                    title="Search in chat"
+                  >
+                    <Search size={17} />
+                  </button>
+
+                  <button
                     className={styles.threadMenuBtn}
                     onClick={e => toggleMenu(e, 'thread', undefined, 'right')}
                     aria-label="Chat options"
@@ -1458,6 +1934,67 @@ export function MessengerPage() {
                 </div>
               )}
             </header>
+          )}
+
+          {activeConv && cid != null && threadSearchOpen && (
+            <div className={styles.threadSearchBar}>
+              <Search size={15} className={styles.threadSearchIcon} />
+              <input
+                className={styles.threadSearchInput}
+                value={threadQuery}
+                onChange={e => setThreadQuery(e.target.value)}
+                placeholder="Search in this chat"
+                autoFocus
+              />
+              <button onClick={() => setThreadSearchOpen(false)} aria-label="Close chat search">
+                <X size={15} />
+              </button>
+
+              {threadQuery.trim().length >= 2 && (
+                <div className={styles.threadSearchPanel}>
+                  {searchingThread ? (
+                    <p className={styles.threadSearchEmpty}>Searching…</p>
+                  ) : threadResults.length === 0 ? (
+                    <p className={styles.threadSearchEmpty}>No matches in this chat.</p>
+                  ) : (
+                    threadResults.map(m => (
+                      <button
+                        key={m.id}
+                        className={styles.threadSearchResult}
+                        onClick={() => {
+                          setJumpToMessageId(m.id)
+                          setThreadSearchOpen(false)
+                          setThreadQuery('')
+                        }}
+                      >
+                        <strong>{m.sender_display || m.sender}</strong>
+                        <span>{previewForKind(m.kind, m.body)}</span>
+                        <em>{shortTime(m.created_at)}</em>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeConv && cid != null && pinnedMessages.length > 0 && showPinned && (
+            <div className={styles.pinnedBar}>
+              <Pin size={14} />
+              <button
+                className={styles.pinnedText}
+                onClick={() => setJumpToMessageId(pinnedMessages[0].id)}
+              >
+                <strong>Pinned message</strong>
+                <span>
+                  {previewForKind(pinnedMessages[0].kind, pinnedMessages[0].body)}
+                  {pinnedMessages.length > 1 ? ` +${pinnedMessages.length - 1}` : ''}
+                </span>
+              </button>
+              <button onClick={() => setShowPinned(false)} aria-label="Hide pinned message bar">
+                <X size={14} />
+              </button>
+            </div>
           )}
 
           <div className={styles.threadBody}>
@@ -1524,9 +2061,11 @@ export function MessengerPage() {
 
                         if (opt) {
                           status = opt.status
-                        } else if (mine && counterpartUser) {
-                          if (readCursor >= msg!.id) status = 'read'
-                          else if (deliveredCursor >= msg!.id) status = 'delivered'
+                        } else if (mine) {
+                          const r = counterpartUser ? counterpartRead : groupRead
+                          const d = counterpartUser ? counterpartDelivered : groupDelivered
+                          if (r >= msg!.id) status = 'read'
+                          else if (d >= msg!.id) status = 'delivered'
                           else status = 'sent'
                         }
 
@@ -1538,7 +2077,10 @@ export function MessengerPage() {
                               </div>
                             )}
 
-                            <div className={`${styles.msgRow} ${mine ? styles.mine : styles.other}`}>
+                            <div
+                              className={`${styles.msgRow} ${mine ? styles.mine : styles.other}`}
+                              data-message-id={msg?.id}
+                            >
                               {!mine && (
                                 <Avatar
                                   src={msg?.sender_avatar}
@@ -1554,15 +2096,30 @@ export function MessengerPage() {
                                   )}
 
                                   {msg?.reply_to_body && (
-                                    <div className={styles.replyPreview}>
-                                      <strong>{msg.reply_to_sender_display || msg.reply_to_sender || 'Message'}</strong>
-                                      <span>{previewForKind(msg.reply_to_kind || 'text', msg.reply_to_body)}</span>
+                                    <div
+                                      className={styles.replyPreview}
+                                      onClick={() => setJumpToMessageId(msg.reply_to_id ?? null)}
+                                      role="button"
+                                      tabIndex={0}
+                                    >
+                                      <strong>
+                                        {msg.reply_to_sender_display || msg.reply_to_sender || 'Message'}
+                                      </strong>
+                                      <span>
+                                        {previewForKind(msg.reply_to_kind || 'text', msg.reply_to_body)}
+                                      </span>
                                     </div>
                                   )}
 
                                   {renderBody(t)}
 
                                   {msg?.edited_at && <span className={styles.editedTag}>edited</span>}
+
+                                  {msg && pinnedIds.has(msg.id) && (
+                                    <span className={styles.pinnedTag}>
+                                      <Pin size={11} />
+                                    </span>
+                                  )}
 
                                   {msg?.starred_by_viewer && (
                                     <span className={styles.starredTag}>
@@ -1578,6 +2135,7 @@ export function MessengerPage() {
                                         key={r.emoji}
                                         className={`${styles.reactionChip} ${r.viewer_reacted ? styles.reactionChipOn : ''}`}
                                         onClick={() => toggleReaction(msg, r.emoji)}
+                                        onDoubleClick={() => void openReactionDetail(msg)}
                                         title={r.viewer_reacted ? 'Remove reaction' : 'React'}
                                       >
                                         <span>{r.emoji}</span>
@@ -1716,12 +2274,13 @@ export function MessengerPage() {
                   className={styles.hiddenInput}
                   onChange={handleImagePick}
                 />
-
-                <input
+                <textarea
                   ref={inputRef}
                   className={styles.composerInput}
                   value={draft}
                   onChange={e => onDraftChange(e.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  rows={1}
                   placeholder={editing ? 'Edit message…' : 'Type a message'}
                   aria-label="Message"
                   autoComplete="off"
@@ -1771,12 +2330,30 @@ export function MessengerPage() {
                   <Pin size={14} /> {menuConversation.pinned ? 'Unpin chat' : 'Pin chat'}
                 </button>
 
-                <button onClick={() => conversationAction(menuConversation.id, 'mute')}>
-                  <BellOff size={14} /> {menuConversation.muted ? 'Unmute chat' : 'Mute chat'}
+                <button onClick={() => void doMute(menuConversation.id, 1)}>
+                  <BellOff size={14} /> Mute 1h
                 </button>
+
+                <button onClick={() => void doMute(menuConversation.id, 8)}>
+                  <BellOff size={14} /> Mute 8h
+                </button>
+
+                <button onClick={() => void doMute(menuConversation.id, null)}>
+                  <BellOff size={14} /> Mute always
+                </button>
+
+                {menuConversation.muted && (
+                  <button onClick={() => void doMute(menuConversation.id, 0)}>
+                    <Check size={14} /> Unmute chat
+                  </button>
+                )}
 
                 <button onClick={() => conversationAction(menuConversation.id, 'unread')}>
                   <Undo size={14} /> Mark as unread
+                </button>
+
+                <button onClick={() => void clearChat(menuConversation.id)}>
+                  <Eraser size={14} /> Clear chat
                 </button>
 
                 <button onClick={() => conversationAction(menuConversation.id, 'archive')}>
@@ -1797,12 +2374,30 @@ export function MessengerPage() {
                   <Pin size={14} /> {activeConv.pinned ? 'Unpin chat' : 'Pin chat'}
                 </button>
 
-                <button onClick={() => conversationAction(activeConv.id, 'mute')}>
-                  <BellOff size={14} /> {activeConv.muted ? 'Unmute chat' : 'Mute chat'}
+                <button onClick={() => void doMute(activeConv.id, 1)}>
+                  <BellOff size={14} /> Mute 1h
                 </button>
+
+                <button onClick={() => void doMute(activeConv.id, 8)}>
+                  <BellOff size={14} /> Mute 8h
+                </button>
+
+                <button onClick={() => void doMute(activeConv.id, null)}>
+                  <BellOff size={14} /> Mute always
+                </button>
+
+                {activeConv.muted && (
+                  <button onClick={() => void doMute(activeConv.id, 0)}>
+                    <Check size={14} /> Unmute chat
+                  </button>
+                )}
 
                 <button onClick={() => conversationAction(activeConv.id, 'unread')}>
                   <Undo size={14} /> Mark as unread
+                </button>
+
+                <button onClick={() => void clearChat(activeConv.id)}>
+                  <Eraser size={14} /> Clear chat
                 </button>
 
                 <button onClick={() => conversationAction(activeConv.id, 'archive')}>
@@ -1829,6 +2424,11 @@ export function MessengerPage() {
                   </button>
                 )}
 
+                <button onClick={() => void togglePin(menuMessage)}>
+                  {pinnedIds.has(menuMessage.id) ? <PinOff size={14} /> : <Pin size={14} />}
+                  {pinnedIds.has(menuMessage.id) ? 'Unpin message' : 'Pin message'}
+                </button>
+
                 <button onClick={() => toggleStar(menuMessage)}>
                   <Star size={14} /> {menuMessage.starred_by_viewer ? 'Unstar' : 'Star'}
                 </button>
@@ -1843,7 +2443,13 @@ export function MessengerPage() {
                   </button>
                 )}
 
-                {menuMessage.sender === viewer && menuMessage.kind === 'text' && (
+                {menuMessage.reactions && menuMessage.reactions.length > 0 && (
+                  <button onClick={() => void openReactionDetail(menuMessage)}>
+                    <Smile size={14} /> See reactions
+                  </button>
+                )}
+
+                {menuMessage.sender === viewer && (
                   <button onClick={() => handleDeleteForEveryone(menuMessage)}>
                     <Trash2 size={14} /> Delete for everyone
                   </button>
@@ -1873,7 +2479,7 @@ export function MessengerPage() {
           viewer={viewer}
           conversation={activeConv}
           onClose={() => setInfoOpen(false)}
-          onOpenImage={openImagePreview}
+          onOpenImage={openMediaCarousel}
           onRefresh={refreshAll}
           onArchived={(archived) => {
             if (archived && !isDesktop()) {
@@ -1886,6 +2492,42 @@ export function MessengerPage() {
             backToList()
           }}
         />
+      )}
+
+      {reactionDetail && (
+        <div className={styles.modalOverlay} onClick={() => setReactionDetail(null)}>
+          <div className={styles.reactionDetailCard} onClick={e => e.stopPropagation()}>
+            <div className={styles.modalHead}>
+              <h3>Reactions</h3>
+              <button onClick={() => setReactionDetail(null)} aria-label="Close">
+                <X size={18} />
+              </button>
+            </div>
+
+            {reactionGroups.length === 0 ? (
+              <p className={styles.threadSearchEmpty}>No reactions.</p>
+            ) : (
+              reactionGroups.map(g => (
+                <div key={g.emoji} className={styles.reactionGroup}>
+                  <div className={styles.reactionGroupEmoji}>{g.emoji}</div>
+
+                  <div className={styles.reactionUsers}>
+                    {g.users.map(u => (
+                      <div key={`${g.emoji}-${u.user_name}`} className={styles.reactionUser}>
+                        <Avatar
+                          src={u.avatar_url}
+                          name={u.display_name || u.user_name}
+                          className={styles.reactionUserAvatar}
+                        />
+                        <span>{u.display_name || u.user_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       )}
 
       {forwardMessage && (

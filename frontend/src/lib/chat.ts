@@ -68,6 +68,8 @@ export type Conversation = {
   counterpart: string | null
   counterpart_avatar: string | null
   counterpart_username: string | null
+  counterpart_online?: boolean | null
+  counterpart_last_seen_at?: string | null
   member_count: number
 }
 
@@ -742,4 +744,68 @@ export async function demoteGroupMember(
     `/chat/conversations/${convId}/members/${encodeURIComponent(userName)}/demote?viewer=${encodeURIComponent(viewer)}`,
     {},
   )
+}
+
+export type ReactionDetail = {
+  emoji: string
+  user_name: string
+  display_name: string
+  avatar_url: string | null
+}
+
+export async function fetchStarredMessages(
+  viewer: string,
+  limit = 100,
+): Promise<ChatMessage[]> {
+  const d = await jget(`/chat/starred?viewer=${encodeURIComponent(viewer)}&limit=${limit}`)
+  return d.messages || []
+}
+
+export async function fetchPinnedMessages(
+  viewer: string,
+  convId: number,
+): Promise<ChatMessage[]> {
+  const d = await jget(`/chat/conversations/${convId}/pinned?viewer=${encodeURIComponent(viewer)}`)
+  return d.messages || []
+}
+
+export async function pinMessage(
+  viewer: string,
+  messageId: number,
+): Promise<{ message?: ChatMessage; error?: string }> {
+  return jpost(`/chat/messages/${messageId}/pin`, { viewer })
+}
+
+export async function unpinMessage(
+  viewer: string,
+  messageId: number,
+): Promise<{ message?: ChatMessage; error?: string }> {
+  return jpost(`/chat/messages/${messageId}/unpin`, { viewer })
+}
+
+export async function fetchMessageReactions(
+  viewer: string,
+  messageId: number,
+): Promise<{ reactions?: ReactionDetail[]; error?: string }> {
+  const d = await jget(`/chat/messages/${messageId}/reactions?viewer=${encodeURIComponent(viewer)}`)
+  return { reactions: d.reactions || [], error: d.error }
+}
+
+export async function clearConversationForMe(
+  viewer: string,
+  convId: number,
+): Promise<{ hidden?: number; error?: string }> {
+  return jpost(`/chat/conversations/${convId}/clear`, { viewer })
+}
+
+export async function markAllChatsRead(viewer: string): Promise<{ error?: string }> {
+  return jpost('/chat/read-all', { viewer })
+}
+
+export async function muteConversation(
+  viewer: string,
+  convId: number,
+  hours: number | null,
+): Promise<{ error?: string }> {
+  return jpost(`/chat/conversations/${convId}/mute`, { viewer, hours })
 }

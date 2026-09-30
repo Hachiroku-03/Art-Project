@@ -13,6 +13,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { WalletPage } from './pages/WalletPage'
 import { ChatDebugPage } from './pages/ChatDebugPage'
 import { MessengerPage } from './pages/MessengerPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 // SalesRoomPage removed — /sales/:id now renders AuctionRoomPage
 
 function Gate() {
@@ -37,6 +38,7 @@ function App() {
         <Route path="/wallet" element={<WalletPage />} />
         <Route path="/messenger" element={<MessengerPage />} />
         <Route path="/chat-debug" element={<ChatDebugPage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/profile/:username" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="*" element={<Gate />} />
       </Routes>

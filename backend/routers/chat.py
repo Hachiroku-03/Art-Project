@@ -1,5 +1,7 @@
 import json
 import asyncio
+import re
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -10,11 +12,13 @@ from zoneinfo import ZoneInfo
 
 _TZ_CACHE = None
 
+
 def _db_tz():
     global _TZ_CACHE
     if _TZ_CACHE is None:
         try:
-            c = get_db(); cur = c.cursor()
+            c = get_db()
+            cur = c.cursor()
             cur.execute("SHOW TIME ZONE")
             row = cur.fetchone()
             c.close()
@@ -24,12 +28,14 @@ def _db_tz():
             _TZ_CACHE = ZoneInfo("UTC")
     return _TZ_CACHE
 
+
 def _iso(v):
     if isinstance(v, _dt.datetime):
         if v.tzinfo is None:
             v = v.replace(tzinfo=_db_tz())
         return v.isoformat()
     return v
+
 
 def _localize(row, *keys):
     if not row:
@@ -38,6 +44,7 @@ def _localize(row, *keys):
         if k in row:
             row[k] = _iso(row[k])
     return row
+
 
 router = APIRouter()
 
@@ -81,24 +88,33 @@ class ConnectionManager:
     async def send_to_users(self, users, data: str, exclude: WebSocket | None = None) -> set[str]:
         delivered: set[str] = set()
 
-        for u in set(users):
-            ok = False
+        async def send_one(user: str, ws: WebSocket) -> tuple[str, bool]:
+            try:
+                await ws.send_text(data)
+                return user, True
+            except Exception:
+                try:
+                    await self.disconnect(user, ws)
+                except Exception:
+                    pass
+                return user, False
 
+        tasks = []
+
+        for u in set(users):
             for ws in list(self._conns.get(u, ())):
                 if ws is exclude:
                     continue
+                tasks.append(send_one(u, ws))
 
-                try:
-                    await ws.send_text(data)
-                    ok = True
-                except Exception:
-                    try:
-                        await self.disconnect(u, ws)
-                    except Exception:
-                        pass
+        if not tasks:
+            return delivered
 
-            if ok:
-                delivered.add(u)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for res in results:
+            if isinstance(res, tuple) and res[1]:
+                delivered.add(res[0])
 
         return delivered
 
@@ -120,6 +136,41 @@ def _optional_int(value) -> int | None:
         return int(value)
     except Exception:
         raise ValueError("invalid integer")
+
+
+def _extract_links(body: str):
+    if not body:
+        return []
+
+    raw_urls = re.findall(r'''https?://[^\s<>"']+''', body)
+
+    out = []
+    seen = set()
+
+    for raw in raw_urls:
+        url = raw.rstrip(".,;:!?)]}\"'")
+
+        if not url or url in seen:
+            continue
+
+        seen.add(url)
+
+        try:
+            domain = urlparse(url).netloc or url
+        except Exception:
+            domain = url
+
+        out.append(
+            {
+                "url": url,
+                "domain": domain,
+            }
+        )
+
+        if len(out) >= 5:
+            break
+
+    return out
 
 
 def _canonical_username(cursor, name: str):
@@ -426,6 +477,11 @@ def _insert_message(
     if not isinstance(meta, dict):
         meta = {}
 
+    if kind == "text":
+        links = _extract_links(body)
+        if links:
+            meta = {**meta, "links": links}
+
     meta_json = json.dumps(meta, default=str)
 
     cursor.execute(
@@ -510,56 +566,82 @@ async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: We
             # Other sender tabs.
             await manager.send_to_users([sender], frame, exclude=sender_ws)
 
-    # Create in-app notifications for members who were not live-delivered.
+    # Who was @-mentioned in a text message (members only, never the sender).
+    mentioned: set[str] = set()
+    if row.get("kind") == "text":
+        tokens = {t.lower() for t in re.findall(r"@([A-Za-z0-9_.\-]+)", row.get("body") or "")}
+        if tokens:
+            lower_members = {m.lower(): m for m in members if m != sender}
+            for tk in tokens:
+                if tk in lower_members:
+                    mentioned.add(lower_members[tk])
+
     undelivered = members - delivered - {sender}
 
-    if undelivered:
-        kind = row.get("kind")
+    # Mentioned members get a dedicated 'mention' notif below, not a generic one.
+    generic_targets = undelivered - mentioned
 
-        if kind == "text":
-            preview = (row.get("body") or "")[:120]
-        elif kind == "image":
-            preview = "Photo"
-        elif kind == "voice":
-            preview = "Voice note"
-        elif kind == "video":
-            preview = "Video"
-        elif kind == "file":
-            preview = "File"
-        elif kind == "location":
-            preview = "Location"
-        elif kind == "contact":
-            preview = "Contact"
-        else:
-            preview = "New message"
+    kind = row.get("kind")
+    if kind == "text":
+        preview = (row.get("body") or "")[:120]
+    elif kind == "image":
+        preview = "Photo"
+    elif kind == "voice":
+        preview = "Voice note"
+    elif kind == "video":
+        preview = "Video"
+    elif kind == "file":
+        preview = "File"
+    elif kind == "location":
+        preview = "Location"
+    elif kind == "contact":
+        preview = "Contact"
+    else:
+        preview = "New message"
 
-        title = row.get("sender_display") or sender
+    title = row.get("sender_display") or sender
 
+    if generic_targets or mentioned:
         conn = get_db()
         cursor = conn.cursor()
-
         try:
-            for u in undelivered:
+            def _muted(user: str) -> bool:
                 cursor.execute(
-                    "SELECT muted FROM chat_conversation_prefs WHERE conversation_id = %s AND user_name = %s",
-                    (conv_id, u),
+                    """
+                    SELECT 1
+                    FROM chat_conversation_prefs
+                    WHERE conversation_id = %s
+                      AND user_name = %s
+                      AND muted = TRUE
+                      AND (muted_until IS NULL OR muted_until > CURRENT_TIMESTAMP)
+                    """,
+                    (conv_id, user),
                 )
-                pref = cursor.fetchone()
+                return cursor.fetchone() is not None
 
-                if pref and pref["muted"]:
+            for u in generic_targets:
+                if _muted(u):
                     continue
-
                 cursor.execute(
                     """
                     INSERT INTO chat_notifications (
-                        user_name,
-                        conversation_id,
-                        message_id,
-                        type,
-                        title,
-                        body
+                        user_name, conversation_id, message_id, type, title, body
                     )
                     VALUES (%s, %s, %s, 'message', %s, %s)
+                    """,
+                    (u, conv_id, msg_id, title, preview),
+                )
+
+            # Mentions fire even when live-delivered: being tagged is worth surfacing.
+            for u in mentioned:
+                if _muted(u):
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO chat_notifications (
+                        user_name, conversation_id, message_id, type, title, body
+                    )
+                    VALUES (%s, %s, %s, 'mention', %s, %s)
                     """,
                     (u, conv_id, msg_id, title, preview),
                 )
@@ -862,7 +944,14 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
                c.updated_at,
 
                COALESCE(p.archived, FALSE) AS archived,
-               COALESCE(p.muted, FALSE) AS muted,
+
+               CASE
+                   WHEN COALESCE(p.muted, FALSE)
+                        AND (p.muted_until IS NULL OR p.muted_until > CURRENT_TIMESTAMP)
+                   THEN TRUE
+                   ELSE FALSE
+               END AS muted,
+
                COALESCE(p.pinned, FALSE) AS pinned,
                p.pinned_at,
                COALESCE(p.mark_unread, FALSE) AS mark_unread,
@@ -899,6 +988,8 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
                CASE WHEN c.kind = 'direct' THEN cp.display_name ELSE NULL END AS counterpart,
                CASE WHEN c.kind = 'direct' THEN cp.avatar_url ELSE NULL END AS counterpart_avatar,
                CASE WHEN c.kind = 'direct' THEN cp.username ELSE NULL END AS counterpart_username,
+               CASE WHEN c.kind = 'direct' THEN cp.online ELSE NULL END AS counterpart_online,
+               CASE WHEN c.kind = 'direct' THEN cp.last_seen_at ELSE NULL END AS counterpart_last_seen_at,
 
                (
                    SELECT COUNT(*)
@@ -930,10 +1021,13 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
         LEFT JOIN LATERAL (
             SELECT COALESCE(p2.display_name, u2.username) AS display_name,
                    p2.avatar_url,
-                   u2.username AS username
+                   u2.username AS username,
+                   COALESCE(pr2.online, FALSE) AS online,
+                   pr2.last_seen_at
             FROM chat_members cm2
             JOIN users u2 ON u2.username = cm2.user_name
             LEFT JOIN profiles p2 ON p2.user_id = u2.id
+            LEFT JOIN chat_presence pr2 ON pr2.user_name = u2.username
             WHERE cm2.conversation_id = c.id
               AND cm2.user_name <> %s
             LIMIT 1
@@ -965,10 +1059,469 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
     rows = [dict(r) for r in cursor.fetchall()]
 
     for r in rows:
-        _localize(r, "updated_at", "pinned_at", "last_at")
+        _localize(r, "updated_at", "pinned_at", "last_at", "counterpart_last_seen_at")
 
     conn.close()
     return {"conversations": rows}
+
+
+# ---------------------------------------------------------------------------
+# REST: starred messages
+# ---------------------------------------------------------------------------
+@router.get("/chat/starred")
+def list_starred_messages(viewer: str = "", limit: int = 100):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+
+    limit = max(1, min(limit, 200))
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT m.id
+        FROM chat_starred_messages s
+        JOIN chat_messages m ON m.id = s.message_id
+        WHERE s.user_name = %s
+          AND m.deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM chat_message_hidden h
+              WHERE h.message_id = m.id
+                AND h.user_name = %s
+          )
+          AND m.conversation_id IN (
+              SELECT conversation_id
+              FROM chat_members
+              WHERE user_name = %s
+          )
+        ORDER BY m.id DESC
+        LIMIT %s
+        """,
+        (viewer, viewer, viewer, limit),
+    )
+
+    ids = [r["id"] for r in cursor.fetchall()]
+    messages = _message_rows(cursor, ids, viewer)
+    messages.reverse()
+
+    conn.close()
+    return {"messages": messages}
+
+
+# ---------------------------------------------------------------------------
+# REST: pinned messages
+# ---------------------------------------------------------------------------
+@router.get("/chat/conversations/{conv_id}/pinned")
+def list_pinned_messages(conv_id: int, viewer: str = ""):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if not _is_member(cursor, conv_id, viewer):
+        conn.close()
+        return {"error": "not a member"}
+
+    cursor.execute(
+        """
+        SELECT m.id
+        FROM chat_messages m
+        WHERE m.conversation_id = %s
+          AND m.deleted_at IS NULL
+          AND m.meta ? 'pinned_at'
+        ORDER BY (m.meta->>'pinned_at')::bigint DESC NULLS LAST
+        LIMIT 20
+        """,
+        (conv_id,),
+    )
+
+    ids = [r["id"] for r in cursor.fetchall()]
+    messages = _message_rows(cursor, ids, viewer)
+    messages.reverse()
+
+    conn.close()
+    return {"messages": messages}
+
+
+@router.post("/chat/messages/{message_id}/unpin")
+def unpin_message(message_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    if not viewer_raw:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        cursor.execute(
+            "SELECT conversation_id FROM chat_messages WHERE id = %s AND deleted_at IS NULL",
+            (message_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            conn.rollback()
+            return {"error": "message not found"}
+
+        conv_id = row["conversation_id"]
+
+        if not _is_member(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not a member"}
+
+        cursor.execute(
+            """
+            UPDATE chat_messages
+            SET meta = COALESCE(meta, '{}'::jsonb) - 'pinned_at' - 'pinned_by'
+            WHERE id = %s
+            """,
+            (message_id,),
+        )
+
+        message = _message_row(cursor, message_id, viewer)
+        conn.commit()
+        return {"message": message}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.post("/chat/messages/{message_id}/unpin")
+def unpin_message(message_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    if not viewer_raw:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        cursor.execute(
+            "SELECT conversation_id FROM chat_messages WHERE id = %s AND deleted_at IS NULL",
+            (message_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            conn.rollback()
+            return {"error": "message not found"}
+
+        conv_id = row["conversation_id"]
+
+        if not _is_member(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not a member"}
+
+        cursor.execute(
+            """
+            UPDATE chat_messages
+            SET meta = COALESCE(meta, '{}'::jsonb) - 'pinned_at' - 'pinned_by'
+            WHERE id = %s
+            """,
+            (message_id,),
+        )
+
+        message = _message_row(cursor, message_id, viewer)
+        conn.commit()
+        return {"message": message}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# REST: reaction detail
+# ---------------------------------------------------------------------------
+@router.get("/chat/messages/{message_id}/reactions")
+def message_reaction_detail(message_id: int, viewer: str = ""):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT conversation_id FROM chat_messages WHERE id = %s AND deleted_at IS NULL",
+        (message_id,),
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return {"error": "message not found"}
+
+    if not _is_member(cursor, row["conversation_id"], viewer):
+        conn.close()
+        return {"error": "not a member"}
+
+    cursor.execute(
+        """
+        SELECT r.emoji,
+               r.user_name,
+               COALESCE(p.display_name, u.username) AS display_name,
+               p.avatar_url
+        FROM chat_reactions r
+        JOIN users u ON u.username = r.user_name
+        LEFT JOIN profiles p ON p.user_id = u.id
+        WHERE r.message_id = %s
+        ORDER BY r.emoji, COALESCE(p.display_name, u.username)
+        """,
+        (message_id,),
+    )
+
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    return {"reactions": rows}
+
+
+# ---------------------------------------------------------------------------
+# REST: clear chat for me
+# ---------------------------------------------------------------------------
+@router.post("/chat/conversations/{conv_id}/clear")
+def clear_conversation_for_me(conv_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    if not viewer_raw:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        if not _is_member(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not a member"}
+
+        cursor.execute(
+            """
+            INSERT INTO chat_message_hidden (message_id, user_name)
+            SELECT m.id, %s
+            FROM chat_messages m
+            WHERE m.conversation_id = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM chat_message_hidden h
+                  WHERE h.message_id = m.id
+                    AND h.user_name = %s
+              )
+            ON CONFLICT (message_id, user_name) DO NOTHING
+            """,
+            (viewer, conv_id, viewer),
+        )
+
+        hidden = cursor.rowcount
+        conn.commit()
+        return {"hidden": hidden}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# REST: mark all chats read
+# ---------------------------------------------------------------------------
+@router.post("/chat/read-all")
+def mark_all_chats_read(data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    if not viewer_raw:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        cursor.execute(
+            """
+            INSERT INTO chat_reads (
+                conversation_id,
+                user_name,
+                last_read_id,
+                last_delivered_id,
+                updated_at
+            )
+            SELECT cm.conversation_id,
+                   %s,
+                   COALESCE(mx.max_id, 0),
+                   COALESCE(mx.max_id, 0),
+                   CURRENT_TIMESTAMP
+            FROM chat_members cm
+            LEFT JOIN LATERAL (
+                SELECT MAX(m.id) AS max_id
+                FROM chat_messages m
+                WHERE m.conversation_id = cm.conversation_id
+                  AND m.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM chat_message_hidden h
+                      WHERE h.message_id = m.id
+                        AND h.user_name = %s
+                  )
+            ) mx ON TRUE
+            WHERE cm.user_name = %s
+            ON CONFLICT (conversation_id, user_name)
+            DO UPDATE SET
+                last_read_id = GREATEST(chat_reads.last_read_id, EXCLUDED.last_read_id),
+                last_delivered_id = GREATEST(chat_reads.last_delivered_id, EXCLUDED.last_delivered_id),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (viewer, viewer, viewer),
+        )
+
+        conn.commit()
+        return {"message": "all chats marked read"}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# REST: mute with duration
+# hours = null  -> mute always
+# hours = 0     -> unmute
+# hours = number -> mute for N hours
+# ---------------------------------------------------------------------------
+@router.post("/chat/conversations/{conv_id}/mute")
+def mute_conversation_endpoint(conv_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    if not viewer_raw:
+        return {"error": "viewer required"}
+
+    hours = data.get("hours", None)
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        if not _is_member(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not a member"}
+
+        if hours is None:
+            cursor.execute(
+                """
+                INSERT INTO chat_conversation_prefs (
+                    conversation_id,
+                    user_name,
+                    archived,
+                    muted,
+                    pinned,
+                    pinned_at,
+                    muted_until,
+                    last_opened_at,
+                    mark_unread,
+                    updated_at
+                )
+                VALUES (%s, %s, FALSE, TRUE, FALSE, NULL, NULL, CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP)
+                ON CONFLICT (conversation_id, user_name)
+                DO UPDATE SET
+                    muted = TRUE,
+                    muted_until = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (conv_id, viewer),
+            )
+        else:
+            try:
+                h = float(hours)
+            except Exception:
+                conn.rollback()
+                return {"error": "invalid hours"}
+
+            if h <= 0:
+                cursor.execute(
+                    """
+                    INSERT INTO chat_conversation_prefs (
+                        conversation_id,
+                        user_name,
+                        archived,
+                        muted,
+                        pinned,
+                        pinned_at,
+                        muted_until,
+                        last_opened_at,
+                        mark_unread,
+                        updated_at
+                    )
+                    VALUES (%s, %s, FALSE, FALSE, FALSE, NULL, NULL, CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP)
+                    ON CONFLICT (conversation_id, user_name)
+                    DO UPDATE SET
+                        muted = FALSE,
+                        muted_until = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (conv_id, viewer),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO chat_conversation_prefs (
+                        conversation_id,
+                        user_name,
+                        archived,
+                        muted,
+                        pinned,
+                        pinned_at,
+                        muted_until,
+                        last_opened_at,
+                        mark_unread,
+                        updated_at
+                    )
+                    VALUES (%s, %s, FALSE, TRUE, FALSE, NULL, CURRENT_TIMESTAMP + make_interval(hours => %s), CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP)
+                    ON CONFLICT (conversation_id, user_name)
+                    DO UPDATE SET
+                        muted = TRUE,
+                        muted_until = CURRENT_TIMESTAMP + make_interval(hours => %s),
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (conv_id, viewer, h, h),
+                )
+
+        conn.commit()
+        return {"message": "mute updated"}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1098,6 +1651,15 @@ def create_conversation(data: dict):
                     """,
                     (conv_id, member),
                 )
+                cursor.execute(
+                    """
+                    INSERT INTO chat_notifications (
+                        user_name, conversation_id, message_id, type, title, body
+                    )
+                    VALUES (%s, %s, NULL, 'group_invite', %s, %s)
+                    """,
+                    (member, conv_id, name, f"{viewer} added you to the group"),
+                )
 
             conn.commit()
             return {
@@ -1202,9 +1764,28 @@ def add_member(conv_id: int, data: dict):
             INSERT INTO chat_members (conversation_id, user_name, role)
             VALUES (%s, %s, 'member')
             ON CONFLICT DO NOTHING
+            RETURNING user_name
             """,
             (conv_id, target),
         )
+
+        added = cursor.fetchone()
+
+        if added:
+            cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
+            grow = cursor.fetchone()
+            gname = (grow or {}).get("name") or "a group"
+
+            cursor.execute(
+                """
+                INSERT INTO chat_notifications (
+                    user_name, conversation_id, message_id, type, title, body
+                )
+                VALUES (%s, %s, NULL, 'group_invite', %s, %s)
+                """,
+                (target, conv_id, gname, f"{viewer} added you to {gname}"),
+            )
+
         conn.commit()
         return {"message": "member added"}
     except Exception as e:
