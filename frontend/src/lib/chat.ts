@@ -71,6 +71,10 @@ export type Conversation = {
   counterpart_online?: boolean | null
   counterpart_last_seen_at?: string | null
   member_count: number
+
+  join_mode?: 'open' | 'request' | 'invite' | 'private'
+  allow_member_invites?: boolean
+  announce_new_members?: boolean
 }
 
 export type ConversationUpdate = Partial<Conversation> & { id: number }

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Home, Gavel, Crown, Menu, X, User, LogOut, Ticket, MessageCircle } from 'lucide-react'
+import { Home, Gavel, Crown, Menu, X, User, LogOut, Ticket, MessageCircle, Settings } from 'lucide-react'
 import { WalletPanel } from './WalletPanel'
 import { NotificationBell } from './NotificationBell'
 import { API } from '../lib/sales'
@@ -97,10 +97,11 @@ export function Navbar() {
               {avatarContent}
             </button>
             {menuOpen && (
-              <div className={styles.menuDropdown}>
-                <button className={styles.menuItem} onClick={() => go(`/profile/${user}`)}><User size={15} /> Profile</button>
-                <button className={`${styles.menuItem} ${styles.menuDanger}`} onClick={handleLogout}><LogOut size={15} /> Log out</button>
-              </div>
+            <div className={styles.menuDropdown}>
+              <button className={styles.menuItem} onClick={() => go('/settings')}><Settings size={15} /> Settings</button>
+              <button className={styles.menuItem} onClick={() => go(`/profile/${user}`)}><User size={15} /> Profile</button>
+              <button className={`${styles.menuItem} ${styles.menuDanger}`} onClick={handleLogout}><LogOut size={15} /> Log out</button>
+            </div>
             )}
           </div>
 
@@ -141,6 +142,7 @@ export function Navbar() {
 
               <div className={styles.drawerDivider} />
 
+              <button onClick={() => go('/settings')}><Settings size={18} /> Settings</button>
               <button onClick={() => go(`/profile/${user}`)}><User size={18} /> Profile</button>
               <button className={styles.drawerDanger} onClick={handleLogout}><LogOut size={18} /> Log out</button>
             </nav>

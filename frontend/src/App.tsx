@@ -14,6 +14,7 @@ import { WalletPage } from './pages/WalletPage'
 import { ChatDebugPage } from './pages/ChatDebugPage'
 import { MessengerPage } from './pages/MessengerPage'
 import { NotificationsPage } from './pages/NotificationsPage'
+import { SettingsPage } from './pages/SettingsPage'
 // SalesRoomPage removed — /sales/:id now renders AuctionRoomPage
 
 function Gate() {
@@ -39,6 +40,7 @@ function App() {
         <Route path="/messenger" element={<MessengerPage />} />
         <Route path="/chat-debug" element={<ChatDebugPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="/profile/:username" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="*" element={<Gate />} />
       </Routes>

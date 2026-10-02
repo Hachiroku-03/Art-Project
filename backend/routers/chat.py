@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from db import get_db
+from notification_service import create_notification
 
 import datetime as _dt
 from zoneinfo import ZoneInfo
@@ -578,7 +579,7 @@ async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: We
 
     undelivered = members - delivered - {sender}
 
-    # Mentioned members get a dedicated 'mention' notif below, not a generic one.
+    # Mentioned members get a dedicated mention notification, not a generic message one.
     generic_targets = undelivered - mentioned
 
     kind = row.get("kind")
@@ -604,6 +605,7 @@ async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: We
     if generic_targets or mentioned:
         conn = get_db()
         cursor = conn.cursor()
+
         try:
             def _muted(user: str) -> bool:
                 cursor.execute(
@@ -622,28 +624,40 @@ async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: We
             for u in generic_targets:
                 if _muted(u):
                     continue
-                cursor.execute(
-                    """
-                    INSERT INTO chat_notifications (
-                        user_name, conversation_id, message_id, type, title, body
-                    )
-                    VALUES (%s, %s, %s, 'message', %s, %s)
-                    """,
-                    (u, conv_id, msg_id, title, preview),
+
+                create_notification(
+                    user_name=u,
+                    category="messages",
+                    type="chat_message",
+                    legacy_type="message",
+                    title=title,
+                    body=preview,
+                    actor=sender,
+                    source_type="conversation",
+                    source_id=conv_id,
+                    secondary_id=msg_id,
+                    data={"conversation_id": conv_id, "message_id": msg_id},
+                    cursor=cursor,
                 )
 
             # Mentions fire even when live-delivered: being tagged is worth surfacing.
             for u in mentioned:
                 if _muted(u):
                     continue
-                cursor.execute(
-                    """
-                    INSERT INTO chat_notifications (
-                        user_name, conversation_id, message_id, type, title, body
-                    )
-                    VALUES (%s, %s, %s, 'mention', %s, %s)
-                    """,
-                    (u, conv_id, msg_id, title, preview),
+
+                create_notification(
+                    user_name=u,
+                    category="mentions",
+                    type="chat_mention",
+                    legacy_type="mention",
+                    title=title,
+                    body=preview,
+                    actor=sender,
+                    source_type="conversation",
+                    source_id=conv_id,
+                    secondary_id=msg_id,
+                    data={"conversation_id": conv_id, "message_id": msg_id},
+                    cursor=cursor,
                 )
 
             conn.commit()
@@ -651,6 +665,518 @@ async def _broadcast_message(row: dict, conv_id: int, sender: str, sender_ws: We
             conn.rollback()
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Group join requests and group management policy
+# ---------------------------------------------------------------------------
+GROUP_JOIN_MODES = {"open", "request", "invite", "private"}
+
+
+def _group_role(cursor, conv_id: int, user: str) -> str | None:
+    cursor.execute(
+        """
+        SELECT role
+        FROM chat_members
+        WHERE conversation_id = %s
+          AND user_name = %s
+        """,
+        (conv_id, user),
+    )
+    row = cursor.fetchone()
+    return row["role"] if row else None
+
+
+def _can_manage_group(cursor, conv_id: int, user: str) -> bool:
+    role = _group_role(cursor, conv_id, user)
+    return role in {"owner", "admin"}
+
+
+def _group_admins(cursor, conv_id: int) -> list[str]:
+    cursor.execute(
+        """
+        SELECT user_name
+        FROM chat_members
+        WHERE conversation_id = %s
+          AND role IN ('owner', 'admin')
+        """,
+        (conv_id,),
+    )
+    return [r["user_name"] for r in cursor.fetchall()]
+
+
+def _notify_group_admins(
+    cursor,
+    conv_id: int,
+    type: str,
+    title: str,
+    body: str,
+    actor: str | None = None,
+    secondary_id: int | None = None,
+):
+    admins = _group_admins(cursor, conv_id)
+
+    for admin in admins:
+        if admin == actor:
+            continue
+
+        create_notification(
+            user_name=admin,
+            category="groups",
+            type=type,
+            title=title,
+            body=body,
+            actor=actor,
+            source_type="conversation",
+            source_id=conv_id,
+            secondary_id=secondary_id,
+            data={"conversation_id": conv_id},
+            cursor=cursor,
+        )
+
+
+@router.post("/chat/conversations/{conv_id}/join-request")
+def request_group_join(conv_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+    message = (data.get("message") or "").strip()[:300] or None
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        cursor.execute(
+            """
+            SELECT kind, join_mode
+            FROM chat_conversations
+            WHERE id = %s
+            """,
+            (conv_id,),
+        )
+        conv = cursor.fetchone()
+
+        if not conv:
+            conn.rollback()
+            return {"error": "conversation not found"}
+
+        if conv["kind"] != "group":
+            conn.rollback()
+            return {"error": "not a group"}
+
+        if _is_member(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "already a member"}
+
+        join_mode = conv.get("join_mode") or "request"
+
+        if join_mode == "open":
+            cursor.execute(
+                """
+                INSERT INTO chat_members (conversation_id, user_name, role)
+                VALUES (%s, %s, 'member')
+                ON CONFLICT DO NOTHING
+                """,
+                (conv_id, viewer),
+            )
+            conn.commit()
+            return {"message": "joined group", "status": "joined"}
+
+        if join_mode == "private":
+            conn.rollback()
+            return {"error": "this group is private"}
+
+        if join_mode == "invite":
+            conn.rollback()
+            return {"error": "this group requires an invitation"}
+
+        cursor.execute(
+            """
+            SELECT status
+            FROM group_join_requests
+            WHERE group_id = %s
+              AND user_name = %s
+            """,
+            (conv_id, viewer),
+        )
+        existing = cursor.fetchone()
+
+        if existing and existing["status"] == "pending":
+            conn.rollback()
+            return {"error": "your request is already pending"}
+
+        if existing and existing["status"] == "approved":
+            conn.rollback()
+            return {"error": "your request was already approved"}
+
+        cursor.execute(
+            """
+            INSERT INTO group_join_requests (
+                group_id,
+                user_name,
+                status,
+                message,
+                created_at
+            )
+            VALUES (%s, %s, 'pending', %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (group_id, user_name)
+            DO UPDATE SET
+                status = 'pending',
+                message = EXCLUDED.message,
+                reviewed_by = NULL,
+                reviewed_at = NULL,
+                created_at = CURRENT_TIMESTAMP
+            """,
+            (conv_id, viewer, message),
+        )
+
+        cursor.execute(
+            """
+            SELECT COALESCE(p.display_name, u.username) AS display_name
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE u.username = %s
+            """,
+            (viewer,),
+        )
+        requester = cursor.fetchone()
+        requester_name = (requester or {}).get("display_name") or viewer
+
+        cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
+        group = cursor.fetchone()
+        group_name = (group or {}).get("name") or "the group"
+
+        _notify_group_admins(
+            cursor=cursor,
+            conv_id=conv_id,
+            type="group_join_request",
+            title=f"{requester_name} requested to join {group_name}",
+            body=message or "",
+            actor=viewer,
+        )
+
+        conn.commit()
+        return {"message": "join request sent", "status": "pending"}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.get("/chat/conversations/{conv_id}/join-requests")
+def list_group_join_requests(conv_id: int, viewer: str = "", status: str = "pending"):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
+
+        if not _can_manage_group(cursor, conv_id, viewer):
+            return {"error": "not allowed"}
+
+        if status not in {"pending", "approved", "rejected", "cancelled", "all"}:
+            status = "pending"
+
+        if status == "all":
+            cursor.execute(
+                """
+                SELECT r.id,
+                       r.user_name,
+                       r.status,
+                       r.message,
+                       r.created_at,
+                       r.reviewed_at,
+                       COALESCE(p.display_name, u.username) AS display_name,
+                       p.avatar_url
+                FROM group_join_requests r
+                JOIN users u ON u.username = r.user_name
+                LEFT JOIN profiles p ON p.user_id = u.id
+                WHERE r.group_id = %s
+                ORDER BY r.created_at DESC
+                """,
+                (conv_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT r.id,
+                       r.user_name,
+                       r.status,
+                       r.message,
+                       r.created_at,
+                       r.reviewed_at,
+                       COALESCE(p.display_name, u.username) AS display_name,
+                       p.avatar_url
+                FROM group_join_requests r
+                JOIN users u ON u.username = r.user_name
+                LEFT JOIN profiles p ON p.user_id = u.id
+                WHERE r.group_id = %s
+                  AND r.status = %s
+                ORDER BY r.created_at DESC
+                """,
+                (conv_id, status),
+            )
+
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        for r in rows:
+            for key in ("created_at", "reviewed_at"):
+                if r.get(key) and hasattr(r[key], "isoformat"):
+                    r[key] = r[key].isoformat()
+
+        return {"requests": rows}
+
+    finally:
+        conn.close()
+
+
+@router.post("/chat/conversations/{conv_id}/join-requests/{request_id}/approve")
+def approve_group_join_request(conv_id: int, request_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        if not _can_manage_group(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not allowed"}
+
+        cursor.execute(
+            """
+            SELECT id, user_name, status
+            FROM group_join_requests
+            WHERE id = %s
+              AND group_id = %s
+            FOR UPDATE
+            """,
+            (request_id, conv_id),
+        )
+        request = cursor.fetchone()
+
+        if not request:
+            conn.rollback()
+            return {"error": "request not found"}
+
+        if request["status"] != "pending":
+            conn.rollback()
+            return {"error": "request is not pending"}
+
+        target = request["user_name"]
+
+        cursor.execute(
+            """
+            INSERT INTO chat_members (conversation_id, user_name, role)
+            VALUES (%s, %s, 'member')
+            ON CONFLICT DO NOTHING
+            """,
+            (conv_id, target),
+        )
+
+        cursor.execute(
+            """
+            UPDATE group_join_requests
+            SET status = 'approved',
+                reviewed_by = %s,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (viewer, request_id),
+        )
+
+        cursor.execute(
+            """
+            SELECT COALESCE(p.display_name, u.username) AS display_name
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE u.username = %s
+            """,
+            (viewer,),
+        )
+        approver = cursor.fetchone()
+        approver_name = (approver or {}).get("display_name") or viewer
+
+        cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
+        group = cursor.fetchone()
+        group_name = (group or {}).get("name") or "the group"
+
+        create_notification(
+            user_name=target,
+            category="groups",
+            type="group_request_approved",
+            title=f"Your request to join {group_name} was approved",
+            body=f"{approver_name} approved your request.",
+            actor=viewer,
+            source_type="conversation",
+            source_id=conv_id,
+            data={"conversation_id": conv_id},
+            cursor=cursor,
+        )
+
+        cursor.execute(
+            """
+            SELECT announce_new_members
+            FROM chat_conversations
+            WHERE id = %s
+            """,
+            (conv_id,),
+        )
+        conv = cursor.fetchone()
+
+        if conv and conv.get("announce_new_members"):
+            cursor.execute(
+                """
+                SELECT COALESCE(p.display_name, u.username) AS display_name
+                FROM users u
+                LEFT JOIN profiles p ON p.user_id = u.id
+                WHERE u.username = %s
+                """,
+                (target,),
+            )
+            joined = cursor.fetchone()
+            joined_name = (joined or {}).get("display_name") or target
+
+            _insert_message(
+                cursor=cursor,
+                conv_id=conv_id,
+                sender=viewer,
+                kind="system",
+                body=f"{joined_name} joined the group",
+            )
+
+        conn.commit()
+        return {"message": "request approved"}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.post("/chat/conversations/{conv_id}/join-requests/{request_id}/reject")
+def reject_group_join_request(conv_id: int, request_id: int, data: dict):
+    viewer_raw = (data.get("viewer") or "").strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer_raw)
+        if not viewer:
+            conn.rollback()
+            return {"error": "unknown viewer"}
+
+        if not _can_manage_group(cursor, conv_id, viewer):
+            conn.rollback()
+            return {"error": "not allowed"}
+
+        cursor.execute(
+            """
+            SELECT id, user_name, status
+            FROM group_join_requests
+            WHERE id = %s
+              AND group_id = %s
+            FOR UPDATE
+            """,
+            (request_id, conv_id),
+        )
+        request = cursor.fetchone()
+
+        if not request:
+            conn.rollback()
+            return {"error": "request not found"}
+
+        if request["status"] != "pending":
+            conn.rollback()
+            return {"error": "request is not pending"}
+
+        target = request["user_name"]
+
+        cursor.execute(
+            """
+            UPDATE group_join_requests
+            SET status = 'rejected',
+                reviewed_by = %s,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (viewer, request_id),
+        )
+
+        cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
+        group = cursor.fetchone()
+        group_name = (group or {}).get("name") or "the group"
+
+        create_notification(
+            user_name=target,
+            category="groups",
+            type="group_request_rejected",
+            title=f"Your request to join {group_name} was declined",
+            body="",
+            actor=viewer,
+            source_type="conversation",
+            source_id=conv_id,
+            data={"conversation_id": conv_id},
+            cursor=cursor,
+        )
+
+        conn.commit()
+        return {"message": "request rejected"}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.delete("/chat/conversations/{conv_id}/join-request")
+def cancel_group_join_request(conv_id: int, viewer: str = ""):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            conn.rollback()
+            return {"error": "viewer required"}
+
+        cursor.execute(
+            """
+            UPDATE group_join_requests
+            SET status = 'cancelled'
+            WHERE group_id = %s
+              AND user_name = %s
+              AND status = 'pending'
+            """,
+            (conv_id, viewer),
+        )
+
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return {"error": "no pending request found"}
+
+        conn.commit()
+        return {"message": "request cancelled"}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +1467,9 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
     cursor.execute(
         """
         SELECT c.id, c.kind, c.name, c.image_url, c.description,
+               c.join_mode,
+               c.allow_member_invites,
+               c.announce_new_members,
                c.updated_at,
 
                COALESCE(p.archived, FALSE) AS archived,
@@ -1624,13 +2153,37 @@ def create_conversation(data: dict):
                 conn.rollback()
                 return {"error": f"unknown members: {', '.join(unknown)}"}
 
+            join_mode = (data.get("join_mode") or "request").strip().lower()
+            if join_mode not in GROUP_JOIN_MODES:
+                join_mode = "request"
+
+            allow_member_invites = bool(data.get("allow_member_invites", False))
+            announce_new_members = bool(data.get("announce_new_members", False))
+
             cursor.execute(
                 """
-                INSERT INTO chat_conversations (kind, name, image_url, description, created_by)
-                VALUES ('group', %s, %s, %s, %s)
+                INSERT INTO chat_conversations (
+                    kind,
+                    name,
+                    image_url,
+                    description,
+                    created_by,
+                    join_mode,
+                    allow_member_invites,
+                    announce_new_members
+                )
+                VALUES ('group', %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (name, image_url, description, viewer),
+                (
+                    name,
+                    image_url,
+                    description,
+                    viewer,
+                    join_mode,
+                    allow_member_invites,
+                    announce_new_members,
+                ),
             )
             conv_id = cursor.fetchone()["id"]
 
@@ -1755,39 +2308,78 @@ def add_member(conv_id: int, data: dict):
             conn.rollback()
             return {"error": "unknown user"}
 
-        if not _is_member(cursor, conv_id, viewer):
+        if not _can_manage_group(cursor, conv_id, viewer):
             conn.rollback()
-            return {"error": "not a member"}
+            return {"error": "only admins can add members"}
 
         cursor.execute(
             """
-            INSERT INTO chat_members (conversation_id, user_name, role)
-            VALUES (%s, %s, 'member')
-            ON CONFLICT DO NOTHING
-            RETURNING user_name
+            SELECT 1
+            FROM chat_members
+            WHERE conversation_id = %s
+              AND user_name = %s
             """,
             (conv_id, target),
         )
 
-        added = cursor.fetchone()
+        already_member = cursor.fetchone() is not None
 
-        if added:
-            cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
-            grow = cursor.fetchone()
-            gname = (grow or {}).get("name") or "a group"
-
+        if not already_member:
             cursor.execute(
                 """
-                INSERT INTO chat_notifications (
-                    user_name, conversation_id, message_id, type, title, body
-                )
-                VALUES (%s, %s, NULL, 'group_invite', %s, %s)
+                INSERT INTO chat_members (conversation_id, user_name, role)
+                VALUES (%s, %s, 'member')
+                ON CONFLICT DO NOTHING
                 """,
-                (target, conv_id, gname, f"{viewer} added you to {gname}"),
+                (conv_id, target),
             )
+
+        cursor.execute(
+            """
+            UPDATE group_join_requests
+            SET status = 'approved',
+                reviewed_by = %s,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE group_id = %s
+              AND user_name = %s
+              AND status = 'pending'
+            """,
+            (viewer, conv_id, target),
+        )
+
+        cursor.execute("SELECT name FROM chat_conversations WHERE id = %s", (conv_id,))
+        grow = cursor.fetchone()
+        gname = (grow or {}).get("name") or "a group"
+
+        cursor.execute(
+            """
+            SELECT COALESCE(p.display_name, u.username) AS display_name
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE u.username = %s
+            """,
+            (viewer,),
+        )
+        inviter = cursor.fetchone()
+        inviter_name = (inviter or {}).get("display_name") or viewer
+
+        create_notification(
+            user_name=target,
+            category="groups",
+            type="group_invite",
+            legacy_type="group_invite",
+            title=f"{inviter_name} added you to {gname}",
+            body="",
+            actor=viewer,
+            source_type="conversation",
+            source_id=conv_id,
+            data={"conversation_id": conv_id},
+            cursor=cursor,
+        )
 
         conn.commit()
         return {"message": "member added"}
+
     except Exception as e:
         conn.rollback()
         return {"error": str(e)}

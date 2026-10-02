@@ -21,7 +21,6 @@ import {
   Pencil,
   Pin,
   PinOff,
-  Plus,
   Reply,
   RotateCcw,
   Search,
@@ -278,7 +277,6 @@ export function MessengerPage() {
     notifyTyping,
     typingNames,
     textFor,
-    startDirect,
     startGroup,
     editMessage,
     deleteMessageForEveryone,
@@ -382,17 +380,6 @@ useEffect(() => {
     )
   }, [cid, activeConv, members, viewer, counterpartUser])
 
-  const cleanTarget = query.trim().replace(/^@/, '')
-
-  const canStartDirect =
-    filter !== 'archived' &&
-    filter !== 'starred' &&
-    !!cleanTarget &&
-    !conversations.some(
-      c =>
-        (c.counterpart || '').toLowerCase() === cleanTarget.toLowerCase() ||
-        (c.counterpart_username || '').toLowerCase() === cleanTarget.toLowerCase(),
-    )
 
   const counts = useMemo(
     () => ({
@@ -934,23 +921,6 @@ useEffect(() => {
     }
   }, [openChat, refreshConversations, reloadArchived])
 
-  const startDirectWith = useCallback(async () => {
-    const target = cleanTarget
-    if (!target) return
-
-    setNote('')
-    const d = await startDirect(target)
-
-    if (d.error) {
-      setNote(d.error)
-      return
-    }
-
-    setQuery('')
-    setFilter('all')
-
-    if (d.conversation_id != null) openChat(d.conversation_id)
-  }, [cleanTarget, openChat, startDirect])
 
   const createGroupChat = useCallback(async () => {
     const name = groupName.trim()
@@ -1734,8 +1704,8 @@ const handleComposerKeyDown = useCallback(
               className={styles.searchInput}
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search chats, messages, or start new chat"
-              aria-label="Search chats, messages, or start new chat"
+              placeholder="Search chats and messages"
+              aria-label="Search chats and messages"
               autoComplete="off"
             />
             {query && (
@@ -1775,17 +1745,7 @@ const handleComposerKeyDown = useCallback(
                   ))
                 )
               ) : (
-                <>
-                  {canStartDirect && (
-                    <button className={styles.startRow} onClick={startDirectWith}>
-                      <span className={styles.startAvatar}>
-                        <Plus size={18} />
-                      </span>
-                      <span className={styles.startText}>
-                        Start chat with <strong>@{cleanTarget}</strong>
-                      </span>
-                    </button>
-                  )}
+                <> 
 
                   {listRows.length === 0 ? (
                     <p className={styles.empty}>{emptyText}</p>
