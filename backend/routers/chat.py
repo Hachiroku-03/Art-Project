@@ -782,6 +782,20 @@ def request_group_join(conv_id: int, data: dict):
                 """,
                 (conv_id, viewer),
             )
+
+            cursor.execute(
+                """
+                UPDATE group_join_requests
+                SET status = 'approved',
+                    reviewed_by = %s,
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE group_id = %s
+                  AND user_name = %s
+                  AND status = 'pending'
+                """,
+                (viewer, conv_id, viewer),
+            )
+
             conn.commit()
             return {"message": "joined group", "status": "joined"}
 
@@ -867,6 +881,70 @@ def request_group_join(conv_id: int, data: dict):
     finally:
         conn.close()
 
+# ---------------------------------------------------------------------------
+# REST: discover groups
+# ---------------------------------------------------------------------------
+@router.get("/chat/discover")
+def discover_groups(viewer: str = "", q: str = "", limit: int = 30):
+    viewer = _resolve_viewer(viewer)
+    if not viewer:
+        return {"error": "viewer required"}
+
+    limit = max(1, min(limit, 50))
+    query = (q or "").strip()
+    search = f"%{query}%" if query else None
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT c.id,
+               c.name,
+               c.image_url,
+               c.description,
+               c.join_mode,
+               (
+                   SELECT COUNT(*)
+                   FROM chat_members cm
+                   WHERE cm.conversation_id = c.id
+               ) AS member_count,
+               COALESCE(gjr.status, 'none') AS request_status
+        FROM chat_conversations c
+        LEFT JOIN group_join_requests gjr
+               ON gjr.group_id = c.id
+              AND gjr.user_name = %s
+        WHERE c.kind = 'group'
+          AND c.join_mode IN ('open', 'request')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM chat_members cm2
+              WHERE cm2.conversation_id = c.id
+                AND cm2.user_name = %s
+          )
+          AND (
+              %s::text IS NULL
+              OR c.name ILIKE %s
+              OR COALESCE(c.description, '') ILIKE %s
+          )
+        ORDER BY c.updated_at DESC NULLS LAST,
+                 c.id DESC
+        LIMIT %s
+        """,
+        (
+            viewer,
+            viewer,
+            search,
+            search,
+            search,
+            limit,
+        ),
+    )
+
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    return {"groups": rows}
 
 @router.get("/chat/conversations/{conv_id}/join-requests")
 def list_group_join_requests(conv_id: int, viewer: str = "", status: str = "pending"):

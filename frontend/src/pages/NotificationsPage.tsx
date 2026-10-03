@@ -1,70 +1,57 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useState, type ComponentType } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft,
   AtSign,
+  Bell,
   CheckCheck,
+  FileText,
+  Gavel,
   Info,
-  Inbox,
   Loader2,
-  MessageSquare,
+  MessageCircle,
+  ShieldCheck,
+  Trash2,
   Users,
+  Wallet,
   X,
 } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import {
+  deleteNotification,
   fetchNotifications,
+  fetchUnreadNotificationCount,
   markAllNotificationsRead,
   markNotificationRead,
-  type NotificationItem,
-} from '../lib/chat'
+  type AppNotification,
+  type NotificationCategory,
+} from '../lib/notifications'
 import styles from './NotificationsPage.module.css'
 
-type Kind = 'all' | 'unread' | 'message' | 'mention' | 'group_invite' | 'system'
+type FilterKey = 'all' | 'unread' | NotificationCategory
 
-const KIND_ORDER: { key: Kind; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'unread', label: 'Unread' },
-  { key: 'message', label: 'Messages' },
-  { key: 'mention', label: 'Mentions' },
-  { key: 'group_invite', label: 'Group invites' },
-  { key: 'system', label: 'System' },
+const FILTERS: {
+  key: FilterKey
+  label: string
+  icon: ComponentType<{ size?: number }>
+}[] = [
+  { key: 'all', label: 'All', icon: Bell },
+  { key: 'unread', label: 'Unread', icon: CheckCheck },
+  { key: 'messages', label: 'Messages', icon: MessageCircle },
+  { key: 'mentions', label: 'Mentions', icon: AtSign },
+  { key: 'groups', label: 'Groups', icon: Users },
+  { key: 'posts', label: 'Posts', icon: FileText },
+  { key: 'auctions', label: 'Auctions', icon: Gavel },
+  { key: 'wallet', label: 'Wallet', icon: Wallet },
+  { key: 'security', label: 'Security', icon: ShieldCheck },
+  { key: 'system', label: 'System', icon: Info },
 ]
-
-const META: Record<string, { icon: typeof MessageSquare; label: string; className: string }> = {
-  message: {
-    icon: MessageSquare,
-    label: 'Message',
-    className: styles.iconMessage,
-  },
-  mention: {
-    icon: AtSign,
-    label: 'Mention',
-    className: styles.iconMention,
-  },
-  group_invite: {
-    icon: Users,
-    label: 'Group invite',
-    className: styles.iconInvite,
-  },
-  system: {
-    icon: Info,
-    label: 'System',
-    className: styles.iconSystem,
-  },
-}
 
 function parseDate(raw?: string | null) {
   if (!raw) return new Date(NaN)
   return new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'))
 }
 
-function ts(raw?: string | null) {
-  const d = parseDate(raw)
-  return isNaN(d.getTime()) ? 0 : d.getTime()
-}
-
-function fromNow(raw?: string | null) {
+function timeAgo(raw?: string | null) {
   const d = parseDate(raw)
   if (isNaN(d.getTime())) return ''
 
@@ -80,119 +67,260 @@ function fromNow(raw?: string | null) {
   })
 }
 
+function firstLetter(name?: string | null) {
+  return (name || '?')[0]?.toUpperCase() || '?'
+}
+
+function categoryMeta(category: string): {
+  label: string
+  icon: ComponentType<{ size?: number }>
+  className: string
+} {
+  switch (category) {
+    case 'messages':
+      return { label: 'Message', icon: MessageCircle, className: styles.catMessages }
+    case 'mentions':
+      return { label: 'Mention', icon: AtSign, className: styles.catMentions }
+    case 'groups':
+      return { label: 'Group', icon: Users, className: styles.catGroups }
+    case 'posts':
+      return { label: 'Post', icon: FileText, className: styles.catPosts }
+    case 'auctions':
+      return { label: 'Auction', icon: Gavel, className: styles.catAuctions }
+    case 'wallet':
+      return { label: 'Wallet', icon: Wallet, className: styles.catWallet }
+    case 'security':
+      return { label: 'Security', icon: ShieldCheck, className: styles.catSecurity }
+    default:
+      return { label: 'System', icon: Info, className: styles.catSystem }
+  }
+}
+
+function routeForNotification(n: AppNotification): {
+  to: string
+  state?: Record<string, unknown>
+} {
+  const sourceType = n.source_type
+
+  if (sourceType === 'post' && n.source_id) {
+    return { to: `/post/${n.source_id}` }
+  }
+
+  if (sourceType === 'comment') {
+    const postId = n.secondary_id || n.source_id
+    if (postId) return { to: `/post/${postId}` }
+  }
+
+  if (sourceType === 'conversation' || sourceType === 'chat') {
+    if (n.source_id) {
+      return {
+        to: '/messenger',
+        state: { openConversationId: n.source_id },
+      }
+    }
+  }
+
+  if (n.category === 'messages' || n.category === 'mentions' || n.category === 'groups') {
+    if (n.source_id) {
+      return {
+        to: '/messenger',
+        state: { openConversationId: n.source_id },
+      }
+    }
+  }
+
+  if (n.category === 'auctions') {
+    if (sourceType === 'sale' && n.source_id) return { to: `/sales/${n.source_id}` }
+    if (sourceType === 'lot' && n.source_id) return { to: `/sales/${n.source_id}` }
+    return { to: '/auctions' }
+  }
+
+  if (n.category === 'wallet') {
+    return { to: '/wallet' }
+  }
+
+  if (n.category === 'security' || n.category === 'system') {
+    return { to: '/settings' }
+  }
+
+  return { to: '/notifications' }
+}
+
+function Avatar({
+  src,
+  name,
+}: {
+  src?: string | null
+  name?: string | null
+}) {
+  return (
+    <span className={styles.avatar}>
+      {src ? <img src={src} alt="" /> : firstLetter(name)}
+    </span>
+  )
+}
+
 export function NotificationsPage() {
   const navigate = useNavigate()
   const viewer = localStorage.getItem('space_user') || ''
 
-  const [items, setItems] = useState<NotificationItem[]>([])
+  const [filter, setFilter] = useState<FilterKey>('all')
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
   const [error, setError] = useState('')
-  const [kind, setKind] = useState<Kind>('all')
+  const [notice, setNotice] = useState('')
 
-  const alive = useRef(true)
+  const refreshUnreadCount = useCallback(async () => {
+    if (!viewer) return
 
-  const load = useCallback(async () => {
-    if (!viewer) {
-      setLoading(false)
-      return
-    }
+    const d = await fetchUnreadNotificationCount(viewer)
 
-    setLoading(true)
-    setError('')
-
-    try {
-      const rows = await fetchNotifications(viewer, false, 100)
-
-      rows.sort((a, b) => ts(b.created_at) - ts(a.created_at))
-
-      if (alive.current) {
-        setItems(rows)
-      }
-    } catch {
-      if (alive.current) {
-        setError('Could not load notifications.')
-      }
-    } finally {
-      if (alive.current) {
-        setLoading(false)
-      }
+    if (!d.error && typeof d.count === 'number') {
+      setUnreadCount(d.count)
     }
   }, [viewer])
 
+  const load = useCallback(
+    async (mode: 'replace' | 'append' = 'replace', beforeId = 0) => {
+      if (!viewer) {
+        setNotifications([])
+        setLoading(false)
+        return
+      }
+
+      if (mode === 'replace') {
+        setLoading(true)
+      } else {
+        setLoadingMore(true)
+      }
+
+      setError('')
+
+      try {
+        const res = await fetchNotifications(viewer, {
+          category: filter === 'unread' ? 'all' : filter,
+          unreadOnly: filter === 'unread',
+          limit: 40,
+          beforeId: mode === 'append' ? beforeId : 0,
+        })
+
+        if (res.error) {
+          setError(res.error)
+          setNotifications([])
+          setHasMore(false)
+          return
+        }
+
+        const rows = res.notifications || []
+
+        setNotifications(prev => (mode === 'append' ? [...prev, ...rows] : rows))
+        setHasMore(!!res.has_more)
+      } catch {
+        setError('Could not load notifications.')
+        setNotifications([])
+        setHasMore(false)
+      } finally {
+        setLoading(false)
+        setLoadingMore(false)
+      }
+    },
+    [filter, viewer],
+  )
+
   useEffect(() => {
-    alive.current = true
-
-    void load()
-
-    const onRefresh = () => {
-      void load()
+    if (!localStorage.getItem('space_token')) {
+      navigate('/login', { replace: true })
+      return
     }
 
-    window.addEventListener('notifications-refresh', onRefresh as EventListener)
+    void load('replace', 0)
+    void refreshUnreadCount()
+  }, [load, navigate, refreshUnreadCount])
 
-    return () => {
-      alive.current = false
-      window.removeEventListener('notifications-refresh', onRefresh as EventListener)
-    }
-  }, [load])
+  const loadMore = useCallback(() => {
+    if (!hasMore || loadingMore || !notifications.length) return
 
-  const counts = useMemo(() => {
-    return {
-      all: items.length,
-      unread: items.filter(n => !n.read_at).length,
-      message: items.filter(n => n.type === 'message').length,
-      mention: items.filter(n => n.type === 'mention').length,
-      group_invite: items.filter(n => n.type === 'group_invite').length,
-      system: items.filter(n => n.type === 'system').length,
-    } satisfies Record<Kind, number>
-  }, [items])
+    const oldest = notifications[notifications.length - 1]?.id
+    if (!oldest) return
 
-  const visible = useMemo(() => {
-    if (kind === 'all') return items
-    if (kind === 'unread') return items.filter(n => !n.read_at)
-    return items.filter(n => n.type === kind)
-  }, [items, kind])
+    void load('append', oldest)
+  }, [hasMore, load, loadingMore, notifications])
 
-  const openItem = useCallback(
-    (n: NotificationItem) => {
-      const unread = !n.read_at
+  const openNotification = useCallback(
+    (n: AppNotification) => {
+      if (!n.read_at) {
+        setNotifications(prev =>
+          filter === 'unread'
+            ? prev.filter(x => x.id !== n.id)
+            : prev.map(x =>
+                x.id === n.id
+                  ? {
+                      ...x,
+                      read_at: new Date().toISOString(),
+                    }
+                  : x,
+              ),
+        )
 
-      if (unread) {
+        setUnreadCount(prev => Math.max(0, prev - 1))
+
         void markNotificationRead(viewer, n.id)
       }
 
-      if (n.conversation_id != null) {
-        navigate('/messenger', {
-          state: {
-            openConversationId: n.conversation_id,
-          },
-        })
-      } else if (unread) {
-        const now = new Date().toISOString()
+      const route = routeForNotification(n)
 
-        setItems(prev =>
-          prev.map(x =>
-            x.id === n.id
-              ? {
-                  ...x,
-                  read_at: now,
-                }
-              : x,
-          ),
-        )
+      if (route.state) {
+        navigate(route.to, { state: route.state })
+      } else {
+        navigate(route.to)
       }
-
-      window.dispatchEvent(new Event('notifications-refresh'))
     },
-    [navigate, viewer],
+    [filter, navigate, viewer],
+  )
+
+  const removeNotification = useCallback(
+    async (n: AppNotification, e: React.MouseEvent) => {
+      e.stopPropagation()
+
+      if (!viewer) return
+
+      setBusyId(n.id)
+      setError('')
+
+      try {
+        const d = await deleteNotification(viewer, n.id)
+
+        if (d.error) {
+          setError(d.error)
+          return
+        }
+
+        if (!n.read_at) {
+          setUnreadCount(prev => Math.max(0, prev - 1))
+        }
+
+        setNotifications(prev => prev.filter(x => x.id !== n.id))
+        setNotice('Notification removed.')
+      } catch {
+        setError('Could not remove notification.')
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [viewer],
   )
 
   const markAll = useCallback(async () => {
-    if (!viewer || counts.unread === 0) return
+    if (!viewer) return
 
-    setBusy(true)
+    setMarkingAll(true)
     setError('')
+    setNotice('')
 
     try {
       const d = await markAllNotificationsRead(viewer)
@@ -202,135 +330,165 @@ export function NotificationsPage() {
         return
       }
 
-      const now = new Date().toISOString()
-
-      setItems(prev =>
-        prev.map(n =>
-          n.read_at
-            ? n
-            : {
-                ...n,
-                read_at: now,
-              },
-        ),
+      setNotifications(prev =>
+        prev.map(n => ({
+          ...n,
+          read_at: n.read_at || new Date().toISOString(),
+        })),
       )
 
-      window.dispatchEvent(new Event('notifications-refresh'))
+      setUnreadCount(0)
+      setNotice('All notifications marked read.')
+
+      if (filter === 'unread') {
+        void load('replace', 0)
+      }
     } catch {
       setError('Could not mark notifications read.')
     } finally {
-      setBusy(false)
+      setMarkingAll(false)
     }
-  }, [counts.unread, viewer])
-
-  const emptyText =
-    kind === 'unread'
-      ? 'No unread notifications.'
-      : kind === 'message'
-        ? 'No message notifications.'
-        : kind === 'mention'
-          ? 'No mentions yet.'
-          : kind === 'group_invite'
-            ? 'No group invites.'
-            : kind === 'system'
-              ? 'No system notifications yet.'
-              : 'No notifications yet.'
+  }, [filter, load, viewer])
 
   return (
-    <main className={styles.page}>
+    <main className={styles.layout}>
       <Navbar />
 
-      <div className={styles.inner}>
-        <div className={styles.topbar}>
-          <button
-            className={styles.back}
-            onClick={() => navigate('/messenger')}
-            aria-label="Back to messenger"
-          >
-            <ArrowLeft size={18} /> Messenger
-          </button>
+      <div className={styles.shell}>
+        <header className={styles.head}>
+          <div>
+            <h1 className={styles.heading}>Notifications</h1>
+            <p className={styles.strap}>
+              {unreadCount > 0
+                ? `${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
+                : 'You are up to date.'}
+            </p>
+          </div>
 
           <button
-            className={styles.markAll}
+            className={styles.markAllBtn}
             onClick={() => void markAll()}
-            disabled={busy || counts.unread === 0}
+            disabled={markingAll || unreadCount === 0}
           >
-            <CheckCheck size={15} /> Mark all read
+            {markingAll ? <Loader2 size={15} className={styles.spin} /> : <CheckCheck size={15} />}
+            Mark all read
           </button>
-        </div>
+        </header>
 
-        <h1 className={styles.heading}>Notifications</h1>
+        {error && <p className={styles.error}>{error}</p>}
+        {notice && <p className={styles.notice}>{notice}</p>}
 
-        <div className={styles.chips} role="tablist" aria-label="Notification kinds">
-          {KIND_ORDER.map(k => {
-            const n = counts[k.key]
-            const on = kind === k.key
+        <div className={styles.filters} role="tablist" aria-label="Notification filters">
+          {FILTERS.map(f => {
+            const Icon = f.icon
+            const active = filter === f.key
+            const count =
+              f.key === 'unread'
+                ? unreadCount
+                : f.key === 'all'
+                  ? notifications.length
+                  : undefined
 
             return (
               <button
-                key={k.key}
+                key={f.key}
                 role="tab"
-                aria-selected={on}
-                className={`${styles.chip} ${on ? styles.chipOn : ''}`}
-                onClick={() => setKind(k.key)}
+                aria-selected={active}
+                className={`${styles.filterChip} ${active ? styles.filterChipOn : ''}`}
+                onClick={() => setFilter(f.key)}
               >
-                <span>{k.label}</span>
-                {n > 0 && <span className={styles.chipCount}>{n}</span>}
+                <Icon size={14} />
+                <span>{f.label}</span>
+                {count != null && count > 0 && <em>{count}</em>}
               </button>
             )
           })}
         </div>
 
-        {error && (
-          <p className={styles.error}>
-            {error}
-            <button onClick={() => setError('')} aria-label="Dismiss">
-              <X size={13} />
-            </button>
-          </p>
-        )}
-
-        <div className={styles.list}>
+        <section className={styles.list}>
           {loading ? (
-            <div className={styles.center}>
+            <div className={styles.state}>
               <Loader2 size={20} className={styles.spin} />
+              <p>Loading notifications…</p>
             </div>
-          ) : visible.length === 0 ? (
-            <div className={styles.emptyWrap}>
-              <Inbox size={30} />
-              <p>{emptyText}</p>
+          ) : notifications.length === 0 ? (
+            <div className={styles.state}>
+              <Bell size={24} />
+              <p>
+                {filter === 'unread'
+                  ? 'No unread notifications.'
+                  : 'No notifications yet.'}
+              </p>
             </div>
           ) : (
-            visible.map(n => {
-              const meta = META[n.type] || META.system
+            notifications.map(n => {
+              const meta = categoryMeta(n.category)
               const Icon = meta.icon
               const unread = !n.read_at
 
               return (
                 <button
                   key={n.id}
-                  className={`${styles.row} ${unread ? styles.rowUnread : ''}`}
-                  onClick={() => openItem(n)}
+                  className={`${styles.item} ${unread ? styles.itemUnread : ''}`}
+                  onClick={() => openNotification(n)}
                 >
-                  <span className={`${styles.icon} ${meta.className}`}>
-                    <Icon size={16} />
-                  </span>
+                  <Avatar src={n.actor_avatar} name={n.actor_display || n.actor} />
 
-                  <span className={styles.mid}>
-                    <span className={styles.top}>
-                      <strong>{n.title || meta.label}</strong>
-                      <em>{fromNow(n.created_at)}</em>
+                  <span className={styles.itemBody}>
+                    <span className={styles.itemTop}>
+                      <strong className={styles.itemTitle}>{n.title}</strong>
+                      <span className={styles.itemTime}>{timeAgo(n.created_at)}</span>
                     </span>
 
-                    <span className={styles.body}>{n.body || meta.label}</span>
+                    {n.body && <span className={styles.itemText}>{n.body}</span>}
+
+                    <span className={styles.itemBottom}>
+                      <span className={`${styles.categoryPill} ${meta.className}`}>
+                        <Icon size={11} />
+                        {meta.label}
+                      </span>
+
+                      {n.actor_display && (
+                        <span className={styles.actor}>@{n.actor_display}</span>
+                      )}
+                    </span>
                   </span>
 
-                  {unread && <span className={styles.dot} />}
+                  <span
+                    className={styles.itemActions}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {busyId === n.id ? (
+                      <Loader2 size={14} className={styles.spin} />
+                    ) : (
+                      <button
+                        className={styles.deleteBtn}
+                        onClick={e => void removeNotification(n, e)}
+                        aria-label="Delete notification"
+                        title="Delete notification"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+
+                    {unread && <span className={styles.unreadDot} />}
+                  </span>
                 </button>
               )
             })
           )}
-        </div>
+
+          {!loading && hasMore && notifications.length > 0 && (
+            <button
+              className={styles.loadMore}
+              onClick={loadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? <Loader2 size={14} className={styles.spin} /> : null}
+              Load older notifications
+            </button>
+          )}
+        </section>
       </div>
     </main>
   )

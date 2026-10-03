@@ -23,14 +23,17 @@ import { VoiceNote } from '../VoiceNote'
 import { API } from '../../lib/sales'
 import {
   addMember,
+  approveGroupJoinRequest,
   blockUser,
   deleteGroup,
   demoteGroupMember,
   fetchConversationMedia,
   fetchConversationMembers,
+  fetchGroupJoinRequests,
   leaveConversation,
   listBlocks,
   promoteGroupMember,
+  rejectGroupJoinRequest,
   removeGroupMember,
   reportContent,
   unblockUser,
@@ -39,10 +42,11 @@ import {
   type ChatMessage,
   type Conversation,
   type GroupMember,
+  type GroupJoinRequest,
 } from '../../lib/chat'
 import styles from './ChatInfoPanel.module.css'
 
-type Tab = 'about' | 'members' | 'media' | 'files' | 'voice'
+type Tab = 'about' | 'members' | 'requests' | 'media' | 'files' | 'voice'
 type Confirm = null | 'block' | 'leave' | 'delete'
 
 const REPORT_REASONS = ['spam', 'harassment', 'hate speech', 'nudity', 'misinformation', 'other']
@@ -80,6 +84,13 @@ function metaString(msg: ChatMessage | null, key: string, fallback = '') {
 
   const v = (msg.meta as Record<string, unknown> | undefined)?.[key]
   return v == null ? fallback : String(v)
+}
+
+function joinModeLabel(mode?: string | null) {
+  if (mode === 'open') return 'Open — anyone can join'
+  if (mode === 'invite') return 'Invite only'
+  if (mode === 'private') return 'Private — admin managed'
+  return 'Approval required'
 }
 
 function PanelAvatar({
@@ -125,6 +136,9 @@ export function ChatInfoPanel({
   const [members, setMembers] = useState<GroupMember[] | null>(null)
   const [blocked, setBlocked] = useState(false)
   const [notice, setNotice] = useState('')
+
+  const [requests, setRequests] = useState<GroupJoinRequest[] | null>(null)
+  const [requestsLoading, setRequestsLoading] = useState(false)
 
   const [mediaItems, setMediaItems] = useState<ChatMessage[]>([])
   const [mediaHasMore, setMediaHasMore] = useState(false)
@@ -182,10 +196,27 @@ export function ChatInfoPanel({
       .catch(() => setBlocked(false))
   }, [viewer, isGroup, counterpartUser])
 
+  const loadRequests = useCallback(() => {
+    if (!isGroup || !canManage) {
+      setRequests([])
+      return
+    }
+
+    setRequestsLoading(true)
+
+    fetchGroupJoinRequests(viewer, id, 'pending')
+      .then(setRequests)
+      .catch(() => setRequests([]))
+      .finally(() => setRequestsLoading(false))
+  }, [viewer, id, isGroup, canManage])
+
   useEffect(() => {
     setTab('about')
     setMembers(null)
     setNotice('')
+
+    setRequests(null)
+    setRequestsLoading(false)
 
     setEditingName(false)
     setNameVal(conversation.name || '')
@@ -206,6 +237,19 @@ export function ChatInfoPanel({
     loadBlocks()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
+
+  useEffect(() => {
+    if (!isGroup || !canManage) return
+    if (requests !== null) return
+
+    loadRequests()
+  }, [isGroup, canManage, requests, loadRequests])
+
+  useEffect(() => {
+    if (tab === 'requests' && !(isGroup && canManage)) {
+      setTab('about')
+    }
+  }, [tab, isGroup, canManage])
 
   const ensureMedia = useCallback(() => {
     if (mediaLoaded || mediaLoading) return
@@ -458,6 +502,30 @@ export function ChatInfoPanel({
     }
   }
 
+  const doApproveRequest = async (req: GroupJoinRequest) => {
+    const ok = await act(
+      () => approveGroupJoinRequest(viewer, id, req.id),
+      'Join request approved.',
+    )
+
+    if (ok) {
+      setRequests(prev => (prev || []).filter(r => r.id !== req.id))
+      loadMembers()
+      onRefresh()
+    }
+  }
+
+  const doRejectRequest = async (req: GroupJoinRequest) => {
+    const ok = await act(
+      () => rejectGroupJoinRequest(viewer, id, req.id),
+      'Join request rejected.',
+    )
+
+    if (ok) {
+      setRequests(prev => (prev || []).filter(r => r.id !== req.id))
+    }
+  }
+
   const title = isGroup ? conversation.name || 'Group' : conversation.counterpart || 'Direct message'
 
   const heroAvatar = isGroup
@@ -477,9 +545,14 @@ export function ChatInfoPanel({
         ? `last seen ${fromNow(directLastSeen)}`
         : `@${counterpartUser || '—'}`
 
+  const pendingCount = requests?.length ?? 0
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'about', label: 'About' },
     ...(isGroup ? [{ key: 'members' as Tab, label: 'Members', count: members?.length }] : []),
+    ...(isGroup && canManage
+      ? [{ key: 'requests' as Tab, label: 'Requests', count: pendingCount || undefined }]
+      : []),
     { key: 'media', label: 'Media', count: mediaImages.length || undefined },
     { key: 'files', label: 'Files', count: mediaFiles.length || undefined },
     { key: 'voice', label: 'Voice', count: mediaVoices.length || undefined },
@@ -666,6 +739,23 @@ export function ChatInfoPanel({
                     ) : (
                       <p className={styles.aboutValue}>{conversation.description || 'No description.'}</p>
                     )}
+                  </div>
+
+                  <div className={styles.aboutBlock}>
+                    <div className={styles.aboutHead}>
+                      <span className={styles.aboutLabel}>Join access</span>
+
+                      {canManage && (
+                        <button
+                          className={styles.inlineBtn}
+                          onClick={() => setTab('requests')}
+                        >
+                          {pendingCount > 0 ? `Requests · ${pendingCount}` : 'Requests'}
+                        </button>
+                      )}
+                    </div>
+
+                    <p className={styles.aboutValue}>{joinModeLabel(conversation.join_mode)}</p>
                   </div>
 
                   <div className={styles.dangerList}>
@@ -949,6 +1039,61 @@ export function ChatInfoPanel({
                     })}
                   </ul>
                 </>
+              )}
+            </div>
+          )}
+
+          {tab === 'requests' && isGroup && canManage && (
+            <div className={styles.requests}>
+              {requests === null || requestsLoading ? (
+                <div className={styles.center}>
+                  <Loader2 size={18} className={styles.spin} />
+                </div>
+              ) : requests.length === 0 ? (
+                <p className={styles.empty}>No pending join requests.</p>
+              ) : (
+                <ul className={styles.requestList}>
+                  {requests.map(r => (
+                    <li key={r.id} className={styles.requestItem}>
+                      <PanelAvatar
+                        src={r.avatar_url}
+                        name={r.display_name || r.user_name}
+                        className={styles.requestAvatar}
+                      />
+
+                      <div className={styles.requestBody}>
+                        <div className={styles.requestTop}>
+                          <strong>{r.display_name || r.user_name}</strong>
+                          <span>@{r.user_name}</span>
+                        </div>
+
+                        {r.message && <p className={styles.requestMessage}>{r.message}</p>}
+
+                        <p className={styles.requestMeta}>{fromNow(r.created_at)}</p>
+                      </div>
+
+                      <div className={styles.requestActions}>
+                        <button
+                          className={styles.requestApproveBtn}
+                          onClick={() => void doApproveRequest(r)}
+                          disabled={busy}
+                          aria-label="Approve join request"
+                        >
+                          <Check size={14} />
+                        </button>
+
+                        <button
+                          className={styles.requestRejectBtn}
+                          onClick={() => void doRejectRequest(r)}
+                          disabled={busy}
+                          aria-label="Reject join request"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           )}

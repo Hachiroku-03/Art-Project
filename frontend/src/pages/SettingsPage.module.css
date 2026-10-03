@@ -441,6 +441,90 @@
   color: var(--ink-soft);
 }
 
+.loadingCard,
+.errorCard {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 2rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  text-align: center;
+  color: var(--ink-soft);
+  box-shadow: 0 18px 50px rgba(20, 18, 15, 0.08);
+}
+
+.loadingCard p,
+.errorCard p {
+  margin: 0;
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 1rem;
+}
+
+.errorCard {
+  color: var(--err);
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(109, 26, 36, 0.06);
+  border: 1px solid rgba(109, 26, 36, 0.14);
+  color: var(--err);
+  font-size: 0.82rem;
+}
+
+.prefGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(14, 14, 14, 0.06);
+}
+
+.prefGroup:last-child {
+  border-bottom: none;
+}
+
+.prefGroup .toggleRow {
+  border-bottom: none;
+  padding: 0.55rem 0;
+}
+
+.prefGroup .toggleRow:last-child {
+  padding-bottom: 0.65rem;
+}
+
+.toggleLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.saveRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.blockedBox {
+  background: #f7f6f3;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.8rem 0.9rem;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+}
+
 .list {
   list-style: none;
   margin: 0;

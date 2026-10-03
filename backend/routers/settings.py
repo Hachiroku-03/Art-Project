@@ -12,6 +12,14 @@ ALLOWED_LANGUAGES = {
     "es",
     "de",
     "pt",
+    "it",
+    "nl",
+    "ru",
+    "zh",
+    "ja",
+    "ko",
+    "hi",
+    "sw",
     "ar",
 }
 
@@ -78,6 +86,12 @@ LEGACY_CHAT_NOTIFICATION_TYPES = {
     "mention",
     "group_invite",
 }
+
+@router.get("/languages")
+def list_languages():
+    return {
+        "languages": sorted(ALLOWED_LANGUAGES)
+    }
 
 
 def _default_notifications():

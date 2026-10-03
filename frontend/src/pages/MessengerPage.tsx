@@ -346,18 +346,18 @@ export function MessengerPage() {
   const audioCtxRef = useRef<AudioContext | null>(null)
 
   const autosizeComposer = useCallback(() => {
-  const el = inputRef.current
-  if (!el) return
+    const el = inputRef.current
+    if (!el) return
 
-  el.style.height = 'auto'
+    el.style.height = 'auto'
 
-  const maxHeight = window.matchMedia('(max-width: 900px)').matches ? 132 : 180
-  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-}, [])
+    const maxHeight = window.matchMedia('(max-width: 900px)').matches ? 132 : 180
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+  }, [])
 
-useEffect(() => {
-  autosizeComposer()
-}, [autosizeComposer, cid, draft, editing])
+  useEffect(() => {
+    autosizeComposer()
+  }, [autosizeComposer, cid, draft, editing])
 
   const activeConv = useMemo(() => {
     if (cid == null) return undefined
@@ -379,7 +379,6 @@ useEffect(() => {
       ) || null
     )
   }, [cid, activeConv, members, viewer, counterpartUser])
-
 
   const counts = useMemo(
     () => ({
@@ -921,7 +920,6 @@ useEffect(() => {
     }
   }, [openChat, refreshConversations, reloadArchived])
 
-
   const createGroupChat = useCallback(async () => {
     const name = groupName.trim()
 
@@ -1048,59 +1046,59 @@ useEffect(() => {
     setReplyTo(null)
   }
 
-const sendMessage = useCallback(
-  async (e: React.FormEvent<HTMLFormElement> | React.KeyboardEvent<HTMLTextAreaElement>) => {
-    e.preventDefault()
+  const sendMessage = useCallback(
+    async (e: React.FormEvent<HTMLFormElement> | React.KeyboardEvent<HTMLTextAreaElement>) => {
+      e.preventDefault()
 
-    const body = draft.trim()
-    if (!body || cid == null) return
+      const body = draft.trim()
+      if (!body || cid == null) return
 
-    if (draftTimer.current !== null) {
-      window.clearTimeout(draftTimer.current)
-      draftTimer.current = null
-    }
+      if (draftTimer.current !== null) {
+        window.clearTimeout(draftTimer.current)
+        draftTimer.current = null
+      }
 
-    setNote('')
+      setNote('')
 
-    if (editing) {
-      const d = await editMessage(editing.id, body)
+      if (editing) {
+        const d = await editMessage(editing.id, body)
 
-      if (d.error) {
-        setNote(d.error)
+        if (d.error) {
+          setNote(d.error)
+          return
+        }
+
+        setEditing(null)
+        setDraft('')
+        lastDraftSaved.current = ''
+
+        if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
         return
       }
 
-      setEditing(null)
+      send(cid, 'text', body, replyTo ? { reply_to_id: replyTo.id } : {})
+
       setDraft('')
+      setReplyTo(null)
+
+      await deleteDraft(cid)
       lastDraftSaved.current = ''
 
       if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
-      return
-    }
+    },
+    [cid, deleteDraft, draft, editMessage, editing, replyTo, send],
+  )
 
-    send(cid, 'text', body, replyTo ? { reply_to_id: replyTo.id } : {})
+  const handleComposerKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) {
+        return
+      }
 
-    setDraft('')
-    setReplyTo(null)
-
-    await deleteDraft(cid)
-    lastDraftSaved.current = ''
-
-    if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
-  },
-  [cid, deleteDraft, draft, editMessage, editing, replyTo, send],
-)
-
-const handleComposerKeyDown = useCallback(
-  (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) {
-      return
-    }
-
-    void sendMessage(e)
-  },
-  [sendMessage],
-)
+      void sendMessage(e)
+    },
+    [sendMessage],
+  )
 
   const onDraftChange = useCallback(
     (value: string) => {
@@ -1745,8 +1743,7 @@ const handleComposerKeyDown = useCallback(
                   ))
                 )
               ) : (
-                <> 
-
+                <>
                   {listRows.length === 0 ? (
                     <p className={styles.empty}>{emptyText}</p>
                   ) : (
@@ -2234,6 +2231,7 @@ const handleComposerKeyDown = useCallback(
                   className={styles.hiddenInput}
                   onChange={handleImagePick}
                 />
+
                 <textarea
                   ref={inputRef}
                   className={styles.composerInput}
@@ -2441,7 +2439,7 @@ const handleComposerKeyDown = useCallback(
           onClose={() => setInfoOpen(false)}
           onOpenImage={openMediaCarousel}
           onRefresh={refreshAll}
-          onArchived={(archived) => {
+          onArchived={archived => {
             if (archived && !isDesktop()) {
               setInfoOpen(false)
               backToList()
@@ -2571,12 +2569,17 @@ const handleComposerKeyDown = useCallback(
               placeholder="What is this group for?"
             />
 
+            <label className={styles.modalLabel}>Join access</label>
+            <p className={styles.modalHint}>
+              New groups default to approval required. Admins can review requests from the group info panel.
+            </p>
+
             <div className={styles.modalActions}>
               <button className={styles.secondaryBtn} onClick={() => setShowGroupModal(false)}>
                 Cancel
               </button>
 
-              <button className={styles.primaryBtn} onClick={createGroupChat}>
+              <button className={styles.primaryBtn} onClick={() => void createGroupChat()}>
                 Create group
               </button>
             </div>

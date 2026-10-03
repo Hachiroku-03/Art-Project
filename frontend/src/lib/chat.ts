@@ -77,6 +77,7 @@ export type Conversation = {
   announce_new_members?: boolean
 }
 
+
 export type ConversationUpdate = Partial<Conversation> & { id: number }
 
 export type ChatEvent =
@@ -344,6 +345,62 @@ export async function fetchConversations(
     `/chat/conversations?viewer=${encodeURIComponent(viewer)}&include_archived=${includeArchived}`,
   )
   return d.conversations || []
+}
+
+export type GroupJoinRequest = {
+  id: number
+  user_name: string
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled' | string
+  message: string | null
+  created_at: string
+  reviewed_at: string | null
+  display_name: string
+  avatar_url: string | null
+}
+
+export async function fetchGroupJoinRequests(
+  viewer: string,
+  convId: number,
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'all' = 'pending',
+): Promise<GroupJoinRequest[]> {
+  const d = await jget(
+    `/chat/conversations/${convId}/join-requests?viewer=${encodeURIComponent(viewer)}&status=${status}`,
+  )
+  return d.requests || []
+}
+
+export async function requestGroupJoin(
+  viewer: string,
+  convId: number,
+  message?: string,
+): Promise<{ status?: string; message?: string; error?: string }> {
+  return jpost(`/chat/conversations/${convId}/join-request`, {
+    viewer,
+    message: message || null,
+  })
+}
+
+export async function cancelGroupJoinRequest(
+  viewer: string,
+  convId: number,
+): Promise<{ message?: string; error?: string }> {
+  return jdelete(`/chat/conversations/${convId}/join-request?viewer=${encodeURIComponent(viewer)}`)
+}
+
+export async function approveGroupJoinRequest(
+  viewer: string,
+  convId: number,
+  requestId: number,
+): Promise<{ message?: string; error?: string }> {
+  return jpost(`/chat/conversations/${convId}/join-requests/${requestId}/approve`, { viewer })
+}
+
+export async function rejectGroupJoinRequest(
+  viewer: string,
+  convId: number,
+  requestId: number,
+): Promise<{ message?: string; error?: string }> {
+  return jpost(`/chat/conversations/${convId}/join-requests/${requestId}/reject`, { viewer })
 }
 
 export async function createDirect(
@@ -812,4 +869,39 @@ export async function muteConversation(
   hours: number | null,
 ): Promise<{ error?: string }> {
   return jpost(`/chat/conversations/${convId}/mute`, { viewer, hours })
+}
+
+export type DiscoverGroup = {
+  id: number
+  name: string | null
+  image_url: string | null
+  description: string | null
+  join_mode: 'open' | 'request' | string
+  member_count: number
+  request_status: 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled' | string
+}
+
+export async function fetchDiscoverGroups(
+  viewer: string,
+  q = '',
+  limit = 30,
+): Promise<DiscoverGroup[]> {
+  const params = new URLSearchParams()
+  params.set('viewer', viewer)
+  params.set('q', q)
+  params.set('limit', String(limit))
+
+  const d = await jget(`/chat/discover?${params.toString()}`)
+  return d.groups || []
+}
+
+export async function joinOrRequestGroup(
+  viewer: string,
+  convId: number,
+  message?: string,
+): Promise<{ status?: string; message?: string; error?: string }> {
+  return jpost(`/chat/conversations/${convId}/join-request`, {
+    viewer,
+    message: message || null,
+  })
 }

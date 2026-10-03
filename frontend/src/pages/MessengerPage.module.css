@@ -1892,6 +1892,23 @@
 }
 
 
+  .discoverAvatar {
+    width: 42px;
+    height: 42px;
+  }
+
+  .discoverAction {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+
+.modalHint {
+  margin: -0.15rem 0 0.35rem;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
 
 /* ----------------------------- TOUCH ----------------------------- */
 @media (hover: none) {
