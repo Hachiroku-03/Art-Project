@@ -44,6 +44,7 @@ import {
   type GroupMember,
   type GroupJoinRequest,
 } from '../../lib/chat'
+import { updateCommunityGroupMeta } from '../../lib/community'
 import styles from './ChatInfoPanel.module.css'
 
 type Tab = 'about' | 'members' | 'requests' | 'media' | 'files' | 'voice'
@@ -156,6 +157,15 @@ export function ChatInfoPanel({
   const [reportReason, setReportReason] = useState(REPORT_REASONS[0])
   const [reportDetails, setReportDetails] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const [editingCommunity, setEditingCommunity] = useState(false)
+  const [commCategory, setCommCategory] = useState('')
+  const [commScene, setCommScene] = useState('')
+  const [commTags, setCommTags] = useState('')
+  const [commJoinMode, setCommJoinMode] = useState('request')
+  const [commAllowInvites, setCommAllowInvites] = useState(false)
+  const [commAnnounce, setCommAnnounce] = useState(false)
+  const [savingCommunity, setSavingCommunity] = useState(false)
 
   const groupImgRef = useRef<HTMLInputElement>(null)
 
@@ -492,7 +502,6 @@ export function ChatInfoPanel({
       loadMembers()
     }
   }
-
   const doDemote = async (userName: string) => {
     const ok = await act(() => demoteGroupMember(viewer, id, userName))
 
@@ -501,6 +510,49 @@ export function ChatInfoPanel({
       loadMembers()
     }
   }
+
+  const startEditCommunity = () => {
+    setCommCategory(conversation.category || '')
+    setCommScene(conversation.scene || '')
+    setCommTags((conversation.tags || []).join(', '))
+    setCommJoinMode(conversation.join_mode || 'request')
+    setCommAllowInvites(!!conversation.allow_member_invites)
+    setCommAnnounce(!!conversation.announce_new_members)
+    setEditingCommunity(true)
+  }
+
+  const saveCommunity = async () => {
+    setSavingCommunity(true)
+    setNotice('')
+
+    const tags = commTags
+      .split(',')
+      .map(t => t.trim())
+      .filter(Boolean)
+      .slice(0, 8)
+
+    const d = await updateCommunityGroupMeta(viewer, id, {
+      category: commCategory.trim() || null,
+      scene: commScene.trim() || null,
+      tags,
+      join_mode: commJoinMode,
+      allow_member_invites: commAllowInvites,
+      announce_new_members: commAnnounce,
+    })
+
+    setSavingCommunity(false)
+
+    if (d.error) {
+      setNotice(d.error)
+      return
+    }
+
+    setEditingCommunity(false)
+    setNotice('Community info saved.')
+    onRefresh()
+  }
+
+  const title = isGroup ? conversation.name || 'Group' : conversation.counterpart || 'Direct message'
 
   const doApproveRequest = async (req: GroupJoinRequest) => {
     const ok = await act(
@@ -526,7 +578,7 @@ export function ChatInfoPanel({
     }
   }
 
-  const title = isGroup ? conversation.name || 'Group' : conversation.counterpart || 'Direct message'
+
 
   const heroAvatar = isGroup
     ? conversation.image_url
@@ -757,6 +809,111 @@ export function ChatInfoPanel({
 
                     <p className={styles.aboutValue}>{joinModeLabel(conversation.join_mode)}</p>
                   </div>
+
+                  {canManage && (
+                    <div className={styles.aboutBlock}>
+                      <div className={styles.aboutHead}>
+                        <span className={styles.aboutLabel}>Community info</span>
+
+                        {!editingCommunity && (
+                          <button className={styles.inlineBtn} onClick={startEditCommunity}>
+                            <Pencil size={13} /> Edit
+                          </button>
+                        )}
+                      </div>
+
+                      {!editingCommunity ? (
+                        <p className={styles.aboutValue}>
+                          {[conversation.category, conversation.scene]
+                            .filter(Boolean)
+                            .join(' · ') || 'Not set — appears in Discover once tagged.'}
+                        </p>
+                      ) : (
+                        <div className={styles.communityEditor}>
+                          <label className={styles.fieldLabelSmall} htmlFor="comm-category">
+                            Category
+                          </label>
+                          <input
+                            id="comm-category"
+                            className={styles.editInput}
+                            value={commCategory}
+                            onChange={e => setCommCategory(e.target.value)}
+                            placeholder="Critique Circle, Collector Circle, House Salon, Collective…"
+                            maxLength={40}
+                          />
+
+                          <label className={styles.fieldLabelSmall} htmlFor="comm-scene">
+                            Scene / city
+                          </label>
+                          <input
+                            id="comm-scene"
+                            className={styles.editInput}
+                            value={commScene}
+                            onChange={e => setCommScene(e.target.value)}
+                            placeholder="Lagos, Port Harcourt, Enugu, Diaspora…"
+                            maxLength={40}
+                          />
+
+                          <label className={styles.fieldLabelSmall} htmlFor="comm-tags">
+                            Tags
+                          </label>
+                          <input
+                            id="comm-tags"
+                            className={styles.editInput}
+                            value={commTags}
+                            onChange={e => setCommTags(e.target.value)}
+                            placeholder="oil, textile, photography (comma separated)"
+                          />
+
+                          <label className={styles.fieldLabelSmall} htmlFor="comm-join">
+                            Join mode
+                          </label>
+                          <select
+                            id="comm-join"
+                            className={styles.editInput}
+                            value={commJoinMode}
+                            onChange={e => setCommJoinMode(e.target.value)}
+                          >
+                            <option value="open">Open — anyone can join</option>
+                            <option value="request">Approval required</option>
+                            <option value="invite">Invite only</option>
+                            <option value="private">Private</option>
+                          </select>
+
+                          <label className={styles.checkRow}>
+                            <input
+                              type="checkbox"
+                              checked={commAllowInvites}
+                              onChange={e => setCommAllowInvites(e.target.checked)}
+                            />
+                            <span>Members can invite others</span>
+                          </label>
+
+                          <label className={styles.checkRow}>
+                            <input
+                              type="checkbox"
+                              checked={commAnnounce}
+                              onChange={e => setCommAnnounce(e.target.checked)}
+                            />
+                            <span>Announce new members in chat</span>
+                          </label>
+
+                          <div className={styles.editBtns}>
+                            <button
+                              className={styles.smallPrimary}
+                              onClick={() => void saveCommunity()}
+                              disabled={savingCommunity}
+                            >
+                              {savingCommunity ? 'Saving…' : 'Save community info'}
+                            </button>
+                            <button className={styles.smallGhost} onClick={() => setEditingCommunity(false)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className={styles.dangerList}>
                     <button

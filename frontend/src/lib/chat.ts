@@ -75,6 +75,10 @@ export type Conversation = {
   join_mode?: 'open' | 'request' | 'invite' | 'private'
   allow_member_invites?: boolean
   announce_new_members?: boolean
+
+  category?: string | null
+  scene?: string | null
+  tags?: string[] | null
 }
 
 

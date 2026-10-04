@@ -1548,6 +1548,9 @@ def list_conversations(viewer: str = "", include_archived: bool = False):
                c.join_mode,
                c.allow_member_invites,
                c.announce_new_members,
+               c.category,
+               c.scene,
+               c.tags,
                c.updated_at,
 
                COALESCE(p.archived, FALSE) AS archived,

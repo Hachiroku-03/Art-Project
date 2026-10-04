@@ -41,6 +41,7 @@ import { ChatBackground } from '../components/chat/ChatBackground'
 import { ChatInfoPanel } from '../components/chat/ChatInfoPanel'
 import { useChat, isOptimistic } from '../hooks/useChat'
 import { API } from '../lib/sales'
+import { updateCommunityGroupMeta } from '../lib/community'
 import {
   searchMessages,
   fetchConversationMembers,
@@ -310,6 +311,10 @@ export function MessengerPage() {
   const [groupName, setGroupName] = useState('')
   const [groupMemberText, setGroupMemberText] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
+  const [groupCategory, setGroupCategory] = useState('')
+  const [groupScene, setGroupScene] = useState('')
+  const [groupJoinMode, setGroupJoinMode] = useState('request')
+  const [creatingGroup, setCreatingGroup] = useState(false)
 
   const [searchResults, setSearchResults] = useState<ChatMessage[]>([])
   const [searching, setSearching] = useState(false)
@@ -902,6 +907,19 @@ export function MessengerPage() {
     }
   }, [location.state, location.pathname, navigate, openChat, refreshConversations, reloadArchived])
 
+  // Deep-link from Community "Start a group": open the create-group modal on
+  // arrival. Uses router state (not a window event) because the target page is
+  // mounting cold — an event dispatched during navigation would be lost before
+  // the listener attaches. Mirrors the proven openConversationId pattern above.
+  useEffect(() => {
+    const state = location.state as { openCreateGroup?: boolean } | null
+
+    if (state?.openCreateGroup) {
+      setShowGroupModal(true)
+      navigate(location.pathname, { replace: true, state: null })
+    }
+  }, [location.state, location.pathname, navigate])
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<number>).detail
@@ -920,6 +938,22 @@ export function MessengerPage() {
     }
   }, [openChat, refreshConversations, reloadArchived])
 
+  // A group membership can change while the user is idle on Messenger (approved
+  // elsewhere, added by an admin, removed). Surface it in the list without
+  // interrupting whatever chat they're reading — the toast handles one-click open.
+  useEffect(() => {
+    const onNotif = (event: Event) => {
+      const n = (event as CustomEvent<{ category?: string }>).detail
+      if (!n || n.category !== 'groups') return
+
+      refreshConversations()
+      void reloadArchived()
+    }
+
+    window.addEventListener('space:notification', onNotif as EventListener)
+    return () => window.removeEventListener('space:notification', onNotif as EventListener)
+  }, [refreshConversations, reloadArchived])
+
   const createGroupChat = useCallback(async () => {
     const name = groupName.trim()
 
@@ -934,21 +968,61 @@ export function MessengerPage() {
       .filter(Boolean)
 
     setNote('')
-    const d = await startGroup(name, memberList, undefined, groupDescription.trim() || undefined)
+    setCreatingGroup(true)
 
-    if (d.error) {
-      setNote(d.error)
-      return
+    try {
+      const d = await startGroup(name, memberList, undefined, groupDescription.trim() || undefined)
+
+      if (d.error) {
+        setNote(d.error)
+        return
+      }
+
+      const cid = d.conversation_id
+      const cat = groupCategory.trim()
+      const scn = groupScene.trim()
+
+      // Stamp community fields only when they differ from the create defaults
+      // (join_mode defaults to 'request', category/scene default to null), so the
+      // common "plain request group" path stays a single request.
+      const needsMeta = groupJoinMode !== 'request' || !!cat || !!scn
+
+      if (cid != null && needsMeta) {
+        const m = await updateCommunityGroupMeta(viewer, cid, {
+          category: cat || null,
+          scene: scn || null,
+          join_mode: groupJoinMode,
+        })
+
+        if (m.error) {
+          setNote(`Group created, but community info didn’t save: ${m.error}`)
+        }
+      }
+
+      setShowGroupModal(false)
+      setGroupName('')
+      setGroupMemberText('')
+      setGroupDescription('')
+      setGroupCategory('')
+      setGroupScene('')
+      setGroupJoinMode('request')
+      setFilter('all')
+
+      if (cid != null) openChat(cid)
+    } finally {
+      setCreatingGroup(false)
     }
-
-    setShowGroupModal(false)
-    setGroupName('')
-    setGroupMemberText('')
-    setGroupDescription('')
-    setFilter('all')
-
-    if (d.conversation_id != null) openChat(d.conversation_id)
-  }, [groupDescription, groupName, groupMemberText, openChat, startGroup])
+  }, [
+    groupCategory,
+    groupDescription,
+    groupName,
+    groupJoinMode,
+    groupMemberText,
+    groupScene,
+    openChat,
+    startGroup,
+    viewer,
+  ])
 
   const openMediaCarousel = useCallback(
     (url: string) => {
@@ -2569,9 +2643,54 @@ export function MessengerPage() {
               placeholder="What is this group for?"
             />
 
-            <label className={styles.modalLabel}>Join access</label>
+            <div className={styles.modalRow2}>
+              <div className={styles.modalField}>
+                <label className={styles.modalLabel} htmlFor="grp-cat">
+                  Category
+                </label>
+                <input
+                  id="grp-cat"
+                  className={styles.modalInput}
+                  value={groupCategory}
+                  onChange={e => setGroupCategory(e.target.value)}
+                  placeholder="Critique Circle, Collective…"
+                  maxLength={40}
+                />
+              </div>
+
+              <div className={styles.modalField}>
+                <label className={styles.modalLabel} htmlFor="grp-scene">
+                  Scene / city
+                </label>
+                <input
+                  id="grp-scene"
+                  className={styles.modalInput}
+                  value={groupScene}
+                  onChange={e => setGroupScene(e.target.value)}
+                  placeholder="Lagos, Port Harcourt…"
+                  maxLength={40}
+                />
+              </div>
+            </div>
+
+            <label className={styles.modalLabel} htmlFor="grp-join">
+              Join access
+            </label>
+            <select
+              id="grp-join"
+              className={styles.modalSelect}
+              value={groupJoinMode}
+              onChange={e => setGroupJoinMode(e.target.value)}
+            >
+              <option value="request">Approval required (default)</option>
+              <option value="open">Open — anyone can join</option>
+              <option value="invite">Invite only</option>
+              <option value="private">Private</option>
+            </select>
+
             <p className={styles.modalHint}>
-              New groups default to approval required. Admins can review requests from the group info panel.
+              Category and scene make this group appear in Community discovery. You can change
+              these later from the group info panel.
             </p>
 
             <div className={styles.modalActions}>
@@ -2579,8 +2698,12 @@ export function MessengerPage() {
                 Cancel
               </button>
 
-              <button className={styles.primaryBtn} onClick={() => void createGroupChat()}>
-                Create group
+              <button
+                className={styles.primaryBtn}
+                onClick={() => void createGroupChat()}
+                disabled={creatingGroup}
+              >
+                {creatingGroup ? 'Creating…' : 'Create group'}
               </button>
             </div>
           </div>

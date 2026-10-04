@@ -58,6 +58,40 @@ async function jrequest(path: string, method: string, body?: unknown): Promise<a
   }
 }
 
+/**
+ * Single source of truth for "where does this notification take the user".
+ * Imported by NotificationBell, ToastHost and NotificationsPage. Keep the
+ * routing rules here so the three surfaces can never disagree about a click.
+ */
+export function routeFor(n: AppNotification): { to: string; state?: Record<string, unknown> } {
+  const st = n.source_type
+
+  if (st === 'post' && n.source_id) return { to: `/post/${n.source_id}` }
+
+  if (st === 'comment') {
+    const postId = n.secondary_id || n.source_id
+    if (postId) return { to: `/post/${postId}` }
+  }
+
+  if (st === 'conversation' || st === 'chat') {
+    if (n.source_id) return { to: '/messenger', state: { openConversationId: n.source_id } }
+  }
+
+  if (n.category === 'messages' || n.category === 'mentions' || n.category === 'groups') {
+    if (n.source_id) return { to: '/messenger', state: { openConversationId: n.source_id } }
+  }
+
+  if (n.category === 'auctions') {
+    if ((st === 'sale' || st === 'lot') && n.source_id) return { to: `/sales/${n.source_id}` }
+    return { to: '/auctions' }
+  }
+
+  if (n.category === 'wallet') return { to: '/wallet' }
+  if (n.category === 'security' || n.category === 'system') return { to: '/settings' }
+
+  return { to: '/notifications' }
+}
+
 export async function fetchNotifications(
   viewer: string,
   opts: {

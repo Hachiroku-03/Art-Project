@@ -10,7 +10,7 @@ import {
   rejectGroupJoinRequest,
   type Conversation,
 } from '../lib/chat'
-import { markNotificationRead } from '../lib/notifications'
+import { markNotificationRead, type AppNotification } from '../lib/notifications'
 import { API } from '../lib/sales'
 import {
   fetchCommunityCalendar,
@@ -122,6 +122,9 @@ export function CommunityPage() {
 
   const [followed, setFollowed] = useState<Record<string, boolean>>({})
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [refreshTick, setRefreshTick] = useState(0)
+  const [recentlyJoinedId, setRecentlyJoinedId] = useState<number | null>(null)
+  const joinTimerRef = useRef<number | null>(null)
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -156,7 +159,7 @@ export function CommunityPage() {
     return () => {
       alive = false
     }
-  }, [viewer])
+  }, [viewer, refreshTick])
 
   // ---- taxonomy (real chips/counts) ----
   useEffect(() => {
@@ -185,7 +188,7 @@ export function CommunityPage() {
       alive = false
       window.clearTimeout(timer)
     }
-  }, [viewer, search, category, scene])
+  }, [viewer, search, category, scene, refreshTick])
 
   // ---- sidebars (real) ----
   const loadSidebars = useCallback(async () => {
@@ -207,7 +210,42 @@ export function CommunityPage() {
 
   useEffect(() => {
     void loadSidebars()
-  }, [loadSidebars])
+  }, [loadSidebars, refreshTick])
+
+  // Live membership changes: when ToastHost reports a new group notification
+  // (approval / invite / rejection / removal), refresh Your-groups, Discover and
+  // the side rails so the page reflects true membership without a manual reload.
+  useEffect(() => {
+    if (!viewer) return
+
+    const onNotif = (event: Event) => {
+      const n = (event as CustomEvent<AppNotification>).detail
+      if (!n || n.category !== 'groups') return
+
+      setRefreshTick(t => t + 1)
+
+      const joined = n.type === 'group_request_approved' || n.type === 'group_invite'
+      const gid = typeof n.source_id === 'number' ? n.source_id : null
+
+      if (joined && gid != null) {
+        setRecentlyJoinedId(gid)
+        if (joinTimerRef.current != null) window.clearTimeout(joinTimerRef.current)
+        joinTimerRef.current = window.setTimeout(() => {
+          joinTimerRef.current = null
+          setRecentlyJoinedId(null)
+        }, 6000)
+      }
+    }
+
+    window.addEventListener('space:notification', onNotif as EventListener)
+    return () => window.removeEventListener('space:notification', onNotif as EventListener)
+  }, [viewer])
+
+  useEffect(() => {
+    return () => {
+      if (joinTimerRef.current != null) window.clearTimeout(joinTimerRef.current)
+    }
+  }, [])
 
   // ---- discover actions (real join/request/cancel) ----
   const onJoinRequest = useCallback(
@@ -330,7 +368,10 @@ export function CommunityPage() {
                 aria-label="Search community"
               />
             </div>
-            <button className={styles.startBtn} onClick={() => navigate('/messenger')}>
+            <button
+              className={styles.startBtn}
+              onClick={() => navigate('/messenger', { state: { openCreateGroup: true } })}
+            >
               <Plus size={15} />
               <span>Start a group</span>
             </button>
@@ -362,6 +403,7 @@ export function CommunityPage() {
                         <span className={styles.myGroupPreview}>{previewFromConv(g)}</span>
                       </span>
                       {(g.unread || 0) > 0 && <span className={styles.myGroupBadge}>{g.unread}</span>}
+                      {recentlyJoinedId === g.id && <span className={styles.myGroupNew}>New</span>}
                     </button>
                   ))}
                 </div>
@@ -743,7 +785,7 @@ export function CommunityPage() {
             </div>
           </aside>
         </div>
-      </main>
+      </div>
     </main>
   )
 }

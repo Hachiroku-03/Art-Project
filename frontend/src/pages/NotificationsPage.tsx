@@ -22,6 +22,7 @@ import {
   fetchUnreadNotificationCount,
   markAllNotificationsRead,
   markNotificationRead,
+  routeFor as routeForNotification,
   type AppNotification,
   type NotificationCategory,
 } from '../lib/notifications'
@@ -96,55 +97,6 @@ function categoryMeta(category: string): {
   }
 }
 
-function routeForNotification(n: AppNotification): {
-  to: string
-  state?: Record<string, unknown>
-} {
-  const sourceType = n.source_type
-
-  if (sourceType === 'post' && n.source_id) {
-    return { to: `/post/${n.source_id}` }
-  }
-
-  if (sourceType === 'comment') {
-    const postId = n.secondary_id || n.source_id
-    if (postId) return { to: `/post/${postId}` }
-  }
-
-  if (sourceType === 'conversation' || sourceType === 'chat') {
-    if (n.source_id) {
-      return {
-        to: '/messenger',
-        state: { openConversationId: n.source_id },
-      }
-    }
-  }
-
-  if (n.category === 'messages' || n.category === 'mentions' || n.category === 'groups') {
-    if (n.source_id) {
-      return {
-        to: '/messenger',
-        state: { openConversationId: n.source_id },
-      }
-    }
-  }
-
-  if (n.category === 'auctions') {
-    if (sourceType === 'sale' && n.source_id) return { to: `/sales/${n.source_id}` }
-    if (sourceType === 'lot' && n.source_id) return { to: `/sales/${n.source_id}` }
-    return { to: '/auctions' }
-  }
-
-  if (n.category === 'wallet') {
-    return { to: '/wallet' }
-  }
-
-  if (n.category === 'security' || n.category === 'system') {
-    return { to: '/settings' }
-  }
-
-  return { to: '/notifications' }
-}
 
 function Avatar({
   src,

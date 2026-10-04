@@ -513,6 +513,38 @@
   transform: none;
 }
 
+.communityEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
+}
+
+.fieldLabelSmall {
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-top: 0.2rem;
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.checkRow input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ink);
+}
+
 @media (max-width: 520px) {
   .requestItem {
     grid-template-columns: 38px minmax(0, 1fr);

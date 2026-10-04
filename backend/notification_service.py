@@ -1,7 +1,33 @@
+"""
+Combined /account router + notification/user-settings service.
+
+This module is BOTH:
+  - the FastAPI router mounted at prefix "/account" (languages, settings read,
+    per-section PATCH writes, blocked list)
+  - the service library imported by chat.py (create_notification, should_notify, ...)
+
+Mount this router on the SAME app that owns db.py / chat / notifications /
+community (port 8001 in this project). The frontend lib/settings.ts must point
+ACCOUNT_API at that app. One Postgres backs every app, so users.face_embedding,
+chat_blocks, user_settings and notifications are all visible here.
+
+Preference enforcement split (deliberate):
+  - in_app : enforced SERVER-SIDE here, at insert time. If a category's in_app
+             is off (or master is off), create_notification writes NO row, so
+             the notification never reaches the bell, dropdown, /notifications
+             page, or a toast.
+  - sound  : enforced CLIENT-SIDE (ToastHost reads prefs via GET /account/settings
+             and pings only when prefs[category].sound). should_sound() is the
+             shared rule for any future server-side push/email.
+"""
+
 import json
 
 from db import get_db
+from fastapi import APIRouter
 
+
+router = APIRouter(prefix="/account", tags=["account"])
 
 ALLOWED_LANGUAGES = {
     "en",
@@ -9,6 +35,14 @@ ALLOWED_LANGUAGES = {
     "es",
     "de",
     "pt",
+    "it",
+    "nl",
+    "ru",
+    "zh",
+    "ja",
+    "ko",
+    "hi",
+    "sw",
     "ar",
 }
 
@@ -77,6 +111,186 @@ LEGACY_CHAT_NOTIFICATION_TYPES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# HTTP routes (prefix "/account"). Bodies reference helpers defined further
+# down; that's fine — they execute at request time, after the module loads.
+# ---------------------------------------------------------------------------
+@router.get("/languages")
+def list_languages():
+    return {
+        "languages": sorted(ALLOWED_LANGUAGES)
+    }
+
+
+@router.get("/settings")
+def read_account_settings(viewer: str = ""):
+    """Full merged settings + the two presentation-only fields the Settings
+    page reads (identity.face_verification, blocked_count). Those are computed
+    defensively so a missing table/column degrades to a safe value instead of
+    500-ing the whole page (which previously white-screened on
+    settings.identity.face_verification)."""
+    v = resolve_viewer(viewer)
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        core = get_settings(cursor, v)
+
+        face = "none"
+        try:
+            cursor.execute(
+                "SELECT 1 FROM users WHERE username = %s AND face_embedding IS NOT NULL",
+                (v,),
+            )
+            if cursor.fetchone():
+                face = "enabled"
+        except Exception:
+            face = "none"
+
+        blocked_count = 0
+        try:
+            cursor.execute(
+                "SELECT COUNT(*)::int AS c FROM chat_blocks WHERE blocker = %s",
+                (v,),
+            )
+            row = cursor.fetchone()
+            blocked_count = int((row or {}).get("c") or 0)
+        except Exception:
+            blocked_count = 0
+
+        conn.commit()
+
+        return {
+            **core,
+            "identity": {"face_verification": face},
+            "blocked_count": blocked_count,
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.patch("/settings/language")
+def patch_language(data: dict):
+    v = resolve_viewer(data.get("viewer") or "")
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        s = save_settings(cursor, v, language=data.get("language"))
+        conn.commit()
+        return {"language": s["language"], "message": "language saved"}
+    except ValueError as e:
+        conn.rollback()
+        return {"error": str(e)}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.patch("/settings/notifications")
+def patch_notifications(data: dict):
+    v = resolve_viewer(data.get("viewer") or "")
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        s = save_settings(cursor, v, notifications_patch=data.get("notifications"))
+        conn.commit()
+        return {"notifications": s["notifications"], "message": "saved"}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.patch("/settings/auctions")
+def patch_auctions(data: dict):
+    v = resolve_viewer(data.get("viewer") or "")
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        s = save_settings(cursor, v, auctions_patch=data.get("auctions"))
+        conn.commit()
+        return {"auctions": s["auctions"], "message": "saved"}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.patch("/settings/privacy")
+def patch_privacy(data: dict):
+    v = resolve_viewer(data.get("viewer") or "")
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        s = save_settings(cursor, v, privacy_patch=data.get("privacy"))
+        conn.commit()
+        return {"privacy": s["privacy"], "message": "saved"}
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+@router.get("/settings/blocked")
+def list_blocked(viewer: str = ""):
+    v = resolve_viewer(viewer)
+    if not v:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT b.blocked AS user_name,
+                   COALESCE(p.display_name, u.username) AS display_name,
+                   p.avatar_url,
+                   b.created_at::text AS created_at
+            FROM chat_blocks b
+            JOIN users u ON u.username = b.blocked
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE b.blocker = %s
+            ORDER BY b.created_at DESC
+            """,
+            (v,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.commit()
+        return {"blocked": rows}
+    except Exception as e:
+        conn.rollback()
+        # Degrade to empty rather than 500: the page may surface this list
+        # anywhere; an unavailable block list must not break settings.
+        return {"blocked": [], "error": str(e)}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
 def _default_notifications():
     return {
         "master": True,
@@ -107,6 +321,9 @@ def _default_privacy():
     }
 
 
+# ---------------------------------------------------------------------------
+# Viewer resolution
+# ---------------------------------------------------------------------------
 def _canonical_username(cursor, name: str):
     name = (name or "").strip()
     if not name:
@@ -133,6 +350,9 @@ def resolve_viewer(viewer_raw: str):
     return viewer
 
 
+# ---------------------------------------------------------------------------
+# Merge helpers
+# ---------------------------------------------------------------------------
 def _merge_notifications(stored):
     out = _default_notifications()
 
@@ -195,6 +415,9 @@ def _merge_privacy(stored):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Read (core 4 keys — used server-side by create_notification too)
+# ---------------------------------------------------------------------------
 def get_settings(cursor, viewer: str):
     cursor.execute(
         """
@@ -205,6 +428,34 @@ def get_settings(cursor, viewer: str):
         (viewer,),
     )
     row = cursor.fetchone()
+
+    if not row:
+        # Lazily create a default row, then RE-READ so we never return defaults
+        # that a concurrent writer already replaced with real config.
+        cursor.execute(
+            """
+            INSERT INTO user_settings (
+                user_name,
+                language,
+                notifications,
+                auctions,
+                privacy,
+                updated_at
+            )
+            VALUES (%s, 'en', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_name) DO NOTHING
+            """,
+            (viewer,),
+        )
+        cursor.execute(
+            """
+            SELECT language, notifications, auctions, privacy
+            FROM user_settings
+            WHERE user_name = %s
+            """,
+            (viewer,),
+        )
+        row = cursor.fetchone()
 
     if row:
         notifications = row["notifications"]
@@ -225,23 +476,7 @@ def get_settings(cursor, viewer: str):
             "privacy": _merge_privacy(privacy or {}),
         }
 
-    # Create default row lazily.
-    cursor.execute(
-        """
-        INSERT INTO user_settings (
-            user_name,
-            language,
-            notifications,
-            auctions,
-            privacy,
-            updated_at
-        )
-        VALUES (%s, 'en', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP)
-        ON CONFLICT (user_name) DO NOTHING
-        """,
-        (viewer,),
-    )
-
+    # Defensive: still no row (unreachable after the lazy insert + re-read).
     return {
         "language": "en",
         "notifications": _default_notifications(),
@@ -254,6 +489,9 @@ def get_notification_prefs(cursor, viewer: str):
     return get_settings(cursor, viewer)["notifications"]
 
 
+# ---------------------------------------------------------------------------
+# Enforcement rules
+# ---------------------------------------------------------------------------
 def should_notify(prefs, category: str, surface: str = "in_app"):
     if not isinstance(prefs, dict):
         return True
@@ -268,6 +506,16 @@ def should_notify(prefs, category: str, surface: str = "in_app"):
     return bool(cat.get(surface, True))
 
 
+def should_sound(prefs, category: str) -> bool:
+    """Sound surface rule, mirroring should_notify. Today sound is enforced
+    client-side (ToastHost); this exists so a future server-side push/email
+    reuses the exact same master + per-category logic."""
+    return should_notify(prefs, category, "sound")
+
+
+# ---------------------------------------------------------------------------
+# Patch sanitizers
+# ---------------------------------------------------------------------------
 def sanitize_notifications_patch(current, patch):
     out = _merge_notifications(current)
 
@@ -329,6 +577,91 @@ def sanitize_privacy_patch(current, patch):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Write (single transactional path reused by every PATCH handler)
+# ---------------------------------------------------------------------------
+def save_settings(
+    cursor,
+    viewer: str,
+    *,
+    language=None,
+    notifications_patch=None,
+    auctions_patch=None,
+    privacy_patch=None,
+):
+    """
+    Atomic write path for user_settings. Each section is patched independently:
+    pass None to leave it untouched, or a partial/full object — the sanitize_*
+    mergers overlay only the keys you send onto the current stored config.
+    Language is validated against ALLOWED_LANGUAGES. Returns the merged result
+    in the same shape get_settings produces, so a PATCH response can drive an
+    optimistic UI without a follow-up GET.
+
+    Caller owns the transaction (passes its cursor and commits/rolls back).
+    """
+    current = get_settings(cursor, viewer)  # ensures a row exists + merged
+
+    if language is not None:
+        lang = (language or "").strip().lower()
+        if lang not in ALLOWED_LANGUAGES:
+            raise ValueError("invalid language")
+    else:
+        lang = current["language"]
+
+    notifications = (
+        sanitize_notifications_patch(current["notifications"], notifications_patch)
+        if notifications_patch is not None
+        else current["notifications"]
+    )
+    auctions = (
+        sanitize_auctions_patch(current["auctions"], auctions_patch)
+        if auctions_patch is not None
+        else current["auctions"]
+    )
+    privacy = (
+        sanitize_privacy_patch(current["privacy"], privacy_patch)
+        if privacy_patch is not None
+        else current["privacy"]
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO user_settings (
+            user_name,
+            language,
+            notifications,
+            auctions,
+            privacy,
+            updated_at
+        )
+        VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb, CURRENT_TIMESTAMP)
+        ON CONFLICT (user_name) DO UPDATE SET
+            language = EXCLUDED.language,
+            notifications = EXCLUDED.notifications,
+            auctions = EXCLUDED.auctions,
+            privacy = EXCLUDED.privacy,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            viewer,
+            lang,
+            json.dumps(notifications),
+            json.dumps(auctions),
+            json.dumps(privacy),
+        ),
+    )
+
+    return {
+        "language": lang,
+        "notifications": notifications,
+        "auctions": auctions,
+        "privacy": privacy,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Notification creation (unchanged — already enforces in_app at insert)
+# ---------------------------------------------------------------------------
 def create_notification(
     user_name: str,
     type: str,

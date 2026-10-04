@@ -18,6 +18,53 @@ ALLOWED_CATEGORIES = {
 }
 
 
+def init_notifications_db():
+    """Idempotent, runs at import (same pattern as auth main.py's init_db()).
+    Shares the DB, so users/profiles already exist for the FKs. The group tables
+    (group_join_requests, chat_conversations community columns) are NOT created
+    here — they belong to the chat backend's own init/migration."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+              id SERIAL PRIMARY KEY,
+              user_name TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+              category TEXT NOT NULL,
+              type TEXT NOT NULL,
+              actor TEXT REFERENCES users(username),
+              source_type TEXT,
+              source_id INTEGER,
+              secondary_id INTEGER,
+              title TEXT NOT NULL,
+              body TEXT,
+              data JSONB NOT NULL DEFAULT '{}'::jsonb,
+              read_at TIMESTAMPTZ,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_created "
+            "ON notifications(user_name, created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_unread "
+            "ON notifications(user_name, read_at, created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_source "
+            "ON notifications(source_type, source_id)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+init_notifications_db()
+
+
 def _canonical_username(cursor, name: str):
     name = (name or "").strip()
     if not name:

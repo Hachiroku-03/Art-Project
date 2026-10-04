@@ -1271,7 +1271,7 @@
   position: relative;
   z-index: 3;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.5rem;
   padding: 0.8rem 1rem;
   border-top: 1px solid var(--line);
@@ -1291,6 +1291,7 @@
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+  align-self: flex-end;
   transition: background 0.15s, color 0.15s;
 }
 
@@ -1302,13 +1303,18 @@
 .composerInput {
   flex: 1;
   min-width: 0;
-  background: #f1f0ed;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  resize: none;
+  overflow-y: auto; /* bar exists only when content exceeds max-height */
+  line-height: 1.45;
+  max-height: 180px;
+  min-height: 38px;
   padding: 0.7rem 1rem;
   font-family: var(--font-ui);
   font-size: 0.9rem;
   color: var(--ink);
+  background: #f1f0ed;
+  border: 1px solid transparent;
+  border-radius: 18px;
   outline: none;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
@@ -1317,6 +1323,57 @@
   background: var(--paper);
   border-color: var(--line);
   box-shadow: 0 0 0 4px rgba(14, 14, 14, 0.04);
+}
+
+/* Scrollbar — Chromium + Safari.
+   NOTE: do not add scrollbar-width / scrollbar-color here; in Chromium 121+ those
+   switch the element to the stock bar and every ::-webkit-scrollbar rule is ignored. */
+.composerInput::-webkit-scrollbar {
+  width: 8px;
+}
+
+.composerInput::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 10px 0; /* keep the thumb inside the pill's curve */
+}
+
+.composerInput::-webkit-scrollbar-thumb {
+  background: rgba(14, 14, 14, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent; /* 4px visible pill, 2px air each side */
+  background-clip: content-box;
+}
+
+.composerInput::-webkit-scrollbar-thumb:hover,
+.composerInput::-webkit-scrollbar-thumb:active {
+  background: var(--ink);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.composerInput::-webkit-scrollbar-button,
+.composerInput::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.composerInput[placeholder="Edit message…"]::-webkit-scrollbar-thumb {
+  background: rgba(91, 58, 142, 0.55);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Scrollbar — Firefox only (no ::-webkit-scrollbar support) */
+@supports not selector(::-webkit-scrollbar) {
+  .composerInput {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(14, 14, 14, 0.28) transparent;
+  }
+
+  .composerInput[placeholder="Edit message…"] {
+    scrollbar-color: rgba(91, 58, 142, 0.55) transparent;
+  }
 }
 
 .sendBtn {
@@ -1331,6 +1388,7 @@
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+  align-self: flex-end;
   transition: transform 0.15s, opacity 0.15s;
 }
 
@@ -1474,35 +1532,226 @@
 
 .modalLabel {
   display: block;
-  margin: 0.75rem 0 0.3rem;
-  font-size: 0.78rem;
-  font-weight: 650;
-  color: var(--ink-soft);
+  margin: 1rem 0 0.4rem;
+  font-family: var(--font-ui);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.modalHead + .modalLabel,
+.modalField .modalLabel {
+  margin-top: 0;
+}
+
+.modalField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.modalRow2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 1rem;
 }
 
 .modalInput,
-.modalTextarea {
+.modalTextarea,
+.modalSelect {
+  box-sizing: border-box;
   width: 100%;
-  border: 1px solid var(--line);
-  background: #fbfaf8;
+  border: 1px solid transparent;
+  background: #f1f0ed;
   border-radius: 14px;
-  padding: 0.65rem 0.75rem;
+  padding: 0.7rem 0.85rem;
   font-family: var(--font-ui);
   font-size: 0.88rem;
+  line-height: 1.4;
   color: var(--ink);
   outline: none;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.modalInput::placeholder,
+.modalTextarea::placeholder {
+  color: var(--ink-faint);
+  font-family: var(--font-label);
+  font-style: italic;
+}
+
+.modalInput:hover,
+.modalTextarea:hover,
+.modalSelect:hover {
+  background: #ecebe7;
 }
 
 .modalInput:focus,
-.modalTextarea:focus {
+.modalTextarea:focus,
+.modalSelect:focus-visible {
+  background: var(--paper);
   border-color: rgba(91, 58, 142, 0.35);
   box-shadow: 0 0 0 4px rgba(91, 58, 142, 0.08);
-  background: var(--paper);
 }
 
 .modalTextarea {
   resize: vertical;
-  min-height: 82px;
+  min-height: 86px;
+  overflow-y: auto;          /* still scrolls (wheel, touch, keys, drag-select) */
+  scrollbar-width: none;     /* Firefox + Chromium 121+: no visible bar */
+  -ms-overflow-style: none;
+}
+
+.modalTextarea::-webkit-scrollbar {
+  display: none;             /* Safari + older Chromium */
+  width: 0;
+  height: 0;
+}
+
+/* ---- Select: closed control (all browsers) ---- */
+.modalSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  padding-right: 2.6rem;
+  /* chevron drawn in CSS so there is no OS arrow */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2355534e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.9rem center;
+  background-size: 14px;
+}
+
+.modalSelect:focus-visible {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235b3a8e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='m18 15-6-6-6 6'/></svg>");
+}
+
+.modalSelect::-ms-expand {
+  display: none;
+}
+
+/* options in the native list: as much as Firefox/Safari allow */
+.modalSelect option {
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  color: var(--ink);
+  background: var(--paper);
+  padding: 0.5rem 0.75rem;
+}
+
+/* ---- Select: fully custom picker (Chromium 135+, progressive) ---- */
+@supports (appearance: base-select) {
+  .modalSelect,
+  .modalSelect::picker(select) {
+    appearance: base-select;
+  }
+
+  .modalSelect {
+    background-image: none; /* use ::picker-icon instead */
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+
+  .modalSelect::picker-icon {
+    content: "";
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2355534e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>") center / 14px no-repeat;
+    transition: transform 0.18s;
+  }
+
+  .modalSelect:open::picker-icon {
+    transform: rotate(180deg);
+  }
+
+  .modalSelect:open {
+    background: var(--paper);
+    border-color: rgba(91, 58, 142, 0.35);
+    box-shadow: 0 0 0 4px rgba(91, 58, 142, 0.08);
+  }
+
+  .modalSelect::picker(select) {
+    margin-top: 6px;
+    padding: 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 18px 45px rgba(20, 18, 15, 0.16);
+    backdrop-filter: blur(14px);
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity 0.15s, transform 0.15s, overlay 0.15s allow-discrete, display 0.15s allow-discrete;
+  }
+
+  .modalSelect:open::picker(select) {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @starting-style {
+    .modalSelect:open::picker(select) {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+
+  .modalSelect option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.7rem;
+    border-radius: 10px;
+    font-size: 0.84rem;
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .modalSelect option:hover,
+  .modalSelect option:focus-visible {
+    background: rgba(14, 14, 14, 0.05);
+    outline: none;
+  }
+
+  .modalSelect option:checked {
+    background: rgba(91, 58, 142, 0.08);
+    color: var(--ink);
+    font-weight: 650;
+  }
+
+  /* purple tick instead of the default checkmark */
+  .modalSelect option::checkmark {
+    content: "";
+    order: 2;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b3a8e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='M20 6 9 17l-5-5'/></svg>") center / 14px no-repeat;
+    opacity: 0;
+  }
+
+  .modalSelect option:checked::checkmark {
+    opacity: 1;
+  }
+}
+
+.modalHint {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid rgba(91, 58, 142, 0.35);
+  background: rgba(91, 58, 142, 0.05);
+  border-radius: 0 10px 10px 0;
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  line-height: 1.45;
 }
 
 .modalActions {
@@ -1859,55 +2108,14 @@
   line-height: 1;
 }
 
-.composer {
-  align-items: flex-end;
+.discoverAvatar {
+  width: 42px;
+  height: 42px;
 }
 
-.composerInput {
-  resize: none;
-  overflow-y: auto;
-  line-height: 1.45;
-  max-height: 180px;
-  min-height: 38px;
-  padding: 0.7rem 1rem;
-  font-family: var(--font-ui);
-  font-size: 0.9rem;
-  color: var(--ink);
-  background: #f1f0ed;
-  border: 1px solid transparent;
-  border-radius: 18px;
-  outline: none;
-  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
-}
-
-.composerInput:focus {
-  background: var(--paper);
-  border-color: var(--line);
-  box-shadow: 0 0 0 4px rgba(14, 14, 14, 0.04);
-}
-
-.composerBtn,
-.sendBtn {
-  align-self: flex-end;
-}
-
-
-  .discoverAvatar {
-    width: 42px;
-    height: 42px;
-  }
-
-  .discoverAction {
-    grid-column: 1 / -1;
-    width: 100%;
-  }
-
-
-.modalHint {
-  margin: -0.15rem 0 0.35rem;
-  font-size: 0.78rem;
-  color: var(--ink-soft);
-  line-height: 1.45;
+.discoverAction {
+  grid-column: 1 / -1;
+  width: 100%;
 }
 
 /* ----------------------------- TOUCH ----------------------------- */
@@ -1918,7 +2126,11 @@
     opacity: 1;
     transform: none;
   }
+
 }
+
+@media (max-width: 520px) {
+  }
 
 /* ----------------------------- MOBILE ----------------------------- */
 @media (max-width: 900px) {
@@ -1926,6 +2138,7 @@
     max-height: 132px;
     border-radius: 16px;
   }
+
   .shell {
     max-width: none;
     grid-template-columns: 1fr;
