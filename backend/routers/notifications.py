@@ -1,8 +1,9 @@
 import json
+import threading
 
 from fastapi import APIRouter
 
-from db import get_db
+from db import get_db as _raw_get_db
 
 router = APIRouter()
 
@@ -12,57 +13,88 @@ ALLOWED_CATEGORIES = {
     "groups",
     "posts",
     "auctions",
+    "calls",
     "wallet",
     "security",
     "system",
 }
 
+_schema_lock = threading.Lock()
+_schema_ready = False
 
-def init_notifications_db():
-    """Idempotent, runs at import (same pattern as auth main.py's init_db()).
-    Shares the DB, so users/profiles already exist for the FKs. The group tables
-    (group_join_requests, chat_conversations community columns) are NOT created
-    here — they belong to the chat backend's own init/migration."""
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS notifications (
-              id SERIAL PRIMARY KEY,
-              user_name TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-              category TEXT NOT NULL,
-              type TEXT NOT NULL,
-              actor TEXT REFERENCES users(username),
-              source_type TEXT,
-              source_id INTEGER,
-              secondary_id INTEGER,
-              title TEXT NOT NULL,
-              body TEXT,
-              data JSONB NOT NULL DEFAULT '{}'::jsonb,
-              read_at TIMESTAMPTZ,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+def _ensure_notifications_schema():
+    """
+    Lazy, idempotent schema creation.
+
+    This must NOT run at import time. If Neon is temporarily unreachable,
+    the app can still boot; the first request that needs notifications will
+    retry schema creation.
+    """
+    global _schema_ready
+
+    if _schema_ready:
+        return
+
+    with _schema_lock:
+        if _schema_ready:
+            return
+
+        conn = _raw_get_db()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notifications (
+                  id SERIAL PRIMARY KEY,
+                  user_name TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+                  category TEXT NOT NULL,
+                  type TEXT NOT NULL,
+                  actor TEXT REFERENCES users(username),
+                  source_type TEXT,
+                  source_id INTEGER,
+                  secondary_id INTEGER,
+                  title TEXT NOT NULL,
+                  body TEXT,
+                  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  read_at TIMESTAMPTZ,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_notifications_user_created "
-            "ON notifications(user_name, created_at DESC)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_notifications_user_unread "
-            "ON notifications(user_name, read_at, created_at DESC)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_notifications_source "
-            "ON notifications(source_type, source_id)"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_user_created "
+                "ON notifications(user_name, created_at DESC)"
+            )
+
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_user_unread "
+                "ON notifications(user_name, read_at, created_at DESC)"
+            )
+
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_source "
+                "ON notifications(source_type, source_id)"
+            )
+
+            conn.commit()
+            _schema_ready = True
+        finally:
+            conn.close()
 
 
-init_notifications_db()
+def get_db():
+    """
+    Local wrapper used by this router only.
+
+    Every endpoint in this file calls get_db(). This ensures the notifications
+    table exists before the first query, but only when a request actually
+    arrives — not when Python imports the module.
+    """
+    _ensure_notifications_schema()
+    return _raw_get_db()
 
 
 def _canonical_username(cursor, name: str):

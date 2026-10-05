@@ -7,6 +7,7 @@ export type NotificationCategory =
   | 'groups'
   | 'posts'
   | 'auctions'
+  | 'calls'
   | 'wallet'
   | 'security'
   | 'system'
@@ -85,6 +86,9 @@ export function routeFor(n: AppNotification): { to: string; state?: Record<strin
     if ((st === 'sale' || st === 'lot') && n.source_id) return { to: `/sales/${n.source_id}` }
     return { to: '/auctions' }
   }
+
+  if (st === 'call' && n.source_id) return { to: `/calls/${n.source_id}` }
+  if (n.category === 'calls' && n.source_id) return { to: `/calls/${n.source_id}` }
 
   if (n.category === 'wallet') return { to: '/wallet' }
   if (n.category === 'security' || n.category === 'system') return { to: '/settings' }

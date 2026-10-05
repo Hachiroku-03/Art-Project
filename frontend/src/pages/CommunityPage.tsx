@@ -13,14 +13,18 @@ import {
 import { markNotificationRead, type AppNotification } from '../lib/notifications'
 import { API } from '../lib/sales'
 import {
+  fetchCanHostCalls,
   fetchCommunityCalendar,
+  fetchCommunityCalls,
   fetchCommunityDiscover,
   fetchCommunityInvites,
   fetchCommunityLive,
   fetchCommunityPeople,
   fetchCommunityRequests,
   fetchCommunityTaxonomy,
+  toggleCommunityCallInterest,
   type CommunityCalendar,
+  type CommunityCall,
   type CommunityGroup,
   type CommunityInvite,
   type CommunityLive,
@@ -28,6 +32,7 @@ import {
   type CommunityRequest,
   type Taxonomy,
 } from '../lib/community'
+import { CallComposerModal } from '../components/CallComposerModal'
 import styles from './CommunityPage.module.css'
 
 function fromNow(raw?: string | null) {
@@ -51,17 +56,25 @@ function dayMonth(raw?: string | null) {
   }
 }
 
-function previewFromConv(c: Conversation) {
+function previewFromConv(c: Conversation, viewer: string) {
   const kind = c.last_kind
   const body = (c.last_body || '').trim()
-  if (kind === 'image') return '📷 Photo'
-  if (kind === 'voice') return '🎤 Voice note'
-  if (kind === 'video') return '🎬 Video'
-  if (kind === 'file') return '📎 File'
-  if (kind === 'location') return '📍 Location'
-  if (kind === 'contact') return '👤 Contact'
-  if (kind === 'system') return body || 'System message'
-  return body || 'New message'
+  let content: string
+  if (kind === 'image') content = '📷 Photo'
+  else if (kind === 'voice') content = '🎤 Voice note'
+  else if (kind === 'video') content = '🎬 Video'
+  else if (kind === 'file') content = '📎 File'
+  else if (kind === 'location') content = '📍 Location'
+  else if (kind === 'contact') content = '👤 Contact'
+  else if (kind === 'system') content = body || 'System message'
+  else content = body || 'New message'
+
+  // last_sender is returned by list_conversations; narrow-cast so this compiles
+  // whether or not the Conversation type already declares the field.
+  const sender = String((c as { last_sender?: string | null }).last_sender || '').trim()
+  if (!sender) return content
+  const who = sender.toLowerCase() === (viewer || '').toLowerCase() ? 'You' : sender
+  return `${who}: ${content}`
 }
 
 function Thumb({
@@ -100,6 +113,81 @@ function toneFor(id: number) {
   return FALLBACK_TONES[id % FALLBACK_TONES.length]
 }
 
+const KIND_LABEL: Record<string, string> = {
+  exhibition: 'Exhibition',
+  residency: 'Residency',
+  consignment: 'Consignment window',
+  open_call: 'Open call',
+  award: 'Award / prize',
+  talk: 'Talk',
+  studio_visit: 'Studio visit',
+  deadline: 'Deadline',
+}
+
+const KIND_CODE: Record<string, string> = {
+  exhibition: 'EXH',
+  residency: 'RES',
+  consignment: 'CONS',
+  open_call: 'CALL',
+  award: 'AWARD',
+  talk: 'TALK',
+  studio_visit: 'VISIT',
+  deadline: 'DUE',
+}
+
+function kindLabel(k?: string | null) {
+  return (k && KIND_LABEL[k]) || 'Opportunity'
+}
+
+function kindCode(k?: string | null) {
+  return (k && KIND_CODE[k]) || 'CALL'
+}
+
+function parseDate(raw?: string | null) {
+  if (!raw) return null
+  const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'))
+  return isNaN(d.getTime()) ? null : d
+}
+
+function untilLabel(raw?: string | null, status?: string) {
+  if (status && status !== 'open') {
+    return { text: status === 'cancelled' ? 'Cancelled' : 'Closed', tone: 'closed' as const }
+  }
+  const d = parseDate(raw)
+  if (!d) return { text: '', tone: 'normal' as const }
+  const ms = d.getTime() - Date.now()
+  if (ms <= 0) return { text: 'Deadline passed', tone: 'closed' as const }
+  const h = ms / 36e5
+  if (h < 1) return { text: 'Closes in minutes', tone: 'soon' as const }
+  if (h < 24) return { text: `Closes in ${Math.max(1, Math.round(h))}h`, tone: 'soon' as const }
+  if (h < 48) return { text: 'Closes tomorrow', tone: 'soon' as const }
+  return { text: `Closes in ${Math.round(h / 24)}d`, tone: 'normal' as const }
+}
+
+function eligSummary(e: unknown): string {
+  if (!e || typeof e !== 'object') return ''
+  const obj = e as Record<string, unknown>
+  const parts: string[] = []
+  if (obj.region) parts.push(String(obj.region))
+  if (Array.isArray(obj.medium)) parts.push((obj.medium as unknown[]).slice(0, 3).join(', '))
+  else if (typeof obj.medium === 'string' && obj.medium.trim()) parts.push(obj.medium.trim())
+  if (obj.age_max != null) parts.push(`Under ${obj.age_max}`)
+  else if (obj.age_min != null) parts.push(`${obj.age_min}+`)
+  return parts.slice(0, 3).join(' · ')
+}
+
+function callDateParts(c: CommunityCall) {
+  const d = parseDate(c.deadline_at) || parseDate(c.starts_at)
+  if (d) {
+    return {
+      top: String(d.getDate()).padStart(2, '0'),
+      bottom: d.toLocaleDateString(undefined, { month: 'short' }).toUpperCase(),
+      code: false,
+    }
+  }
+  return { top: kindCode(c.kind), bottom: '', code: true }
+}
+
 export function CommunityPage() {
   const navigate = useNavigate()
   const viewer = localStorage.getItem('space_user') || ''
@@ -119,6 +207,11 @@ export function CommunityPage() {
   const [people, setPeople] = useState<CommunityPerson[]>([])
   const [live, setLive] = useState<CommunityLive[]>([])
   const [calendar, setCalendar] = useState<CommunityCalendar[]>([])
+  const [calls, setCalls] = useState<CommunityCall[]>([])
+  const [callsLoading, setCallsLoading] = useState(true)
+  const [canHost, setCanHost] = useState(false)
+  const [composerOpen, setComposerOpen] = useState(false)
+  const [composerInitial, setComposerInitial] = useState<CommunityCall | null>(null)
 
   const [followed, setFollowed] = useState<Record<string, boolean>>({})
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -189,6 +282,39 @@ export function CommunityPage() {
       window.clearTimeout(timer)
     }
   }, [viewer, search, category, scene, refreshTick])
+
+  // ---- open calls (real, filtered by the active scene chip) ----
+  useEffect(() => {
+    if (!viewer) {
+      setCalls([])
+      setCallsLoading(false)
+      return
+    }
+    let alive = true
+    setCallsLoading(true)
+    fetchCommunityCalls(viewer, { scene, status: 'open', limit: 6 })
+      .then(rows => alive && setCalls(rows))
+      .catch(() => alive && setCalls([]))
+      .finally(() => alive && setCallsLoading(false))
+    return () => {
+      alive = false
+    }
+  }, [viewer, scene, refreshTick])
+
+  // ---- can this viewer post/manage calls? mirrors the server's authority rule ----
+  useEffect(() => {
+    if (!viewer) {
+      setCanHost(false)
+      return
+    }
+    let alive = true
+    fetchCanHostCalls(viewer)
+      .then(ok => alive && setCanHost(ok))
+      .catch(() => alive && setCanHost(false))
+    return () => {
+      alive = false
+    }
+  }, [viewer])
 
   // ---- sidebars (real) ----
   const loadSidebars = useCallback(async () => {
@@ -337,6 +463,57 @@ export function CommunityPage() {
     [viewer],
   )
 
+  const onToggleCallInterest = useCallback(
+    async (c: CommunityCall) => {
+      if (!viewer) return
+      const next = !c.interested_by_viewer
+      setBusyId(c.id)
+      setCalls(prev =>
+        prev.map(x =>
+          x.id === c.id
+            ? { ...x, interested_by_viewer: next, interest_count: Math.max(0, x.interest_count + (next ? 1 : -1)) }
+            : x,
+        ),
+      )
+      try {
+        const d = await toggleCommunityCallInterest(viewer, c.id)
+        if (d.error) {
+          setCalls(prev =>
+            prev.map(x =>
+              x.id === c.id
+                ? { ...x, interested_by_viewer: !next, interest_count: Math.max(0, x.interest_count + (next ? -1 : 1)) }
+                : x,
+            ),
+          )
+        } else if (typeof d.count === 'number') {
+          setCalls(prev => prev.map(x => (x.id === c.id ? { ...x, interest_count: d.count! } : x)))
+        }
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [viewer],
+  )
+
+  const openComposer = useCallback((call?: CommunityCall | null) => {
+    setComposerInitial(call ?? null)
+    setComposerOpen(true)
+  }, [])
+
+  const handleCallSaved = useCallback((call: CommunityCall) => {
+    setCalls(prev => {
+      const i = prev.findIndex(x => x.id === call.id)
+      if (i >= 0) {
+        const cp = [...prev]
+        cp[i] = call
+        return cp
+      }
+      return [call, ...prev]
+    })
+    setComposerOpen(false)
+    setComposerInitial(null)
+  }, [])
+
   const sceneCount = useMemo(() => {
     const m: Record<string, number> = {}
     for (const s of taxonomy.scenes) m[s.name] = s.count
@@ -395,17 +572,30 @@ export function CommunityPage() {
                 <p className={styles.emptyInline}>You’re not in any groups yet. Discover one below.</p>
               ) : (
                 <div className={styles.filmstrip}>
-                  {myGroups.map(g => (
-                    <button key={g.id} className={styles.myGroupCard} onClick={() => openGroupChat(g.id)}>
-                      <Thumb tone={toneFor(g.id)} image={g.image_url} className={styles.myGroupAvatar} />
-                      <span className={styles.myGroupMid}>
-                        <span className={styles.myGroupName}>{g.name || 'Group'}</span>
-                        <span className={styles.myGroupPreview}>{previewFromConv(g)}</span>
-                      </span>
-                      {(g.unread || 0) > 0 && <span className={styles.myGroupBadge}>{g.unread}</span>}
-                      {recentlyJoinedId === g.id && <span className={styles.myGroupNew}>New</span>}
-                    </button>
-                  ))}
+                  {myGroups.map(g => {
+                    const cat = [g.category, g.scene].filter(Boolean).join(' · ')
+                    return (
+                      <button key={g.id} className={styles.myGroupCard} onClick={() => openGroupChat(g.id)}>
+                        <span className={styles.myGroupTop}>
+                          <Thumb tone={toneFor(g.id)} image={g.image_url} className={styles.myGroupAvatar} />
+                          <span className={styles.myGroupMid}>
+                            <span className={styles.myGroupName}>{g.name || 'Group'}</span>
+                            {cat && <span className={styles.myGroupCat}>{cat}</span>}
+                          </span>
+                        </span>
+                        <span className={styles.myGroupPreview}>{previewFromConv(g, viewer)}</span>
+                        {(g.unread || 0) > 0 && <span className={styles.myGroupBadge}>{g.unread}</span>}
+                        {recentlyJoinedId === g.id && <span className={styles.myGroupNew}>New</span>}
+                      </button>
+                    )
+                  })}
+                  <button
+                    className={styles.newGroupTile}
+                    onClick={() => navigate('/messenger', { state: { openCreateGroup: true } })}
+                  >
+                    <span className={styles.newGroupIcon}><Plus size={15} /></span>
+                    <span className={styles.newGroupLabel}>New group</span>
+                  </button>
                 </div>
               )}
             </section>
@@ -547,7 +737,110 @@ export function CommunityPage() {
               )}
             </section>
 
-            {/* OPEN CALLS & CALENDAR — real auction timeline */}
+            {/* OPEN CALLS — real community_calls */}
+            <section className={styles.section}>
+              <div className={styles.secHead}>
+                <span className={styles.secLabel}>
+                  Open calls{calls.length > 0 ? ` · ${calls.length}` : ''}
+                </span>
+                {canHost && (
+                  <button className={styles.postCallBtn} onClick={() => openComposer(null)}>
+                    <Plus size={13} /> Post an opportunity
+                  </button>
+                )}
+              </div>
+
+              {callsLoading ? (
+                <p className={styles.emptyInline}>Loading opportunities…</p>
+              ) : calls.length === 0 ? (
+                <p className={styles.emptyInline}>
+                  No open calls right now. Accredited houses and curators post opportunities here.
+                </p>
+              ) : (
+                <div className={styles.callGrid}>
+                  {calls.map(c => {
+                    const dp = callDateParts(c)
+                    const ul = untilLabel(c.deadline_at, c.status)
+                    const closed = c.status !== 'open'
+                    const elig = eligSummary(c.eligibility)
+                    const subBits = [c.host_display || c.host_user_name || 'House']
+                    if (c.online) subBits.push('Online')
+                    else if (c.location) subBits.push(c.location)
+
+                    return (
+                      <article
+                        key={c.id}
+                        className={`${styles.callCard} ${closed ? styles.callCardClosed : ''}`}
+                        onClick={() => navigate(`/calls/${c.id}`)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            navigate(`/calls/${c.id}`)
+                          }
+                        }}
+                      >
+                        <div className={`${styles.callDate} ${dp.code ? styles.callDateCode : ''}`}>
+                          <strong>{dp.top}</strong>
+                          {dp.bottom && <span>{dp.bottom}</span>}
+                        </div>
+
+                        <div className={styles.callBody}>
+                          <span className={styles.callType}>
+                            {kindLabel(c.kind)}
+                            {c.scene ? ` · ${c.scene}` : ''}
+                          </span>
+                          <h4 className={styles.callTitle}>{c.title}</h4>
+                          <p className={styles.callSub}>{subBits.join(' · ')}</p>
+
+                          {c.description && <p className={styles.callDesc}>{c.description}</p>}
+                          {elig && <p className={styles.callElig}>{elig}</p>}
+
+                          {ul.text && (
+                            <span
+                              className={`${styles.callDeadline} ${
+                                ul.tone === 'soon' ? styles.callDeadlineSoon : ''
+                              } ${ul.tone === 'closed' ? styles.callDeadlineClosed : ''}`}
+                            >
+                              {ul.text}
+                            </span>
+                          )}
+
+                          <div className={styles.callActions} onClick={e => e.stopPropagation()}>
+                            <button
+                              className={`${styles.callSaveBtn} ${
+                                c.interested_by_viewer ? styles.callSaveBtnOn : ''
+                              }`}
+                              onClick={() => void onToggleCallInterest(c)}
+                              disabled={busyId === c.id}
+                            >
+                              {c.interested_by_viewer ? 'Saved' : 'Save'}
+                              {c.interest_count > 0 ? ` · ${c.interest_count}` : ''}
+                            </button>
+
+                            {closed ? (
+                              <span className={styles.callClosedTag}>Closed</span>
+                            ) : c.apply_url ? (
+                              <a
+                                className={styles.callApplyBtn}
+                                href={c.apply_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                Apply
+                              </a>
+                            ) : null}
+                          </div>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+
+            {/* AUCTION CALENDAR — real auction timeline */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>Auction calendar</span>
@@ -786,6 +1079,17 @@ export function CommunityPage() {
           </aside>
         </div>
       </div>
+
+      <CallComposerModal
+        open={composerOpen}
+        viewer={viewer}
+        initial={composerInitial}
+        onClose={() => {
+          setComposerOpen(false)
+          setComposerInitial(null)
+        }}
+        onSaved={handleCallSaved}
+      />
     </main>
   )
 }

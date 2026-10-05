@@ -52,6 +52,7 @@ NOTIFICATION_CATEGORIES = (
     "groups",
     "posts",
     "auctions",
+    "calls",
     "wallet",
     "security",
     "system",
@@ -88,6 +89,8 @@ TYPE_CATEGORY = {
     "lot_lost": "auctions",
     "house_announcement": "auctions",
 
+    # Community calls / events
+    "call_deadline_soon": "calls",
     # Wallet / tickets
     "ticket_purchase_success": "wallet",
     "ticket_purchase_failed": "wallet",
@@ -299,6 +302,7 @@ def _default_notifications():
         "groups": {"in_app": True, "sound": False},
         "posts": {"in_app": True, "sound": False},
         "auctions": {"in_app": True, "sound": True},
+        "calls": {"in_app": True, "sound": False},
         "wallet": {"in_app": True, "sound": False},
         "security": {"in_app": True, "sound": False},
         "system": {"in_app": True, "sound": False},

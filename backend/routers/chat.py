@@ -1808,56 +1808,6 @@ def unpin_message(message_id: int, data: dict):
         conn.close()
 
 
-@router.post("/chat/messages/{message_id}/unpin")
-def unpin_message(message_id: int, data: dict):
-    viewer_raw = (data.get("viewer") or "").strip()
-    if not viewer_raw:
-        return {"error": "viewer required"}
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    try:
-        viewer = _canonical_username(cursor, viewer_raw)
-        if not viewer:
-            conn.rollback()
-            return {"error": "unknown viewer"}
-
-        cursor.execute(
-            "SELECT conversation_id FROM chat_messages WHERE id = %s AND deleted_at IS NULL",
-            (message_id,),
-        )
-        row = cursor.fetchone()
-
-        if not row:
-            conn.rollback()
-            return {"error": "message not found"}
-
-        conv_id = row["conversation_id"]
-
-        if not _is_member(cursor, conv_id, viewer):
-            conn.rollback()
-            return {"error": "not a member"}
-
-        cursor.execute(
-            """
-            UPDATE chat_messages
-            SET meta = COALESCE(meta, '{}'::jsonb) - 'pinned_at' - 'pinned_by'
-            WHERE id = %s
-            """,
-            (message_id,),
-        )
-
-        message = _message_row(cursor, message_id, viewer)
-        conn.commit()
-        return {"message": message}
-    except Exception as e:
-        conn.rollback()
-        return {"error": str(e)}
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # REST: reaction detail
 # ---------------------------------------------------------------------------
@@ -2285,14 +2235,18 @@ def create_conversation(data: dict):
                     """,
                     (conv_id, member),
                 )
-                cursor.execute(
-                    """
-                    INSERT INTO chat_notifications (
-                        user_name, conversation_id, message_id, type, title, body
-                    )
-                    VALUES (%s, %s, NULL, 'group_invite', %s, %s)
-                    """,
-                    (member, conv_id, name, f"{viewer} added you to the group"),
+                create_notification(
+                    user_name=member,
+                    category="groups",
+                    type="group_invite",
+                    legacy_type="group_invite",
+                    title=f"{viewer} added you to {name}",
+                    body="",
+                    actor=viewer,
+                    source_type="conversation",
+                    source_id=conv_id,
+                    data={"conversation_id": conv_id},
+                    cursor=cursor,
                 )
 
             conn.commit()

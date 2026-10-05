@@ -99,6 +99,12 @@ const NOTIFICATION_ROWS: {
     description: 'Product notices and maintenance messages.',
     allowSound: false,
   },
+  {
+    key: 'calls',
+    label: 'Open calls & deadlines',
+    description: 'Reminders when a saved opportunity’s deadline is approaching.',
+    allowSound: true,
+  },
 ]
 
 function ToggleRow({

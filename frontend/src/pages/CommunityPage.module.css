@@ -1,3 +1,7 @@
+/* CommunityPage.module.css — keyed to your CommunityPage.tsx class names.
+   Palette untouched (var(--wall/--paper/--ink/--ink-soft/--ink-faint/--line/--line-strong/--vip/--err)).
+   Changes vs your version are marked  ★  */
+
 .layout {
   min-height: 100vh;
   background: var(--wall);
@@ -128,10 +132,22 @@
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
+  /* ★ four cards can be taller than the viewport — let the rail scroll inside its sticky box */
+  max-height: calc(100vh - 72px - 3rem);
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
 }
 
+.rail::-webkit-scrollbar { display: none; }
+
 /* ---------- SECTION HEADS ---------- */
-.section { display: flex; flex-direction: column; gap: 0.85rem; }
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0; /* ★ lets filmstrip / chip rows scroll instead of blowing the grid */
+}
 
 .secHead {
   display: flex;
@@ -171,6 +187,13 @@
   color: var(--ink-faint);
 }
 
+/* ★ empty states inside the main column get a dashed "slot" so sections keep their shape */
+.section > .emptyInline {
+  padding: 1.1rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 16px;
+}
+
 /* ---------- YOUR GROUPS FILMSTRIP ---------- */
 .filmstrip {
   display: flex;
@@ -179,6 +202,10 @@
   padding-bottom: 0.35rem;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
+  /* ★ bleed to the shell edge so the strip reads as a strip, not a clipped row */
+  margin: 0 -1.5rem;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
 }
 
 .filmstrip::-webkit-scrollbar { display: none; }
@@ -188,15 +215,14 @@
   flex: 0 0 auto;
   width: 280px;
   scroll-snap-align: start;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 0.7rem;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
   text-align: left;
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 0.8rem 0.9rem;
+  padding: 0.85rem 0.9rem;
   cursor: pointer;
   transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
@@ -205,6 +231,13 @@
   border-color: var(--line-strong);
   transform: translateY(-1px);
   box-shadow: 0 10px 26px rgba(20, 18, 15, 0.07);
+}
+
+.myGroupTop {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: center;
 }
 
 .myGroupAvatar {
@@ -216,11 +249,17 @@
   flex-shrink: 0;
 }
 
-.myGroupMid { min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.myGroupMid {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  padding-right: 1.4rem; /* room for badge */
+}
 
 .myGroupName {
   font-family: var(--font-ui);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   font-weight: 700;
   color: var(--ink);
   overflow: hidden;
@@ -228,18 +267,33 @@
   white-space: nowrap;
 }
 
-.myGroupPreview {
-  font-size: 0.78rem;
-  color: var(--ink-soft);
+.myGroupCat {
+  font-family: var(--font-ui);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.myGroupPreview {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
 .myGroupBadge {
   position: absolute;
-  top: 0.6rem;
-  right: 0.7rem;
+  top: 0.7rem;
+  right: 0.75rem;
   min-width: 18px;
   height: 18px;
   padding: 0 0.35rem;
@@ -252,6 +306,69 @@
   align-items: center;
   justify-content: center;
 }
+
+.newGroupTile {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 150px;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: 18px;
+  padding: 0.85rem 0.6rem;
+  cursor: pointer;
+  color: var(--ink-soft);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.newGroupTile:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: rgba(14, 14, 14, 0.02);
+}
+
+.newGroupIcon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.newGroupLabel {
+  font-family: var(--font-ui);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.postCallBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--ink);
+  color: var(--wall);
+  border: none;
+  border-radius: 999px;
+  padding: 0.4rem 0.8rem;
+  font-family: var(--font-ui);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.postCallBtn:hover { opacity: 0.9; }
 
 /* ---------- CHIPS ---------- */
 .chipRow {
@@ -338,6 +455,9 @@
   text-transform: uppercase;
 }
 
+.modePublic {}
+.modeLock {}
+
 .modeDot {
   width: 6px;
   height: 6px;
@@ -389,11 +509,29 @@
   overflow: hidden;
 }
 
+.tagRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.tagPill {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: #f1f0ed;
+  border-radius: 999px;
+  padding: 0.16rem 0.5rem;
+}
+
 .discoverMeta {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.15rem;
+  margin-top: auto; /* ★ pins meta to the bottom so card feet line up across the row */
+  padding-top: 0.35rem;
 }
 
 .initials { display: inline-flex; }
@@ -458,6 +596,7 @@
 }
 
 .actBtn:hover { transform: translateY(-1px); }
+.actBtn:disabled { opacity: 0.55; cursor: progress; transform: none; } /* ★ busy state */
 
 .actJoin { border: 1px solid var(--ink); color: var(--ink); }
 .actJoin:hover { background: var(--ink); color: var(--wall); }
@@ -480,95 +619,7 @@
   padding: 0.45rem 0.4rem;
 }
 
-/* ---------- CONVERSATIONS ---------- */
-.threadCard {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  overflow: hidden;
-}
-
-.threadRow {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: start;
-  text-align: left;
-  background: none;
-  border: none;
-  border-bottom: 1px solid rgba(14, 14, 14, 0.06);
-  padding: 0.95rem 1rem;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.threadRow:last-child { border-bottom: none; }
-.threadRow:hover { background: #faf9f6; }
-
-.threadAvatar {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  background: #ece9e3;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  color: var(--ink);
-  flex-shrink: 0;
-}
-
-.threadMid { min-width: 0; display: flex; flex-direction: column; gap: 0.18rem; }
-
-.threadGroup {
-  font-size: 0.6rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--vip);
-}
-
-.threadTitle {
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--ink);
-  line-height: 1.3;
-}
-
-.threadExcerpt {
-  font-size: 0.82rem;
-  color: var(--ink-soft);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.threadMeta {
-  font-size: 0.7rem;
-  color: var(--ink-faint);
-  margin-top: 0.1rem;
-}
-
-.threadBadge {
-  align-self: center;
-  padding: 0.25rem 0.5rem;
-  border-radius: 8px;
-  font-size: 0.58rem;
-  font-weight: 850;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.badgeHot { background: rgba(109, 26, 36, 0.1); color: var(--err); }
-.badgeLot { background: rgba(14, 14, 14, 0.06); color: var(--ink-soft); }
-
-/* ---------- OPEN CALLS ---------- */
+/* ---------- AUCTION CALENDAR ---------- */
 .callGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -582,10 +633,12 @@
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 0.85rem;
+  cursor: pointer;
   transition: border-color 0.15s, transform 0.15s;
 }
 
 .callCard:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.callCard:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; } /* ★ it's role=button */
 
 .callDate {
   flex-shrink: 0;
@@ -693,6 +746,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  flex-shrink: 0; /* ★ don't let the scrolling rail squash cards */
 }
 
 .railHead {
@@ -723,6 +777,12 @@
   border-radius: 50%;
   background: var(--err);
   box-shadow: 0 0 0 3px rgba(109, 26, 36, 0.15);
+  animation: livePulse 1.6s ease-in-out infinite; /* ★ */
+}
+
+@keyframes livePulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(109, 26, 36, 0.15); }
+  50%      { box-shadow: 0 0 0 6px rgba(109, 26, 36, 0.05); }
 }
 
 /* live list */
@@ -739,6 +799,8 @@
   padding: 0;
   cursor: pointer;
 }
+
+.liveRow:hover strong { text-decoration: underline; text-underline-offset: 2px; }
 
 .liveThumb {
   position: relative;
@@ -785,25 +847,6 @@
   white-space: nowrap;
 }
 
-.tagRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-
-.tagPill {
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  background: #f1f0ed;
-  border-radius: 999px;
-  padding: 0.16rem 0.5rem;
-}
-
-.callCard { cursor: pointer; }
-
 /* requests */
 .reqList { display: flex; flex-direction: column; gap: 0.85rem; }
 
@@ -819,12 +862,15 @@
   height: 32px;
   border-radius: 50%;
   background: #ece9e3;
+  background-size: cover;       /* ★ Thumb passes an image here too */
+  background-position: center;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-display);
   font-size: 0.8rem;
-  color: var(--ink);
+  color: #fff;                  /* ★ initials sit on a toned gradient */
+  overflow: hidden;
 }
 
 .reqText {
@@ -854,6 +900,8 @@
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
+
+.reqBtn:disabled { opacity: 0.55; cursor: progress; }
 
 .reqApprove { background: var(--ink); color: var(--wall); border: none; }
 .reqApprove:hover { opacity: 0.9; }
@@ -888,7 +936,7 @@
   justify-content: center;
   font-family: var(--font-display);
   font-size: 0.85rem;
-  color: var(--ink);
+  color: #fff; /* ★ same reason as reqAvatar */
   overflow: hidden;
 }
 
@@ -977,10 +1025,136 @@
 
 .ruleText strong { color: var(--ink); font-weight: 700; }
 
+/* ---------- OPEN CALLS (reuses .callGrid / .callCard / .callDate / .callBody) ---------- */
+.callCardStatic {
+  cursor: default;
+}
+
+.callCardStatic:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--line);
+}
+
+.callCardClosed {
+  opacity: 0.62;
+}
+
+.callDateCode strong {
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.callDesc {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.callElig {
+  margin: 0;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
+.callDeadline {
+  display: inline-block;
+  margin-top: 0.1rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.callDeadlineSoon {
+  color: var(--err);
+}
+
+.callDeadlineClosed {
+  color: var(--ink-faint);
+}
+
+.callActions {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.55rem;
+}
+
+.callSaveBtn {
+  border-radius: 999px;
+  padding: 0.4rem 0.8rem;
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.callSaveBtn:hover {
+  border-color: var(--ink);
+}
+
+.callSaveBtn:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.callSaveBtnOn {
+  background: var(--ink);
+  color: var(--wall);
+  border-color: var(--ink);
+}
+
+.callApplyBtn {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-family: var(--font-ui);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  background: var(--vip);
+  color: #fff;
+  border: 1px solid var(--vip);
+  transition: opacity 0.15s;
+}
+
+.callApplyBtn:hover {
+  opacity: 0.9;
+}
+
+.callClosedTag {
+  font-family: var(--font-ui);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
 /* ---------- RESPONSIVE ---------- */
 @media (max-width: 1080px) {
   .grid { grid-template-columns: 1fr; }
-  .rail { position: static; }
+  .rail { position: static; max-height: none; overflow: visible; }
 }
 
 @media (max-width: 760px) {
@@ -992,4 +1166,34 @@
   .startBtn { width: 100%; justify-content: center; }
   .discoverGrid { grid-template-columns: 1fr; }
   .callGrid { grid-template-columns: 1fr; }
+
+  .filmstrip { margin: 0 -1rem; padding-left: 1rem; padding-right: 1rem; }
+  .myGroupCard { width: 240px; }
+  .discoverImage { height: 170px; }
+
+  /* ★ Mobile reflow: flatten both columns into one stream and interleave by urgency.
+     DOM order: main[groups, discover, calendar, scenes]  rail[live, requests, people, rules]
+     Shown as: groups → LIVE NOW → discover → requests → calendar → scenes → people → rules */
+  .grid { gap: 1.5rem; }
+  .main, .rail { display: contents; }
+
+  .main > :nth-child(1) { order: 1; }  /* your groups      */
+  .rail > :nth-child(1) { order: 2; }  /* live now         */
+  .main > :nth-child(2) { order: 3; }  /* discover         */
+  .rail > :nth-child(2) { order: 4; }  /* requests/invites */
+  .main > :nth-child(3) { order: 5; }  /* auction calendar */
+  .main > :nth-child(4) { order: 6; }  /* scenes           */
+  .rail > :nth-child(3) { order: 7; }  /* around the work  */
+  .rail > :nth-child(4) { order: 8; }  /* house rules      */
+
+  /* live rows get a little more presence when they're mid-stream */
+  .rail > :nth-child(1) .liveThumb { width: 52px; height: 52px; }
+  .rail > :nth-child(1) .liveRow { grid-template-columns: 52px minmax(0, 1fr); }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot { animation: none; }
+  .myGroupCard, .discoverCard, .callCard, .startBtn, .actBtn { transition: none; }
+  .myGroupCard:hover, .discoverCard:hover, .callCard:hover, .startBtn:hover, .actBtn:hover { transform: none; }
 }

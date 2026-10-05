@@ -7,6 +7,7 @@ export type NotificationCategoryKey =
   | 'groups'
   | 'posts'
   | 'auctions'
+  | 'calls'
   | 'wallet'
   | 'security'
   | 'system'
