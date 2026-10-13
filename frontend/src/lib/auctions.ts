@@ -1,5 +1,26 @@
+// ============================================================================
+// auctions.ts — LEGACY whole-event model: one bid stream per AUCTION
+// (current_bid / bid_count), no sequential lots. This is the frontend mirror of
+// auctions + auction_bids in db.py.
+//
+// Your agreed model is the SEQUENTIAL BLIND LOT model in sales.ts. This file is
+// therefore NOT the canonical path. I have kept it (you said do not retire open
+// access, and single-piece quick auctions may still be a real product need) but
+// it is marked for consolidation: once you confirm whether whole-event auctions
+// are real or vestigial, we either (a) delete it and point the floor at sales.ts,
+// or (b) keep it as a second sale type and align its paddle/settlement semantics
+// so "sale" and "auction" don't drift into two incompatible money paths.
+//
+// The ACCESS MODE (open | vip | invite) is preserved here too — retiring open
+// was never the plan. Only the whole-event BID model is in question.
+// ============================================================================
+
+import { type AccessMode, normalizeAccessMode } from './sales'
+
 export const AUCTION_API = 'http://localhost:8001'
 
+// Old literal union KEPT for back-compat (components may compare tier === 'vip_only').
+// New code reads auction.access_mode instead, which fetchAuctions normalizes.
 export type AuctionTier = 'open' | 'vip_only' | 'invite_only'
 export type AuctionStatus = 'upcoming' | 'live' | 'ended'
 
@@ -9,7 +30,8 @@ export type Auction = {
   title: string
   description: string
   image_url: string
-  tier: AuctionTier
+  tier: AuctionTier          // raw, back-compat
+  access_mode: AccessMode    // normalized, canonical
   starting_bid: string
   status: AuctionStatus
   starts_at: string | null
@@ -17,6 +39,7 @@ export type Auction = {
   ticket_price: string
   current_bid: string | null
   bid_count: number
+  // per-viewer (advisory; backend enforces)
   visible: boolean
   is_vip: boolean
   is_invited: boolean
@@ -30,7 +53,8 @@ export type Auction = {
 export async function fetchAuctions(viewer: string): Promise<Auction[]> {
   const res = await fetch(`${AUCTION_API}/auctions?viewer=${encodeURIComponent(viewer)}`)
   const data = await res.json()
-  return data.auctions || []
+  const rows: any[] = data.auctions || []
+  return rows.map(r => ({ ...r, access_mode: normalizeAccessMode(r.access_mode ?? r.tier) }))
 }
 
 export function timeLeft(target: string | null): string {

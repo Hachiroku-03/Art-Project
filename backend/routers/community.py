@@ -779,7 +779,10 @@ def community_discover(
                WHERE cm2.conversation_id = c.id AND cm2.user_name = %s
            )""",
     ]
-    params = [list(DISCOVER_MODES), viewer]
+    # %s binds left-to-right by TEXTUAL position. The gjr JOIN placeholder sits
+    # BEFORE the WHERE clause, so viewer leads, then join_mode, then the NOT
+    # EXISTS viewer, then optionals, then limit.
+    params = [viewer, list(DISCOVER_MODES), viewer]
 
     if search:
         where.append("(c.name ILIKE %s OR COALESCE(c.description,'') ILIKE %s)")
@@ -817,7 +820,7 @@ def community_discover(
         ORDER BY c.updated_at DESC NULLS LAST, c.id DESC
         LIMIT %s
         """,
-        (*params, viewer),
+        tuple(params),
     )
 
     rows = []
@@ -859,7 +862,7 @@ def community_taxonomy(viewer: str = ""):
         WHERE {base} AND c.category IS NOT NULL AND c.category <> ''
         ORDER BY c.category
         """,
-        (viewer, list(DISCOVER_MODES)),
+        (list(DISCOVER_MODES), viewer),
     )
     categories = [r["category"] for r in cursor.fetchall()]
 
@@ -871,7 +874,7 @@ def community_taxonomy(viewer: str = ""):
         GROUP BY c.scene
         ORDER BY COUNT(*) DESC, c.scene
         """,
-        (viewer, list(DISCOVER_MODES)),
+        (list(DISCOVER_MODES), viewer),
     )
     scenes = [{"name": r["scene"], "count": int(r["count"])} for r in cursor.fetchall()]
 

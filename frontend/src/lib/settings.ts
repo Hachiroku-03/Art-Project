@@ -1,5 +1,5 @@
 const ACCOUNT_API =
-  (import.meta as any).env?.VITE_AUTH_API_URL || 'http://localhost:8000'
+  (import.meta as any).env?.VITE_AUTH_API_URL || 'http://localhost:8001'
 
 export type NotificationCategoryKey =
   | 'messages'

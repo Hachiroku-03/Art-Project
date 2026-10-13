@@ -66,6 +66,7 @@
 .catWallet { background: rgba(14, 14, 14, 0.08); color: var(--ink); }
 .catSecurity { background: rgba(109, 26, 36, 0.1); color: var(--err); }
 .catSystem { background: rgba(14, 14, 14, 0.06); color: var(--ink-soft); }
+.catCalls { background: rgba(176, 124, 32, 0.14); color: #9a6b12; }
 
 .body {
   min-width: 0;

@@ -33,6 +33,18 @@ ADMIN_USERNAMES = {u.strip() for u in os.getenv("ADMIN_USERNAMES", "").split(","
 # NOTE: this was $20 one-time; as a recurrence it's $240/yr — lower it if steep.
 VIP_PRICE = float(os.getenv("VIP_PRICE", "20"))
 
+# Multi-currency + ledger holders — MUST match backend/ledger.py (8001) EXACTLY.
+# Both processes write the SAME ledger_entries table, so the per-currency filter
+# AND the advisory-lock key formula have to be identical, or the two servers won't
+# serialize against each other on a shared balance (a users-row FOR UPDATE in one
+# process and an advisory lock in the other do NOT see each other -> cross-process
+# double-spend). Holders have no users row; the advisory lock is the only thing
+# that works for them, which is why real users use it too.
+DEFAULT_CURRENCY = "NGN"
+PLATFORM_REVENUE = "__platform_revenue__"
+ESCROW = "__escrow__"
+HOLDERS = {PLATFORM_REVENUE, ESCROW}
+
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 FACE_THRESHOLD = 0.363
 
@@ -110,6 +122,12 @@ def init_db():
         )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger_entries (user_name, created_at DESC)")
+    # Multi-currency parity with backend/db.py (8001): the currency column + the
+    # per-currency index must exist whichever server boots first, so a USD row
+    # written by 8001 is never summed into an NGN balance by 8000. Idempotent on
+    # an existing table (8001 already added them) and on a fresh one (we add them).
+    cursor.execute("ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_acct_cur ON ledger_entries (user_name, currency, created_at DESC)")
 
     # VIP subscription — the truth for "VIP right now"; users.tier is a cache.
     cursor.execute('''
@@ -145,9 +163,15 @@ def cosine_similarity(a, b):
         return 0.0
     return dot / (norm_a * norm_b)
 
-# ---- LEDGER HELPERS — KEEP IN SYNC WITH backend/ledger.py (see note there) ----
-def balance_of(cursor, user_name):
-    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (user_name,))
+# ---- LEDGER HELPERS — KEEP IN SYNC WITH backend/ledger.py (8001) ----
+# Per-currency + advisory-locked. The lock key f"{account}|{currency}" is byte-
+# identical to 8001's so the two processes serialize against each other; do not
+# "optimize" it back to a users-row FOR UPDATE (that breaks cross-process safety).
+def _is_holder(account):
+    return account in HOLDERS
+
+def balance_of(cursor, user_name, currency=DEFAULT_CURRENCY):
+    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s AND currency = %s", (user_name, currency))
     row = cursor.fetchone()
     return float(row["bal"]) if row else 0.0
 
@@ -157,25 +181,31 @@ def _valid_amount(amount):
     if not math.isfinite(a) or a <= 0: return None
     return a
 
-def spend(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None):
+def _lock_account(cursor, account, currency):
+    cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"{account}|{currency}",))
+    if not _is_holder(account):
+        cursor.execute("SELECT id FROM users WHERE username = %s", (account,))
+        if not cursor.fetchone():
+            return False
+    return True
+
+def spend(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None, currency=DEFAULT_CURRENCY):
     a = _valid_amount(amount)
     if a is None: return False, "invalid amount", None
-    cursor.execute("SELECT id FROM users WHERE username = %s FOR UPDATE", (user_name,))
-    if not cursor.fetchone(): return False, "unknown user", None
-    bal = balance_of(cursor, user_name)
-    if bal + 1e-9 < a: return False, f"insufficient balance — ${bal:,.2f} available", bal
-    cursor.execute("INSERT INTO ledger_entries (user_name, amount, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s)",
-                   (user_name, -a, kind, reference, ref_table, ref_id))
+    if not _lock_account(cursor, user_name, currency): return False, "unknown user", None
+    bal = balance_of(cursor, user_name, currency)
+    if bal + 1e-9 < a: return False, f"insufficient {currency} balance — {bal:,.2f} available", bal
+    cursor.execute("INSERT INTO ledger_entries (user_name, amount, currency, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                   (user_name, -a, currency, kind, reference, ref_table, ref_id))
     return True, None, round(bal - a, 2)
 
-def credit(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None):
+def credit(cursor, user_name, amount, kind, reference="", ref_table=None, ref_id=None, currency=DEFAULT_CURRENCY):
     a = _valid_amount(amount)
     if a is None: return False, "invalid amount", None
-    cursor.execute("SELECT id FROM users WHERE username = %s FOR UPDATE", (user_name,))
-    if not cursor.fetchone(): return False, "unknown user", None
-    cursor.execute("INSERT INTO ledger_entries (user_name, amount, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s)",
-                   (user_name, a, kind, reference, ref_table, ref_id))
-    return True, None, round(balance_of(cursor, user_name), 2)
+    if not _lock_account(cursor, user_name, currency): return False, "unknown user", None
+    cursor.execute("INSERT INTO ledger_entries (user_name, amount, currency, kind, reference, ref_table, ref_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                   (user_name, a, currency, kind, reference, ref_table, ref_id))
+    return True, None, round(balance_of(cursor, user_name, currency), 2)
 
 # ==========================================
 # VIP SWEEP — lazy monthly renewal, no scheduler.
@@ -563,9 +593,7 @@ def vip_upgrade(data: dict):
         cursor.execute("SELECT status, cancelled_at, renews_at FROM vip_subscriptions WHERE user_name = %s FOR UPDATE", (viewer,))
         sub = cursor.fetchone()
 
-        in_date = sub and sub["status"] == "active" and sub["renews_at"] is not None \
-            and sub["renews_at"].timestamp() * 1000 > __import__("time").time() * 1000  # placeholder; see note
-        # (the timestamp compare above is awkward in py; we rely on SQL predicates instead ↓)
+        # (we rely on the SQL predicates below; no python-side timestamp compare needed)
         cursor.execute(
             "SELECT 1 FROM vip_subscriptions WHERE user_name = %s AND status='active' AND cancelled_at IS NULL AND renews_at > CURRENT_TIMESTAMP",
             (viewer,))
@@ -636,7 +664,10 @@ def vip_status(viewer: str = ""):
     if not viewer: return {"error": "viewer required"}
     conn = get_db(); cursor = conn.cursor()
     tier = _sweep_vip(cursor, viewer)
-    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
+    # VIP is NGN-denominated, so "can you afford the next renewal" must look at the
+    # NGN balance ONLY — summing USD into it would falsely tell a lapsed member
+    # they're funded when their dollars can't pay an naira bill.
+    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s AND currency = %s", (viewer, DEFAULT_CURRENCY))
     bal = cursor.fetchone()["bal"]
     cursor.execute(
         """SELECT status, price::text AS price, renews_at::text AS renews_at,
@@ -656,9 +687,15 @@ def wallet(viewer: str = ""):
     if not viewer: return {"error": "viewer required"}
     conn = get_db(); cursor = conn.cursor()
     tier = _sweep_vip(cursor, viewer)
-    cursor.execute("SELECT COALESCE(SUM(amount), 0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
-    bal = cursor.fetchone()["bal"]
-    cursor.execute('''SELECT id, amount::text AS amount, kind, reference, created_at::text AS created_at
+    # Per-currency: a user can hold NGN and USD independently. `balance` stays the
+    # NGN figure for back-compat with any UI reading one number; `balances` is the
+    # full per-currency map the wallet page should render. History now carries
+    # currency so each row can be labeled.
+    cursor.execute("SELECT currency, COALESCE(SUM(amount),0)::text AS bal FROM ledger_entries WHERE user_name = %s GROUP BY currency ORDER BY currency", (viewer,))
+    bal_rows = cursor.fetchall()
+    balances = {r["currency"]: r["bal"] for r in bal_rows}
+    bal = balances.get(DEFAULT_CURRENCY, "0.00")
+    cursor.execute('''SELECT id, amount::text AS amount, currency, kind, reference, created_at::text AS created_at
                       FROM ledger_entries WHERE user_name = %s ORDER BY created_at DESC, id DESC LIMIT 50''', (viewer,))
     rows = cursor.fetchall()
     cursor.execute(
@@ -667,24 +704,31 @@ def wallet(viewer: str = ""):
            FROM vip_subscriptions WHERE user_name = %s""", (viewer,))
     sub = cursor.fetchone()
     conn.commit(); conn.close()
-    return {"balance": bal, "tier": tier, "vip_price": VIP_PRICE, "entries": rows, "subscription": sub}
+    return {"balance": bal, "balances": balances, "tier": tier, "vip_price": VIP_PRICE, "entries": rows, "subscription": sub}
 
 @app.post("/wallet/topup")
 def wallet_topup(data: dict):
+    # DEV/MOCK top-up. The Paystack rail (webhooks.py charge.success -> credit)
+    # supersedes this for real money; kept so a wallet can be funded in test
+    # without a provider. Currency-aware, default NGN, matching the webhook path.
     viewer = data.get("viewer", "")
     if not viewer: return {"error": "viewer required"}
     amount = _valid_amount(data.get("amount"))
     if amount is None: return {"error": "enter a positive amount"}
-    if amount > 10000: return {"error": "single top-up capped at $10,000"}
+    if amount > 10000: return {"error": "single top-up capped at 10,000 (major units)"}
+    currency = (data.get("currency") or DEFAULT_CURRENCY).strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        return {"error": "currency must be a 3-letter ISO code"}
     conn = get_db()
     try:
         cursor = conn.cursor()
-        ok, err, bal = credit(cursor, viewer, amount, "top_up", "Add funds")
+        ok, err, bal = credit(cursor, viewer, amount, "top_up", "Add funds", currency=currency)
         if not ok: conn.rollback(); return {"error": err}
-        _sweep_vip(cursor, viewer)   # revive a past_due membership with the fresh funds
+        _sweep_vip(cursor, viewer)   # revive a past_due NGN membership with fresh NGN funds
         conn.commit()
-        cursor.execute("SELECT COALESCE(SUM(amount),0)::text AS bal FROM ledger_entries WHERE user_name = %s", (viewer,))
-        return {"message": "funds added", "balance": cursor.fetchone()["bal"], "added": amount}
+        # credit() already returns the new balance for THIS currency, so no
+        # cross-currency re-sum here (the old SUM would have mixed USD in).
+        return {"message": "funds added", "balance": f"{bal:,.2f}", "currency": currency, "added": amount}
     except Exception as e:
         conn.rollback(); return {"error": str(e)}
     finally:

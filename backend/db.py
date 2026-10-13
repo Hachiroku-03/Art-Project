@@ -323,5 +323,184 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_notifications_user ON chat_notifications (user_name, created_at DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_notifications_unread ON chat_notifications (user_name, read_at, created_at DESC)")
 
+    # ============ COMMUNITY / NOTIFICATIONS / SETTINGS (added by the calls +
+    # notification slices; idempotent, matches the no-FK-on-user_name + naive
+    # TIMESTAMP house convention above) ============
+
+    # Groups gained community metadata (discover + list_conversations read these).
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS join_mode TEXT NOT NULL DEFAULT 'request'")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS allow_member_invites BOOLEAN NOT NULL DEFAULT FALSE")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS announce_new_members BOOLEAN NOT NULL DEFAULT FALSE")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS category TEXT")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS scene TEXT")
+    cursor.execute("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb")
+
+    # Group join requests (request/approve/reject/cancel).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_join_requests (
+            id SERIAL PRIMARY KEY,
+            group_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',          -- pending | approved | rejected | cancelled
+            message TEXT,
+            reviewed_by TEXT,
+            reviewed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (group_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gjr_group_status ON group_join_requests (group_id, status)")
+
+    # Unified in-app notification center (bell / dropdown / page / sweep).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notifications (
+            id SERIAL PRIMARY KEY,
+            user_name TEXT NOT NULL,
+            category TEXT NOT NULL,                           -- messages | mentions | groups | posts | auctions | calls | wallet | security | system
+            type TEXT NOT NULL,
+            actor TEXT,
+            source_type TEXT,                                 -- conversation | post | comment | sale | lot | call ...
+            source_id INTEGER,
+            secondary_id INTEGER,
+            title TEXT NOT NULL,
+            body TEXT,
+            data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            read_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications (user_name, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications (user_name, read_at, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notifications_source ON notifications (source_type, source_id)")
+
+    # Per-user settings: language + notification/auction/privacy prefs (the PATCH contract).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_name TEXT PRIMARY KEY,
+            language TEXT NOT NULL DEFAULT 'en',
+            notifications JSONB NOT NULL DEFAULT '{}'::jsonb,
+            auctions JSONB NOT NULL DEFAULT '{}'::jsonb,
+            privacy JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Community open calls / events.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS community_calls (
+            id SERIAL PRIMARY KEY,
+            host_user_name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'open_call',           -- exhibition | residency | consignment | open_call | award | talk | studio_visit | deadline
+            title TEXT NOT NULL,
+            description TEXT,
+            cover_url TEXT,
+            scene TEXT,
+            location TEXT,
+            online BOOLEAN NOT NULL DEFAULT FALSE,
+            starts_at TIMESTAMP,
+            ends_at TIMESTAMP,
+            deadline_at TIMESTAMP,
+            status TEXT NOT NULL DEFAULT 'open',              -- open | closed | cancelled
+            eligibility JSONB NOT NULL DEFAULT '{}'::jsonb,
+            apply_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_community_calls_status_deadline ON community_calls (status, deadline_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_community_calls_host ON community_calls (host_user_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_community_calls_scene ON community_calls (scene) WHERE scene IS NOT NULL")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_community_calls_kind ON community_calls (kind)")
+
+    # Saved / "remind me" interest in a call.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS call_interest (
+            id SERIAL PRIMARY KEY,
+            call_id INTEGER NOT NULL REFERENCES community_calls(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (call_id, user_name)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_call_interest_user ON call_interest (user_name, created_at DESC)")
+
+    # Deadline-reminder idempotency key (one row per call/user/window).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS call_reminders (
+            id SERIAL PRIMARY KEY,
+            call_id INTEGER NOT NULL REFERENCES community_calls(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            window_days INTEGER NOT NULL,                     -- 7 | 3 | 1
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (call_id, user_name, window_days)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_call_reminders_call ON call_reminders (call_id, window_days)")
+
+        # ============ MULTI-CURRENCY + ESCROW-READY LEDGER FOUNDATION (Phase 1.1) ============
+    # Every money column gains a currency (ISO 4217, default NGN). Balances are
+    # PER-CURRENCY (see ledger.py): a user holding NGN 50,000 and USD 200 has two
+    # independent balances and can never spend one from the other. No in-app FX —
+    # conversion happens only at the processor (Paystack) when a wallet is topped
+    # up. Holder accounts (__platform_revenue__, __escrow__) are recorded in
+    # ledger_entries like any account but have NO users row; ledger.py serializes
+    # them by advisory lock instead. This one schema serves E2-now (Paystack split
+    # at charge, recorded here) AND E1-later (true hold/release via __escrow__)
+    # without a rewrite — that's the whole point of laying it now.
+
+    # --- currency on existing money columns (additive, default NGN) ---
+    cursor.execute("ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("ALTER TABLE bids ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("ALTER TABLE auction_bids ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("ALTER TABLE lot_bids ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")          # sale/lot currency
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ticket_currency TEXT NOT NULL DEFAULT 'NGN'")  # paddle-fee currency
+    cursor.execute("ALTER TABLE vip_subscriptions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'NGN'")
+
+    # --- settlement / blind-lot columns (folded from the un-applied earlier pass;
+    #     orthogonal to currency, required by the final corrected sales.py) ---
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS winner_username TEXT")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS reserve NUMERIC(12,2)")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS estimate_low NUMERIC(12,2)")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS estimate_high NUMERIC(12,2)")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS hammer_at TIMESTAMP")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'unpaid'")  #-- unpaid|paid|refunded (E2 chase path)
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ticket_capacity INTEGER")                    #-- null = unlimited
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS settled_at TIMESTAMP")
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS payout_status TEXT NOT NULL DEFAULT 'none'")  #-- none|pending|paid|failed
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS payout_reference TEXT")
+    cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'purchased'")     #purchased|invited|complimentary|void
+    # NOTE: lots.status is plain TEXT with no CHECK, so the new 'passed' value
+    # (lot failed reserve / no bids) needs no migration — the corrected hammer writes it directly.
+
+    # --- invariants ---
+    # exactly ONE lot on the block per sale: the blind sequential rule, race-safe.
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_one_lot_on_block ON lots (sale_id) WHERE status = 'on_block'")
+    # per-currency balance lookups + reveal/hammer scans
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_acct_cur ON ledger_entries (user_name, currency, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lots_sale_status ON lots (sale_id, status)")
+
+    # --- payment-event idempotency (webhook replay-safe; the Paystack rail writes here) ---
+    # A replayed charge.success must never double-credit a wallet. UNIQUE(provider,
+    # event_id) is the gate: the rail inserts and only proceeds if the insert wins.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payment_events (
+            id SERIAL PRIMARY KEY,
+            provider TEXT NOT NULL,                 -- paystack
+            event_id TEXT NOT NULL,                 -- provider reference / notification id
+            type TEXT NOT NULL,                     -- charge.success | transfer.success | ...
+            account TEXT,                           -- user or holder the event affects
+            currency TEXT,
+            amount NUMERIC(12,2),
+            reference TEXT,                         -- our metadata (topup id, sale_id, ...)
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            processed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (provider, event_id)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_events_account ON payment_events (account, created_at DESC)")
+
     conn.commit()
     conn.close()

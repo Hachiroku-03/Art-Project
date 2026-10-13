@@ -16,6 +16,7 @@ from routers import (
     settings,
     notifications,
     community,
+    webhooks,
 )
 import notification_service
 from routers.community import sweep_call_deadlines
@@ -79,6 +80,7 @@ app.include_router(auctions.router)
 app.include_router(settings.router)
 app.include_router(notifications.router)
 app.include_router(community.router)
+app.include_router(webhooks.router)
 app.include_router(notification_service.router)
 
 if __name__ == "__main__":

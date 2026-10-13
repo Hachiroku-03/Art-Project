@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   AtSign,
   Bell,
+  CalendarClock,
   Check,
   Gavel,
   Info,
@@ -59,6 +60,12 @@ const WALLET_TOAST_TYPES = new Set([
   'payment_failed',
 ])
 
+// Calls: only the deadline reminder toasts. A future "new call in your scene"
+// feed event can join this set without changing shouldToast's shape.
+const TOAST_CALL_TYPES = new Set([
+  'call_deadline_soon',
+])
+
 type Toast = {
   key: string
   n: AppNotification
@@ -71,6 +78,7 @@ function shouldToast(n: AppNotification): boolean {
   if (cat === 'groups') return TOAST_GROUP_TYPES.has(type)
   if (cat === 'posts') return TOAST_POST_TYPES.has(type)
   if (cat === 'wallet') return WALLET_TOAST_TYPES.has(type)
+  if (cat === 'calls') return TOAST_CALL_TYPES.has(type)
   if (cat === 'system') return false
 
   return TOAST_CATEGORIES.has(cat)
@@ -90,6 +98,8 @@ function categoryIcon(category: string) {
       return Wallet
     case 'security':
       return ShieldCheck
+    case 'calls':
+      return CalendarClock
     default:
       return category === 'posts' ? Info : Bell
   }
@@ -111,6 +121,8 @@ function categoryClass(category: string): string {
       return styles.catWallet
     case 'security':
       return styles.catSecurity
+    case 'calls':
+      return styles.catCalls
     default:
       return styles.catSystem
   }
