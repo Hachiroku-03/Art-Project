@@ -6,7 +6,7 @@ import { PostRoomPage } from './pages/PostRoomPage'
 import { AuctionsPage } from './pages/AuctionsPage'
 import { AuctionRoomPage } from './pages/AuctionRoomPage'
 import { ControlRoomPage } from './pages/ControlRoomPage'
-import { HouseApplicationPage } from './pages/HouseApplicationPage' 
+import { HouseApplicationPage } from './pages/HouseApplicationPage'
 import { PricingPage } from './pages/PricingPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -15,9 +15,12 @@ import { ChatDebugPage } from './pages/ChatDebugPage'
 import { MessengerPage } from './pages/MessengerPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { SettingsPage } from './pages/SettingsPage'
-import {CommunityPage} from './pages/CommunityPage'
+import { CommunityPage } from './pages/CommunityPage'
 import { CallDetailPage } from './pages/CallDetailPage'
-// SalesRoomPage removed — /sales/:id now renders AuctionRoomPage
+// AuctionFloorPage / LiveRoomPage intentionally NOT routed: we reuse your
+// existing AuctionsPage (floor) and AuctionRoomPage (room). The files remain on
+// disk; repoint a route here if you'd rather use them instead.
+import { SaleDetailPage } from './pages/SaleDetailPage'
 
 function Gate() {
   const token = localStorage.getItem('space_token')
@@ -33,10 +36,22 @@ function App() {
         <Route path="/feed" element={<FeedPage />} />
         <Route path="/community" element={<CommunityPage />} />
         <Route path="/post/:id" element={<PostRoomPage />} />
+
+        {/* floor: keep your existing page (was duplicated with AuctionFloorPage) */}
         <Route path="/auctions" element={<AuctionsPage />} />
-        <Route path="/sales/:id" element={<AuctionRoomPage />} />
+
+        {/* control room (static segment outranks params in v6, so /sales/control is safe) */}
         <Route path="/sales/control" element={<ControlRoomPage />} />
-        <Route path="/sales/:id/control" element={<ControlRoomPage />} />     
+
+        {/* ticket page: the NEW missing surface (was shadowed by old /sales/:id) */}
+        <Route path="/sales/:saleId" element={<SaleDetailPage />} />
+
+        {/* room: your existing AuctionRoomPage, MOVED off /sales/:id so it no
+            longer shadows the ticket page. SaleDetailPage's Enter room -> here. */}
+        <Route path="/sales/:id/room" element={<AuctionRoomPage />} />
+
+        <Route path="/sales/:id/control" element={<ControlRoomPage />} />
+
         <Route path="/house/apply" element={<HouseApplicationPage />} />
         <Route path="/pricing" element={<PricingPage />} />
         <Route path="/wallet" element={<WalletPage />} />

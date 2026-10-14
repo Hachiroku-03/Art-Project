@@ -149,18 +149,19 @@ def create_sale(data: dict):
         cursor.execute(
             """
             INSERT INTO auctions (
-                host_username, title, description, tier, status,
+                host_username, title, description, image_url, tier, status,
                 starts_at, ends_at,
                 ticket_price, ticket_currency, ticket_capacity,
                 currency, stream_type, stream_url
             )
-            VALUES (%s, %s, %s, %s, 'upcoming', %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'upcoming', %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 host,
                 title,
                 data.get("description", ""),
+                data.get("image_url") or None,
                 tier,
                 data.get("starts_at") or None,
                 data.get("ends_at") or None,
@@ -478,18 +479,9 @@ def add_lot(sale_id: int, data: dict):
     finally:
         if conn:
             conn.close()
-
-
-@router.get("/sales/{sale_id}")
-def get_sale(sale_id: int, viewer: str = "", code: str = ""):
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-
         cursor.execute(
             """
-            SELECT id, host_username, title, description, tier, status,
+            SELECT id, host_username, title, description, image_url, tier, status,
                    starts_at::text AS starts_at,
                    ends_at::text AS ends_at,
                    ticket_price::text AS ticket_price,
@@ -504,6 +496,15 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
             """,
             (sale_id,),
         )
+
+@router.get("/sales/{sale_id}")
+def get_sale(sale_id: int, viewer: str = "", code: str = ""):
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+
         sale = cursor.fetchone()
         if not sale:
             return {"error": "sale not found"}
