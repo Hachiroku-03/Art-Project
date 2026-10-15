@@ -15,27 +15,44 @@ export function StoriesStrip({
   onOpen: (i: number) => void
   onAdd: () => void
 }) {
-  const me = storyUsers.find(u => u.username === viewer)
+  const meIndex = storyUsers.findIndex(u => u.username === viewer)
+  const me = meIndex >= 0 ? storyUsers[meIndex] : null
+  const hasMine = !!me && me.items.length > 0
+
   const others = storyUsers.filter(u => u.username !== viewer)
 
   return (
     <div className={styles.strip}>
-      <button
-        className={styles.item}
-        onClick={() => (me ? onOpen(storyUsers.indexOf(me)) : onAdd())}
-      >
-        <span
-          className={`${styles.ring} ${
-            me ? (seen.has(viewer) ? styles.ringSeen : styles.ringNew) : styles.ringEmpty
-          }`}
+      <div className={styles.item}>
+        <button
+          className={styles.ringButton}
+          onClick={() => (hasMine ? onOpen(meIndex) : onAdd())}
+          aria-label={hasMine ? 'View your story' : 'Add to your story'}
         >
-          <span className={styles.ava}>{(viewer || '?')[0]?.toUpperCase()}</span>
-          <span className={styles.plus}>
-            <Plus size={13} />
+          <span
+            className={`${styles.ring} ${
+              hasMine
+                ? seen.has(viewer)
+                  ? styles.ringSeen
+                  : styles.ringNew
+                : styles.ringEmpty
+            }`}
+          >
+            <span className={styles.ava}>{(viewer || '?')[0]?.toUpperCase()}</span>
           </span>
-        </span>
-        <span className={styles.name}>Your status</span>
-      </button>
+
+          <span className={styles.name}>Your status</span>
+        </button>
+
+        <button
+          className={styles.addAction}
+          onClick={onAdd}
+          aria-label="Add to your story"
+        >
+          <Plus size={12} />
+          <span>{hasMine ? 'Add' : 'New'}</span>
+        </button>
+      </div>
 
       {others.map(u => (
         <button
@@ -50,6 +67,7 @@ export function StoriesStrip({
           >
             <span className={styles.ava}>{u.username[0]?.toUpperCase()}</span>
           </span>
+
           <span className={styles.name}>{u.username}</span>
         </button>
       ))}

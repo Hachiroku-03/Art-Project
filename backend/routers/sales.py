@@ -193,23 +193,34 @@ def my_sales(viewer: str = ""):
     try:
         conn = get_db()
         cursor = conn.cursor()
+
         cursor.execute(
             """
-            SELECT a.id, a.title, a.status, a.tier, a.currency, a.ticket_currency,
-                   a.ticket_price::text AS ticket_price,
-                   a.starts_at::text AS starts_at,
-                   a.ends_at::text AS ends_at,
-                   a.settled_at::text AS settled_at,
-                   a.payout_status,
-                   (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count
+            SELECT
+                a.id,
+                a.title,
+                a.status,
+                a.tier,
+                a.currency,
+                a.ticket_currency,
+                a.ticket_price::text AS ticket_price,
+                a.ticket_capacity,
+                a.starts_at::text AS starts_at,
+                a.ends_at::text AS ends_at,
+                a.settled_at::text AS settled_at,
+                a.payout_status,
+                (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count,
+                (SELECT COUNT(*) FROM tickets t WHERE t.auction_id = a.id) AS tickets_sold
             FROM auctions a
             WHERE a.host_username = %s
             ORDER BY a.created_at DESC
             """,
             (viewer,),
         )
+
         rows = cursor.fetchall()
         return {"sales": rows}
+
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -398,87 +409,147 @@ def update_sale(sale_id: int, data: dict):
 def add_lot(sale_id: int, data: dict):
     conn = None
     try:
-        host = (data.get("viewer") or "").strip()
-        title = (data.get("title") or "").strip()
+        host = str(data.get("viewer") or "").strip()
+        title = str(data.get("title") or "").strip()
 
         if not host:
-            return {"error": "viewer required"}
+            return {"error": "viewer required", "debug_marker": "safe_add_lot_v1"}
         if not title:
-            return {"error": "title required"}
+            return {"error": "title required", "debug_marker": "safe_add_lot_v1"}
 
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT host_username, status, currency FROM auctions WHERE id = %s", (sale_id,))
-        row = cursor.fetchone()
-        if not row or row["host_username"] != host:
-            return {"error": "not your sale"}
-        if row["status"] == "ended":
-            return {"error": "sale has ended"}
+        cursor.execute(
+            "SELECT host_username, status, currency FROM auctions WHERE id = %s",
+            (sale_id,),
+        )
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found", "debug_marker": "safe_add_lot_v1"}
+        if sale["host_username"] != host:
+            return {"error": "not your sale", "debug_marker": "safe_add_lot_v1"}
+        if sale["status"] == "ended":
+            return {"error": "sale has ended", "debug_marker": "safe_add_lot_v1"}
 
         cursor.execute(
             "SELECT COALESCE(MAX(position), 0) + 1 AS p FROM lots WHERE sale_id = %s",
             (sale_id,),
         )
-        pos = cursor.fetchone()["p"]
+        position = int(cursor.fetchone()["p"])
 
-        try:
-            starting_price = round(float(data.get("starting_price", 0) or 0), 2)
-        except (TypeError, ValueError):
-            return {"error": "invalid starting_price"}
-        if starting_price < 0:
-            return {"error": "starting_price cannot be negative"}
+        def parse_money(key: str, required: bool = False, default_zero: bool = False):
+            raw = data.get(key)
 
-        reserve, err = _money_or_none(data.get("reserve"))
+            if raw is None or raw == "":
+                if required:
+                    return None, f"{key} is required"
+                if default_zero:
+                    return 0.0, None
+                return None, None
+
+            try:
+                value = round(float(raw), 2)
+            except (TypeError, ValueError):
+                return None, f"invalid {key}"
+
+            if value < 0:
+                return None, f"{key} cannot be negative"
+
+            return value, None
+
+        starting_price, err = parse_money("starting_price", default_zero=True)
         if err:
-            return {"error": f"reserve: {err}"}
+            return {"error": err, "debug_marker": "safe_add_lot_v1"}
 
-        estimate_low, err = _money_or_none(data.get("estimate_low"))
+        reserve, err = parse_money("reserve")
         if err:
-            return {"error": f"estimate_low: {err}"}
+            return {"error": err, "debug_marker": "safe_add_lot_v1"}
 
-        estimate_high, err = _money_or_none(data.get("estimate_high"))
+        estimate_low, err = parse_money("estimate_low")
         if err:
-            return {"error": f"estimate_high: {err}"}
+            return {"error": err, "debug_marker": "safe_add_lot_v1"}
+
+        estimate_high, err = parse_money("estimate_high")
+        if err:
+            return {"error": err, "debug_marker": "safe_add_lot_v1"}
 
         if estimate_low is not None and estimate_high is not None and estimate_high < estimate_low:
-            return {"error": "estimate_high cannot be lower than estimate_low"}
+            return {
+                "error": "estimate_high cannot be lower than estimate_low",
+                "debug_marker": "safe_add_lot_v1",
+            }
 
-        lot_ccy = _ccy(data.get("currency"), _ccy(row["currency"]))
+        sale_currency = str(sale.get("currency") or "NGN").strip().upper() or "NGN"
+        lot_currency = str(data.get("currency") or sale_currency).strip().upper() or sale_currency
+
+        if len(lot_currency) != 3 or not lot_currency.isalpha():
+            lot_currency = sale_currency
 
         cursor.execute(
             """
             INSERT INTO lots (
-                sale_id, position, title, description, image_url,
-                starting_price, reserve, estimate_low, estimate_high, currency
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, position
-            """,
-            (
                 sale_id,
-                pos,
+                position,
                 title,
-                data.get("description", ""),
-                data.get("image_url", ""),
+                description,
+                image_url,
                 starting_price,
                 reserve,
                 estimate_low,
                 estimate_high,
-                lot_ccy,
+                currency,
+                status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'sealed')
+            RETURNING id, position, title, status, currency
+            """,
+            (
+                sale_id,
+                position,
+                title,
+                str(data.get("description") or ""),
+                str(data.get("image_url") or ""),
+                starting_price or 0.0,
+                reserve,
+                estimate_low,
+                estimate_high,
+                lot_currency,
             ),
         )
 
         lot = cursor.fetchone()
         conn.commit()
-        return {"lot": lot}
+
+        return {
+            "lot": dict(lot) if lot else {"position": position},
+            "debug_marker": "safe_add_lot_v1",
+        }
+
     except Exception as e:
         if conn:
             conn.rollback()
-        return {"error": str(e)}
+
+        import traceback
+        traceback.print_exc()
+
+        return {
+            "error": f"add_lot failed: {e}",
+            "debug_marker": "safe_add_lot_v1",
+        }
+
     finally:
         if conn:
             conn.close()
+
+@router.get("/sales/{sale_id}")
+def get_sale(sale_id: int, viewer: str = "", code: str = ""):
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         cursor.execute(
             """
             SELECT id, host_username, title, description, image_url, tier, status,
@@ -496,16 +567,8 @@ def add_lot(sale_id: int, data: dict):
             """,
             (sale_id,),
         )
-
-@router.get("/sales/{sale_id}")
-def get_sale(sale_id: int, viewer: str = "", code: str = ""):
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-
-
         sale = cursor.fetchone()
+
         if not sale:
             return {"error": "sale not found"}
 
@@ -532,7 +595,13 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
         # Holding a ticket already proves you. Code is only the device-switch
         # escape hatch.
         allowed = is_host or has_ticket or proved
-        meta = {**sale, **acc, "is_host": is_host, "has_ticket": has_ticket, "locked": not allowed}
+        meta = {
+            **sale,
+            **acc,
+            "is_host": is_host,
+            "has_ticket": has_ticket,
+            "locked": not allowed,
+        }
 
         if not allowed:
             return {"sale": meta, "lots": []}
@@ -585,6 +654,7 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
             out_lots.append(d)
 
         return {"sale": meta, "lots": out_lots}
+
     except Exception as e:
         return {"error": str(e)}
     finally:

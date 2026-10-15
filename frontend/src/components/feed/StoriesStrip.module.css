@@ -88,3 +88,55 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 74px;
+  flex: 0 0 auto;
+}
+
+.ringButton {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0;
+}
+
+.addAction {
+  appearance: none;
+  border: 1px solid rgba(20, 18, 15, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: #15121a;
+  border-radius: 999px;
+  padding: 0.22rem 0.48rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.addAction:hover {
+  background: #fff;
+  border-color: rgba(20, 18, 15, 0.2);
+}

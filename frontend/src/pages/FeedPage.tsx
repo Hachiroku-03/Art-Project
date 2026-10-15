@@ -13,6 +13,7 @@ import { ProgrammeRail } from '../components/feed/ProgrammeRail'
 import { PaddleCard } from '../components/feed/PaddleCard'
 import { fetchFollowedStories, type StoryUser } from '../lib/feed'
 import { translateMany } from '../lib/translate'
+import { getViewer } from '../lib/session'
 import styles from './FeedPage.module.css'
 
 const AUTH_API = 'http://localhost:8000'
@@ -20,7 +21,7 @@ const FEED_API = 'http://localhost:8001'
 
 export function FeedPage() {
   const navigate = useNavigate()
-  const viewer = localStorage.getItem('space_user') || ''
+  const viewer = getViewer() || localStorage.getItem('space_user') || ''
 
   // ---- all hooks, top level, above any early return ----
   const [posts, setPosts] = useState<Post[]>([])
@@ -109,6 +110,11 @@ export function FeedPage() {
   const refreshStories = useCallback(() => {
     fetchFollowedStories(viewer).then(setStories)
   }, [viewer])
+
+  const hasExistingStory = useMemo(
+    () => stories.some(s => s.username === viewer && s.items.length > 0),
+    [stories, viewer],
+  )
 
   if (loading) {
     return (
@@ -224,6 +230,10 @@ export function FeedPage() {
             onClose={closeStory}
             onSeen={markSeen}
             viewer={viewer}
+            onAdd={() => {
+              setOpenStory(null)
+              setComposer('status')
+            }}
           />
         </ErrorBoundary>
       )}
@@ -232,6 +242,7 @@ export function FeedPage() {
         <ComposerModal
           mode={composer}
           viewer={viewer}
+          hasExistingStory={hasExistingStory}
           onClose={() => setComposer(null)}
           onDone={() => {
             const wasStatus = composer === 'status'

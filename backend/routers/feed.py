@@ -239,7 +239,7 @@ def add_story(data: dict):
     if kind not in ("image", "text"): return {"error": "invalid kind"}
     conn = get_db(); cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO stories (user_name, kind, body, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + interval '24 hours') RETURNING id",
+        "INSERT INTO stories (user_name, kind, body, expires_at) VALUES (%s, %s, %s, (CURRENT_DATE + INTERVAL '1 day')::timestamp) RETURNING id",
         (viewer, kind, body))
     sid = cursor.fetchone()["id"]; conn.commit(); conn.close()
     return {"message": "status posted", "id": sid}

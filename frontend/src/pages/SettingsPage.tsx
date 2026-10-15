@@ -16,6 +16,7 @@ import {
 import { Navbar } from '../components/Navbar'
 import { teardown } from '../lib/chat'
 import { LANGUAGES } from '../lib/languages'
+import { clearSession, getRole, getTier, getViewer } from '../lib/session'
 import {
   fetchAccountSettings,
   updateAccountLanguage,
@@ -148,9 +149,9 @@ function ToggleRow({
 
 export function SettingsPage() {
   const navigate = useNavigate()
-  const viewer = localStorage.getItem('space_user') || ''
-  const role = localStorage.getItem('space_role') || 'artist'
-  const tier = localStorage.getItem('space_tier') || 'standard'
+  const viewer = getViewer()
+  const role = getRole() || 'artist'
+  const tier = getTier() || 'standard'
 
   const [section, setSection] = useState<Section>('profile')
   const [settings, setSettings] = useState<AccountSettings | null>(null)
@@ -183,10 +184,10 @@ export function SettingsPage() {
   }, [])
 
   useEffect(() => {
-    if (!localStorage.getItem('space_token')) {
+    if (!localStorage.getItem('space_token') || !viewer) {
       navigate('/login', { replace: true })
     }
-  }, [navigate])
+  }, [navigate, viewer])
 
   const loadSettings = useCallback(async () => {
     if (!viewer) {
@@ -405,7 +406,7 @@ export function SettingsPage() {
       // ignore
     }
 
-    localStorage.clear()
+    clearSession()
     navigate('/login', { replace: true })
   }, [navigate])
 

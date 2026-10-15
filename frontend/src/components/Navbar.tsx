@@ -17,16 +17,17 @@ import { WalletPanel } from './WalletPanel'
 import { NotificationBell } from './NotificationBell'
 import { API } from '../lib/sales'
 import { teardown } from '../lib/chat'
+import { clearSession, getRole, getTier, getViewer } from '../lib/session'
 import styles from './Navbar.module.css'
 
 export function Navbar() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const user = localStorage.getItem('space_user') || 'C'
-  const role = localStorage.getItem('space_role') || 'artist'
-  const tier = localStorage.getItem('space_tier') || 'standard'
-  const initial = user[0].toUpperCase()
+  const user = getViewer()
+  const role = getRole() || 'artist'
+  const tier = getTier() || 'standard'
+  const initial = (user || '?')[0].toUpperCase()
   const isVip = tier === 'vip'
 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
@@ -60,6 +61,11 @@ export function Navbar() {
   }, [])
 
   useEffect(() => {
+    if (!user) {
+      setAvatarUrl(null)
+      return
+    }
+
     fetch(`${API}/me?viewer=${encodeURIComponent(user)}`)
       .then(r => r.json())
       .then(d => {
@@ -72,9 +78,15 @@ export function Navbar() {
     setMobileOpen(false)
     setMenuOpen(false)
     setWalletOpen(false)
-    teardown()
-    localStorage.clear()
-    navigate('/login')
+
+    try {
+      teardown()
+    } catch {
+      // ignore
+    }
+
+    clearSession()
+    navigate('/login', { replace: true })
   }
 
   const go = (path: string) => {

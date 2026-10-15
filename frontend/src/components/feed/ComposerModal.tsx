@@ -9,11 +9,13 @@ type Mode = 'work' | 'status'
 export function ComposerModal({
   mode,
   viewer,
+  hasExistingStory = false,
   onClose,
   onDone,
 }: {
   mode: Mode
   viewer: string
+  hasExistingStory?: boolean
   onClose: () => void
   onDone: () => void
 }) {
@@ -221,6 +223,12 @@ export function ComposerModal({
             </>
           ) : (
             <>
+              {hasExistingStory ? (
+                <p className={styles.hint}>
+                  This will be added to your active story. Existing images stay where they are.
+                </p>
+              ) : null}
+
               <label className={styles.label}>Caption / text story</label>
               <textarea
                 className={styles.area}
@@ -235,7 +243,13 @@ export function ComposerModal({
           {err && <p className={styles.err}>{err}</p>}
 
           <button className={styles.submit} type="submit" disabled={busy}>
-            {busy ? 'Sending…' : isWork ? 'Hang it' : 'Share status'}
+            {busy
+              ? 'Sending…'
+              : isWork
+                ? 'Hang it'
+                : hasExistingStory
+                  ? 'Add to story'
+                  : 'Share status'}
           </button>
         </form>
       </div>

@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { X, ChevronLeft, ChevronRight, Heart, MessageCircle, Send } from 'lucide-react'
+import { X, Plus, ChevronLeft, ChevronRight, Heart, MessageCircle, Send } from 'lucide-react'
 import {
   fetchStoryInteractions,
   toggleStoryLike,
@@ -24,12 +24,14 @@ export function StoryViewer({
   onClose,
   onSeen,
   viewer,
+  onAdd,
 }: {
   users: StoryUser[]
   startIndex: number
   onClose: () => void
   onSeen: (username: string) => void
   viewer: string
+  onAdd?: () => void
 }) {
   // ---- all hooks, top level ----
   const [ui, setUi] = useState(startIndex)
@@ -214,6 +216,18 @@ export function StoryViewer({
         <div className={styles.head}>
           <span className={styles.ava}>{user.username[0]?.toUpperCase()}</span>
           <span className={styles.un}>@{user.username}</span>
+
+          {user.username === viewer && onAdd ? (
+            <button
+              className={styles.addBtn}
+              onClick={onAdd}
+              aria-label="Add to your story"
+              title="Add to your story"
+            >
+              <Plus size={18} />
+            </button>
+          ) : null}
+
           <button className={styles.x} onClick={onClose} aria-label="Close">
             <X size={20} />
           </button>

@@ -1,6 +1,6 @@
-import { formatMoney, type Sale } from '../../lib/sales'
+import { formatMoney, normalizeAccessMode, type Sale } from '../../lib/sales'
 import { AccessBadge } from './AccessBadge'
-import { CountdownTimer } from './CountDownTimer'
+import { CountdownTimer } from './CountdownTimer'
 import styles from './sales.module.css'
 
 export function SaleHero({ sale }: { sale: Sale }) {
@@ -26,7 +26,7 @@ export function SaleHero({ sale }: { sale: Sale }) {
 
       <div className={styles.heroBody}>
         <div className={styles.row}>
-          <AccessBadge mode={sale.access_mode} />
+          <AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} />
           <span className={`${styles.badge} ${statusClass}`}>{sale.status}</span>
         </div>
 
@@ -40,7 +40,11 @@ export function SaleHero({ sale }: { sale: Sale }) {
 
         <div className={styles.meta}>
           <span>
-            Paddle: {formatMoney(sale.ticket_price, sale.ticket_currency || sale.currency || 'NGN')}
+            Paddle:{' '}
+            {formatMoney(
+              sale.ticket_price,
+              sale.ticket_currency || sale.currency || 'NGN',
+            )}
           </span>
 
           <span>Lots: {sale.lot_count ?? 0}</span>
@@ -48,9 +52,17 @@ export function SaleHero({ sale }: { sale: Sale }) {
           {remaining != null ? <span>Remaining: {remaining}</span> : null}
 
           {sale.status === 'upcoming' ? (
-            <CountdownTimer target={sale.starts_at} label="Starts in" status={sale.status} />
+            <CountdownTimer
+              target={sale.starts_at}
+              label="Starts in"
+              status={sale.status}
+            />
           ) : sale.status === 'live' ? (
-            <CountdownTimer target={sale.ends_at} label="Ends in" status={sale.status} />
+            <CountdownTimer
+              target={sale.ends_at}
+              label="Ends in"
+              status={sale.status}
+            />
           ) : null}
         </div>
       </div>

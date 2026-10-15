@@ -1,6 +1,6 @@
 import { formatMoney, normalizeAccessMode, type Sale } from '../../lib/sales'
 import { AccessBadge } from './AccessBadge'
-import { CountdownTimer } from './CountDownTimer'
+import { CountdownTimer } from './CountdownTimer'
 import styles from './sales.module.css'
 
 export function SaleHero({ sale }: { sale: Sale }) {

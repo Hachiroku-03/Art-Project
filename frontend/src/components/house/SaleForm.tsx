@@ -95,8 +95,8 @@ export function SaleForm({
     }
     const ccy = form.currency.trim().toUpperCase()
     const tccy = form.ticket_currency.trim().toUpperCase()
-if (ccy && !/^[A-Z]{3}$/.test(ccy)) return 'Sale currency must be a 3-letter code (e.g. NGN).'
-if (tccy && !/^[A-Z]{3}$/.test(tccy)) return 'Paddle currency must be a 3-letter code (or blank to match sale).'
+    if (ccy && !/^[A-Z]{3}$/.test(ccy)) return 'Sale currency must be a 3-letter code (e.g. NGN).'
+    if (tccy && !/^[A-Z]{3}$/.test(tccy)) return 'Paddle currency must be a 3-letter code (or blank to match sale).'
     return ''
   }
 
@@ -127,7 +127,7 @@ if (tccy && !/^[A-Z]{3}$/.test(tccy)) return 'Paddle currency must be a 3-letter
     }
 
     const v = validate()
-    
+
     if (v) {
       setError(v)
       return

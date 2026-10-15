@@ -60,6 +60,7 @@ function App() {
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/calls/:id" element={<CallDetailPage />} />
+        <Route path="/profile" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="/profile/:username" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="*" element={<Gate />} />
       </Routes>

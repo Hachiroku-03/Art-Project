@@ -10,6 +10,16 @@
 
 .form { display: flex; flex-direction: column; gap: 0.55rem; }
 
+.hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #666;
+  background: rgba(20, 18, 15, 0.04);
+  border: 1px solid rgba(20, 18, 15, 0.08);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+}
+
 /* multi-image grid */
 .thumbGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
 .thumb { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: #f4f2ee; border: 1px solid rgba(14,14,14,0.06); }

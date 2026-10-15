@@ -18,14 +18,16 @@ import { Lightbox } from '../components/Lightbox'
 import { fetchProfile, type ProfilePayload, type ProfilePost } from '../lib/profile'
 import { createDirect } from '../lib/chat'
 import { API } from '../lib/sales'
+import { getViewer } from '../lib/session'
 import styles from './ProfilePage.module.css'
 
 type Tab = 'works' | 'rooms' | 'collects'
 
 export function ProfilePage() {
-  const { username } = useParams()
+  const { username: routeUsername } = useParams<{ username?: string }>()
   const navigate = useNavigate()
-  const viewer = localStorage.getItem('space_user') || ''
+  const viewer = getViewer()
+  const targetUsername = routeUsername || viewer
 
   // ---- all hooks, top level, above any return ----
   const [data, setData] = useState<ProfilePayload | null>(null)
@@ -47,7 +49,12 @@ export function ProfilePage() {
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (!username) return
+    if (!targetUsername) {
+      setError('No profile selected.')
+      setLoading(false)
+      return
+    }
+
     if (!localStorage.getItem('space_token')) {
       navigate('/login', { replace: true })
       return
@@ -55,8 +62,10 @@ export function ProfilePage() {
 
     let alive = true
     setLoading(true)
+    setError('')
+    setData(null)
 
-    fetchProfile(username, viewer).then(res => {
+    fetchProfile(targetUsername, viewer).then(res => {
       if (!alive) return
 
       if ((res as { error?: string }).error) {
@@ -71,7 +80,7 @@ export function ProfilePage() {
     return () => {
       alive = false
     }
-  }, [username, viewer, navigate])
+  }, [targetUsername, viewer, navigate])
 
   const types = useMemo(
     () => (data ? Array.from(new Set(data.posts.map(p => p.type))) : []),

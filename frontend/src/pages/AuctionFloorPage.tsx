@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { fetchSales, formatMoney, normalizeAccessMode, type Sale } from '../lib/sales'
 import { getViewer } from '../lib/session'
 import { AccessBadge } from '../components/sales/AccessBadge'
-import { CountdownTimer } from '../components/sales/CountDownTimer'
+import { CountdownTimer } from '../components/sales/CountdownTimer'
 import styles from '../components/sales/sales.module.css'
 
 export function AuctionFloorPage() {
