@@ -208,85 +208,357 @@ def get_me(viewer: str = ""):
 
 @router.get("/stories")
 def list_stories(viewer: str = ""):
-    """Active (unexpired) stories, oldest-first within each user. Includes id for likes/comments."""
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, user_name, kind, body, created_at::text AS created_at
-        FROM stories WHERE expires_at > CURRENT_TIMESTAMP
-        ORDER BY user_name, created_at ASC
-    ''')
-    rows = cursor.fetchall(); conn.close()
-    return {"stories": rows}
+    """
+    Active stories, oldest-first within each user.
+    Includes avatar_url so the frontend can show profile pictures inside rings.
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                s.id,
+                s.user_name,
+                s.kind,
+                s.body,
+                s.created_at::text AS created_at,
+                p.avatar_url
+            FROM stories s
+            LEFT JOIN users u ON u.username = s.user_name
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE s.expires_at > CURRENT_TIMESTAMP
+            ORDER BY s.user_name, s.created_at ASC
+            """
+        )
+        rows = cursor.fetchall()
+        return {"stories": rows}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
 
 @router.get("/stories/followed")
 def followed_stories(viewer: str = ""):
-    """Stories from people the viewer follows + their own."""
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute('''
-        SELECT s.id, s.user_name, s.kind, s.body, s.created_at::text AS created_at
-        FROM stories s
-        WHERE s.expires_at > CURRENT_TIMESTAMP
-          AND (s.user_name = %s OR s.user_name IN (SELECT followee FROM follows WHERE follower = %s))
-        ORDER BY s.user_name, s.created_at ASC
-    ''', (viewer, viewer))
-    rows = cursor.fetchall(); conn.close()
-    return {"stories": rows}
+    """
+    Stories from people the viewer follows + their own stories.
+    This is what the feed should use.
+    """
+    viewer = str(viewer or "").strip()
+
+    if not viewer:
+        return {"stories": []}
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                s.id,
+                s.user_name,
+                s.kind,
+                s.body,
+                s.created_at::text AS created_at,
+                p.avatar_url
+            FROM stories s
+            LEFT JOIN users u ON u.username = s.user_name
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE s.expires_at > CURRENT_TIMESTAMP
+              AND (
+                  s.user_name = %s
+                  OR s.user_name IN (
+                      SELECT followee
+                      FROM follows
+                      WHERE follower = %s
+                  )
+              )
+            ORDER BY s.user_name, s.created_at ASC
+            """,
+            (viewer, viewer),
+        )
+        rows = cursor.fetchall()
+        return {"stories": rows}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
 
 @router.post("/stories")
 def add_story(data: dict):
-    viewer, kind, body = data.get("viewer", ""), data.get("kind", "image"), (data.get("body") or "").strip()
-    if not viewer or not body: return {"error": "viewer and body required"}
-    if kind not in ("image", "text"): return {"error": "invalid kind"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO stories (user_name, kind, body, expires_at) VALUES (%s, %s, %s, (CURRENT_DATE + INTERVAL '1 day')::timestamp) RETURNING id",
-        (viewer, kind, body))
-    sid = cursor.fetchone()["id"]; conn.commit(); conn.close()
-    return {"message": "status posted", "id": sid}
+    """
+    Create/append one story item.
 
-# ---- story interactions (require story_likes / story_comments tables — db.py step) ----
+    Image story:
+      { "viewer": "amanai", "kind": "image", "body": "https://..." }
+
+    Image story with caption:
+      {
+        "viewer": "amanai",
+        "kind": "image",
+        "body": "{\\"url\\":\\"https://...\\",\\"caption\\":\\"My caption\\"}"
+      }
+
+    Text story:
+      { "viewer": "amanai", "kind": "text", "body": "Just a thought" }
+    """
+    viewer = str(data.get("viewer") or "").strip()
+    kind = str(data.get("kind") or "image").strip()
+    body = str(data.get("body") or "").strip()
+
+    if not viewer:
+        return {"error": "viewer required"}
+    if not body:
+        return {"error": "body required"}
+    if kind not in ("image", "text"):
+        return {"error": "invalid kind"}
+
+    # Optional but important: reject ghost stories from unknown usernames.
+    if kind == "image" and body.startswith("{"):
+        try:
+            parsed = json.loads(body)
+            url = str(parsed.get("url") or "").strip()
+            if not url:
+                return {"error": "invalid image payload"}
+        except Exception:
+            return {"error": "invalid image payload"}
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT 1 FROM users WHERE username = %s", (viewer,))
+        if not cursor.fetchone():
+            return {"error": "unknown user"}
+
+        cursor.execute(
+            """
+            INSERT INTO stories (user_name, kind, body, expires_at)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP + interval '24 hours')
+            RETURNING id
+            """,
+            (viewer, kind, body),
+        )
+
+        sid = cursor.fetchone()["id"]
+        conn.commit()
+
+        return {
+            "message": "status posted",
+            "id": sid,
+            "user_name": viewer,
+            "kind": kind,
+            "body": body,
+        }
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ---- story interactions ----
 @router.get("/stories/{story_id}/likes")
 def get_story_likes(story_id: int, viewer: str = ""):
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) AS c FROM story_likes WHERE story_id = %s", (story_id,))
-    count = cursor.fetchone()["c"]
-    cursor.execute("SELECT 1 FROM story_likes WHERE story_id = %s AND user_name = %s", (story_id, viewer))
-    liked = cursor.fetchone() is not None
-    conn.close()
-    return {"count": count, "liked": liked}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*) AS c FROM story_likes WHERE story_id = %s",
+            (story_id,),
+        )
+        count = cursor.fetchone()["c"]
+
+        cursor.execute(
+            "SELECT 1 FROM story_likes WHERE story_id = %s AND user_name = %s",
+            (story_id, viewer),
+        )
+        liked = cursor.fetchone() is not None
+
+        return {"count": count, "liked": liked}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
 
 @router.post("/stories/{story_id}/like")
 def toggle_story_like(story_id: int, data: dict):
-    viewer = data.get("viewer", "")
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM story_likes WHERE story_id = %s AND user_name = %s", (story_id, viewer))
-    if cursor.fetchone():
-        cursor.execute("DELETE FROM story_likes WHERE story_id = %s AND user_name = %s", (story_id, viewer)); liked = False
-    else:
-        cursor.execute("INSERT INTO story_likes (story_id, user_name) VALUES (%s, %s)", (story_id, viewer)); liked = True
-    conn.commit()
-    cursor.execute("SELECT COUNT(*) AS c FROM story_likes WHERE story_id = %s", (story_id,))
-    count = cursor.fetchone()["c"]; conn.close()
-    return {"liked": liked, "count": count}
+    viewer = str(data.get("viewer") or "").strip()
+
+    if not viewer:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        # Find story owner.
+        cursor.execute(
+            "SELECT user_name FROM stories WHERE id = %s",
+            (story_id,),
+        )
+        story = cursor.fetchone()
+
+        if not story:
+            return {"error": "story not found"}
+
+        owner = str(story["user_name"] or "").strip().lower()
+        me = viewer.strip().lower()
+
+        if owner == me:
+            return {"error": "you cannot like your own story"}
+
+        cursor.execute(
+            "SELECT 1 FROM story_likes WHERE story_id = %s AND user_name = %s",
+            (story_id, viewer),
+        )
+
+        if cursor.fetchone():
+            cursor.execute(
+                "DELETE FROM story_likes WHERE story_id = %s AND user_name = %s",
+                (story_id, viewer),
+            )
+            liked = False
+        else:
+            cursor.execute(
+                "INSERT INTO story_likes (story_id, user_name) VALUES (%s, %s)",
+                (story_id, viewer),
+            )
+            liked = True
+
+        conn.commit()
+
+        cursor.execute(
+            "SELECT COUNT(*) AS c FROM story_likes WHERE story_id = %s",
+            (story_id,),
+        )
+        count = cursor.fetchone()["c"]
+
+        return {"liked": liked, "count": count}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
 
 @router.get("/stories/{story_id}/comments")
 def get_story_comments(story_id: int, viewer: str = ""):
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, user_name, body, created_at::text AS created_at
-        FROM story_comments WHERE story_id = %s ORDER BY created_at ASC
-    ''', (story_id,))
-    rows = cursor.fetchall(); conn.close()
-    return {"comments": rows}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_name, body, created_at::text AS created_at
+            FROM story_comments
+            WHERE story_id = %s
+            ORDER BY created_at ASC
+            """,
+            (story_id,),
+        )
+        rows = cursor.fetchall()
+        return {"comments": rows}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
 
 @router.post("/stories/{story_id}/comments")
 def add_story_comment(story_id: int, data: dict):
-    viewer = data.get("viewer", "")
-    body = data.get("body", "").strip()
-    if not viewer or not body: return {"error": "viewer and body required"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO story_comments (story_id, user_name, body) VALUES (%s, %s, %s) RETURNING id, user_name, body, created_at::text AS created_at",
-        (story_id, viewer, body))
-    row = cursor.fetchone(); conn.commit(); conn.close()
-    return {"comment": row}
+    viewer = str(data.get("viewer") or "").strip()
+    body = str(data.get("body") or "").strip()
+
+    if not viewer:
+        return {"error": "viewer required"}
+    if not body:
+        return {"error": "body required"}
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        # Find story owner.
+        cursor.execute(
+            "SELECT user_name FROM stories WHERE id = %s",
+            (story_id,),
+        )
+        story = cursor.fetchone()
+
+        if not story:
+            return {"error": "story not found"}
+
+        owner = str(story["user_name"] or "").strip().lower()
+        me = viewer.strip().lower()
+
+        if owner == me:
+            return {"error": "you cannot reply to your own story"}
+
+        cursor.execute(
+            """
+            INSERT INTO story_comments (story_id, user_name, body)
+            VALUES (%s, %s, %s)
+            RETURNING id, user_name, body, created_at::text AS created_at
+            """,
+            (story_id, viewer, body),
+        )
+
+        row = cursor.fetchone()
+        conn.commit()
+
+        return {"comment": row}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+@router.post("/stories/{story_id}/delete")
+def delete_story(story_id: int, data: dict):
+    """
+    Delete one story item.
+
+    Only the story owner can delete it.
+    story_likes and story_comments cascade-delete because their FKs use ON DELETE CASCADE.
+    """
+    viewer = str(data.get("viewer") or "").strip()
+
+    if not viewer:
+        return {"error": "viewer required"}
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT user_name FROM stories WHERE id = %s",
+            (story_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            return {"error": "story not found"}
+
+        if row["user_name"] != viewer:
+            return {"error": "not your story"}
+
+        cursor.execute(
+            "DELETE FROM stories WHERE id = %s",
+            (story_id,),
+        )
+
+        conn.commit()
+        return {"message": "story deleted", "id": story_id}
+
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()

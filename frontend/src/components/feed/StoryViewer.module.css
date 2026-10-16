@@ -1,17 +1,17 @@
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 400;
+  z-index: 1500;
   background: rgba(8, 7, 6, 0.94);
   backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1rem;
-  animation: fadeIn 0.18s ease;
+  animation: svFadeIn 0.18s ease;
 }
 
-@keyframes fadeIn {
+@keyframes svFadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
@@ -26,18 +26,25 @@
   display: flex;
   flex-direction: column;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
-  animation: riseIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: svRiseIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@keyframes riseIn {
-  from { opacity: 0; transform: translateY(12px) scale(0.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes svRiseIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @media (max-width: 600px) {
   .overlay {
     padding: 0;
   }
+
   .frame {
     width: 100%;
     height: 100dvh;
@@ -73,7 +80,7 @@
 
 .head {
   position: absolute;
-  top: 24px;
+  top: 22px;
   left: 12px;
   right: 12px;
   display: flex;
@@ -89,16 +96,26 @@
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.18);
   border: 1px solid rgba(255, 255, 255, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-family: var(--font-display, Georgia, serif);
   font-size: 0.95rem;
   flex-shrink: 0;
 }
 
+.userAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 50%;
+}
+
 .un {
-  font-family: var(--font-ui);
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui, system-ui, sans-serif);
   font-weight: 600;
   font-size: 0.9rem;
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
@@ -107,16 +124,37 @@
   white-space: nowrap;
 }
 
+.addBtn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff;
+  border-radius: 999px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  backdrop-filter: blur(8px);
+}
+
+.addBtn:hover {
+  background: rgba(0, 0, 0, 0.42);
+}
+
 .x {
-  margin-left: auto;
   background: none;
   border: none;
   color: #fff;
   cursor: pointer;
   display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0.35rem;
   border-radius: 50%;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
 
 .x:hover {
@@ -143,6 +181,27 @@
   display: block;
 }
 
+.caption {
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  bottom: 5.25rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  pointer-events: none;
+}
+
+.captionText {
+  margin: 0;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.35);
+}
+
 .textCard {
   width: 100%;
   height: 100%;
@@ -157,40 +216,11 @@
 
 .textCard p {
   margin: 0;
-  font-family: var(--font-label);
+  font-family: var(--font-label, Georgia, serif);
   font-style: italic;
   font-size: 1.35rem;
   line-height: 1.55;
   max-width: 32ch;
-}
-
-.head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.addBtn {
-  appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(0, 0, 0, 0.28);
-  color: #fff;
-  border-radius: 999px;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  margin-left: auto;
-  backdrop-filter: blur(8px);
-}
-
-.addBtn:hover {
-  background: rgba(0, 0, 0, 0.42);
-}
-
-.head .x {
-  margin-left: 0;
 }
 
 .pauseBadge {
@@ -202,7 +232,7 @@
   color: #fff;
   border-radius: 999px;
   padding: 0.35rem 0.8rem;
-  font-family: var(--font-ui);
+  font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -264,7 +294,7 @@
   flex-direction: column;
   gap: 0.1rem;
   color: #fff;
-  font-family: var(--font-ui);
+  font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 0.82rem;
   line-height: 1.35;
 }
@@ -293,7 +323,7 @@
   background: none;
   border: none;
   color: #fff;
-  font-family: var(--font-ui);
+  font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -308,11 +338,11 @@
 }
 
 .liked {
-  color: var(--vip);
+  color: #f59e0b;
 }
 
 .commentBtnOn {
-  color: var(--vip);
+  color: #f59e0b;
 }
 
 .commentForm {
@@ -331,7 +361,7 @@
   border-radius: 999px;
   padding: 0.55rem 0.9rem;
   color: #fff;
-  font-family: var(--font-ui);
+  font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 0.85rem;
   outline: none;
   backdrop-filter: blur(6px);
@@ -360,4 +390,66 @@
 .sendBtn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.deleteBtn {
+  appearance: none;
+  border: 1px solid rgba(255, 120, 120, 0.28);
+  background: rgba(80, 0, 0, 0.28);
+  color: #fff;
+  border-radius: 999px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  backdrop-filter: blur(8px);
+}
+
+.deleteBtn:hover {
+  background: rgba(139, 0, 0, 0.45);
+}
+
+.deleteBtn:disabled {
+  opacity: 0.45;
+  cursor: progress;
+}
+
+.countPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 52px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+  user-select: none;
+}
+
+.countPillStatic {
+  cursor: default;
+}
+
+.countPillButton {
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s, border-color 0.15s;
+}
+
+.countPillButton:hover {
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
+}
+
+.countPillOn {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #f59e0b;
 }

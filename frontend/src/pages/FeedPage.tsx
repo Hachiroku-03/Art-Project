@@ -11,7 +11,13 @@ import { ComposerModal } from '../components/feed/ComposerModal'
 import { SuggestionsRail } from '../components/feed/SuggestionsRail'
 import { ProgrammeRail } from '../components/feed/ProgrammeRail'
 import { PaddleCard } from '../components/feed/PaddleCard'
-import { fetchFollowedStories, type StoryUser } from '../lib/feed'
+import {
+  deleteStory,
+  fetchFollowedStories,
+  loadSeenStoryIds,
+  saveSeenStoryIds,
+  type StoryUser,
+} from '../lib/feed'
 import { translateMany } from '../lib/translate'
 import { getViewer } from '../lib/session'
 import styles from './FeedPage.module.css'
@@ -32,9 +38,38 @@ export function FeedPage() {
   const [query, setQuery] = useState('')
   const [openRail, setOpenRail] = useState<'none' | 'left' | 'right'>('none')
   const [stories, setStories] = useState<StoryUser[]>([])
-  const [seen, setSeen] = useState<Set<string>>(new Set())
+  const [seenStoryIds, setSeenStoryIds] = useState<Set<number>>(() => loadSeenStoryIds())
   const [openStory, setOpenStory] = useState<number | null>(null)
   const [composer, setComposer] = useState<null | 'work' | 'status'>(null)
+  const [viewerAvatarUrl, setViewerAvatarUrl] = useState<string | null>(null)
+
+  const reloadFeed = useCallback(async () => {
+    try {
+      const d = await fetch(`${FEED_API}/feed?viewer=${encodeURIComponent(viewer)}`).then(r => r.json())
+      const list: Post[] = d.feed || []
+      setPosts(list)
+      setError(d.error || '')
+
+      const texts = list.map(p => p.description).filter(Boolean) as string[]
+      if (texts.length) {
+        const t = await translateMany(texts, lang)
+        const map: Record<number, string> = {}
+        let i = 0
+        list.forEach(p => {
+          if (p.description) map[p.id] = t[i++]
+        })
+        setTranslations(map)
+      }
+    } catch {
+      setError('network error — is the feed server running?')
+    }
+  }, [viewer, lang])
+
+  const refreshStories = useCallback(async () => {
+    const s = await fetchFollowedStories(viewer)
+    setStories(s)
+    return s
+  }, [viewer])
 
   useEffect(() => {
     if (!localStorage.getItem('space_token')) {
@@ -53,6 +88,13 @@ export function FeedPage() {
         if (alive) setLang(language)
       } catch {
         /* default */
+      }
+
+      try {
+        const me = await fetch(`${FEED_API}/me?viewer=${encodeURIComponent(viewer)}`).then(r => r.json())
+        if (alive) setViewerAvatarUrl(me?.user?.avatar_url || null)
+      } catch {
+        /* ignore */
       }
 
       try {
@@ -77,38 +119,100 @@ export function FeedPage() {
         if (alive) setError('network error — is the feed server running?')
       }
 
+      fetchFollowedStories(viewer).then(s => {
+        if (alive) setStories(s)
+      })
+
       if (alive) setLoading(false)
     }
 
     load()
-
-    // Stories should only come from followed users + yourself.
-    fetchFollowedStories(viewer).then(s => {
-      if (alive) setStories(s)
-    })
 
     return () => {
       alive = false
     }
   }, [viewer, navigate])
 
+  useEffect(() => {
+    saveSeenStoryIds(seenStoryIds)
+  }, [seenStoryIds])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return posts
     return posts.filter(p =>
-      `${p.title} ${p.description} ${p.username} ${p.display_name || ''}`.toLowerCase().includes(q)
+      `${p.title} ${p.description} ${p.username} ${p.display_name || ''}`.toLowerCase().includes(q),
     )
   }, [posts, query])
 
-  // Stable identities so StoryViewer's deps don't churn on every re-render.
-  const markSeen = useCallback((u: string) => {
-    setSeen(prev => (prev.has(u) ? prev : new Set(prev).add(u)))
+  const markStorySeen = useCallback((storyId: number) => {
+    setSeenStoryIds(prev => {
+      if (prev.has(storyId)) return prev
+      const next = new Set(prev)
+      next.add(storyId)
+      return next
+    })
   }, [])
 
   const closeStory = useCallback(() => setOpenStory(null), [])
 
-  const refreshStories = useCallback(() => {
-    fetchFollowedStories(viewer).then(setStories)
+  const deleteStoryItem = useCallback(
+    async (userId: string, storyId: number) => {
+      const res = await deleteStory(storyId, viewer)
+
+      if (res?.error) {
+        setError(res.error)
+        throw new Error(res.error)
+      }
+
+      setStories(prev =>
+        prev
+          .map(u =>
+            u.username === userId
+              ? {
+                  ...u,
+                  items: u.items.filter(item => item.id !== storyId),
+                }
+              : u,
+          )
+          .filter(u => u.items.length > 0),
+      )
+
+      setSeenStoryIds(prev => {
+        const next = new Set(prev)
+        next.delete(storyId)
+        return next
+      })
+    },
+    [viewer],
+  )
+
+  const openStoryIndex = useCallback(
+    (i: number) => {
+      if (i < 0) {
+        setComposer('status')
+        return
+      }
+
+      const user = stories[i]
+
+      if (!user || !user.items.length) {
+        setComposer('status')
+        return
+      }
+
+      setOpenStory(i)
+    },
+    [stories],
+  )
+
+  const startStoryComposer = useCallback(() => {
+    if (!viewer) {
+      setError('No signed-in user detected. Log out and log back in.')
+      return
+    }
+
+    setComposer('status')
   }, [viewer])
 
   const hasExistingStory = useMemo(
@@ -129,7 +233,6 @@ export function FeedPage() {
     <main className={styles.layout}>
       <Navbar />
       <div className={styles.shell}>
-
         <div className={styles.topRow}>
           <div className={styles.searchWrap}>
             <Search size={15} className={styles.sIcon} />
@@ -156,9 +259,10 @@ export function FeedPage() {
           <StoriesStrip
             storyUsers={stories}
             viewer={viewer}
-            seen={seen}
-            onOpen={i => setOpenStory(i)}
-            onAdd={() => setComposer('status')}
+            viewerAvatarUrl={viewerAvatarUrl}
+            seenStoryIds={seenStoryIds}
+            onOpen={openStoryIndex}
+            onAdd={startStoryComposer}
           />
         </ErrorBoundary>
 
@@ -222,18 +326,37 @@ export function FeedPage() {
       </div>
 
       {openStory !== null && stories[openStory] && (
-        <ErrorBoundary fallback={null}>
+        <ErrorBoundary
+          fallback={
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                zIndex: 1600,
+                background: '#0b0a09',
+                color: '#fff',
+                display: 'grid',
+                placeItems: 'center',
+                padding: '1rem',
+                textAlign: 'center',
+              }}
+            >
+              Story viewer failed to open. Check the browser console for the real error.
+            </div>
+          }
+        >
           <StoryViewer
             key={openStory}
             users={stories}
             startIndex={openStory}
             onClose={closeStory}
-            onSeen={markSeen}
+            onSeenItem={markStorySeen}
             viewer={viewer}
             onAdd={() => {
               setOpenStory(null)
               setComposer('status')
             }}
+            onDeleteItem={deleteStoryItem}
           />
         </ErrorBoundary>
       )}
@@ -244,17 +367,28 @@ export function FeedPage() {
           viewer={viewer}
           hasExistingStory={hasExistingStory}
           onClose={() => setComposer(null)}
-          onDone={() => {
+          onDone={async () => {
             const wasStatus = composer === 'status'
             setComposer(null)
 
             if (wasStatus) {
-              refreshStories()
+              const s = await refreshStories()
+
+              console.log('[stories] refreshed after post', {
+                viewer,
+                totalUsers: s.length,
+                stories: s,
+              })
+
+              const idx = s.findIndex(u => u.username === viewer && u.items.length > 0)
+
+              if (idx >= 0) {
+                setOpenStory(idx)
+              } else {
+                setError('Story was posted, but it did not appear in your followed stories feed.')
+              }
             } else {
-              fetch(`${FEED_API}/feed?viewer=${encodeURIComponent(viewer)}`)
-                .then(r => r.json())
-                .then(d => setPosts(d.feed || []))
-                .catch(() => {})
+              await reloadFeed()
             }
           }}
         />

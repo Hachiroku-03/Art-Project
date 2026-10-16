@@ -2,91 +2,12 @@
   display: flex;
   gap: 0.85rem;
   overflow-x: auto;
-  padding: 0.3rem 0.1rem 0.9rem;
+  padding: 0.25rem 0 0.9rem;
   scrollbar-width: none;
 }
 
 .strip::-webkit-scrollbar {
   display: none;
-}
-
-.item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  flex-shrink: 0;
-  width: 64px;
-}
-
-.ring {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  padding: 2.5px;
-  background: linear-gradient(135deg, var(--vip), #d98c5f, var(--err));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.15s;
-}
-
-.item:hover .ring {
-  transform: scale(1.05);
-}
-
-.ringNew {
-  background: linear-gradient(135deg, var(--vip), #d98c5f, var(--err));
-}
-
-.ringSeen {
-  background: rgba(14, 14, 14, 0.16);
-}
-
-.ringEmpty {
-  background: rgba(14, 14, 14, 0.1);
-}
-
-.ava {
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: var(--paper);
-  border: 2px solid var(--paper);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
-  font-size: 1.1rem;
-  color: var(--ink);
-}
-
-.plus {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--ink);
-  color: var(--wall);
-  border: 2px solid var(--paper);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.name {
-  font-size: 0.62rem;
-  color: var(--ink-soft);
-  max-width: 64px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .item {
@@ -100,7 +21,7 @@
   flex-direction: column;
   align-items: center;
   gap: 0.35rem;
-  min-width: 74px;
+  min-width: 76px;
   flex: 0 0 auto;
 }
 
@@ -118,15 +39,93 @@
   padding: 0;
 }
 
+.ring {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  background: rgba(20, 18, 15, 0.12);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ringButton:hover .ring,
+.item:hover .ring {
+  transform: translateY(-1px);
+}
+
+/*
+  Unseen story gradient:
+  violet → cyan → amber → pink → violet
+*/
+.ringNew {
+  background: conic-gradient(
+    from 180deg,
+    #8b5cf6,
+    #22d3ee,
+    #f59e0b,
+    #ec4899,
+    #8b5cf6
+  );
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.ringSeen {
+  background: rgba(20, 18, 15, 0.18);
+}
+
+.ringEmpty {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.ringEmpty .ava {
+  border: 2px dashed rgba(20, 18, 15, 0.18);
+  background: #fff;
+}
+
+.ava {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: #fff;
+  border: 2px solid #fff;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-weight: 800;
+  color: #15121a;
+  font-size: 1.05rem;
+}
+
+.avatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.name {
+  font-size: 0.72rem;
+  color: #5f5a55;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .addAction {
   appearance: none;
   border: 1px solid rgba(20, 18, 15, 0.12);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.78);
   color: #15121a;
   border-radius: 999px;
-  padding: 0.22rem 0.48rem;
+  padding: 0.22rem 0.5rem;
   font-size: 0.68rem;
-  font-weight: 800;
+  font-weight: 850;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   display: inline-flex;
