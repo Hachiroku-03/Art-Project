@@ -7,6 +7,7 @@ import {
   type AccessMode,
   type Sale,
 } from '../../lib/sales'
+import { ImageUploadField } from './ImageUploadField'
 import styles from './control.module.css'
 
 type FormState = {
@@ -87,16 +88,28 @@ export function SaleForm({
 
   const validate = (): string => {
     if (!form.title.trim()) return 'Title is required.'
+
     const price = Number(form.ticket_price)
     if (!Number.isFinite(price) || price < 0) return 'Paddle price must be a number ≥ 0.'
+
     if (form.ticket_capacity !== '') {
       const cap = Number(form.ticket_capacity)
-      if (!Number.isInteger(cap) || cap <= 0) return 'Capacity must be a whole number > 0 (or blank for unlimited).'
+      if (!Number.isInteger(cap) || cap <= 0) {
+        return 'Capacity must be a whole number > 0 (or blank for unlimited).'
+      }
     }
+
     const ccy = form.currency.trim().toUpperCase()
     const tccy = form.ticket_currency.trim().toUpperCase()
-    if (ccy && !/^[A-Z]{3}$/.test(ccy)) return 'Sale currency must be a 3-letter code (e.g. NGN).'
-    if (tccy && !/^[A-Z]{3}$/.test(tccy)) return 'Paddle currency must be a 3-letter code (or blank to match sale).'
+
+    if (ccy && !/^[A-Z]{3}$/.test(ccy)) {
+      return 'Sale currency must be a 3-letter code (e.g. NGN).'
+    }
+
+    if (tccy && !/^[A-Z]{3}$/.test(tccy)) {
+      return 'Paddle currency must be a 3-letter code (or blank to match sale).'
+    }
+
     return ''
   }
 
@@ -122,7 +135,9 @@ export function SaleForm({
 
   const submit = async () => {
     if (!viewer) {
-      setError('No signed-in house detected. Sign in again, or make login calls setViewer(data.username).')
+      setError(
+        'No signed-in house detected. Sign in again, or make login calls setViewer(data.username).',
+      )
       return
     }
 
@@ -138,12 +153,19 @@ export function SaleForm({
 
     if (mode === 'create') {
       // poster + stream are accepted in the create body (after the backend fix)
-      const r = await createSale(viewer, { ...corePayload(), stream_type: form.stream_type || 'external', stream_url: form.stream_url })
+      const r = await createSale(viewer, {
+        ...corePayload(),
+        stream_type: form.stream_type || 'external',
+        stream_url: form.stream_url,
+      })
+
       setBusy(false)
+
       if (r.error) {
         setError(r.error)
         return
       }
+
       onSaved()
       onClose()
       return
@@ -157,6 +179,7 @@ export function SaleForm({
     }
 
     const up = await updateSale(initial.id, viewer, corePayload())
+
     if (up.error) {
       setBusy(false)
       setError(up.error)
@@ -164,27 +187,41 @@ export function SaleForm({
     }
 
     const st = await setStream(initial.id, viewer, streamPayload())
+
     setBusy(false)
     onSaved() // core change is persisted regardless; refresh the list
+
     if (st.error) {
       // stream failed but core saved — keep the modal open so the house sees why
       setError(st.error)
       return
     }
+
     onClose()
   }
 
   const ended = initial?.status === 'ended'
+  const readOnly = busy || ended
 
   return (
     <div className={styles.formOverlay} onMouseDown={onClose}>
       <div className={styles.formCard} onMouseDown={e => e.stopPropagation()}>
         <div className={styles.formHead}>
           <div>
-            <h2 className={styles.formTitle}>{mode === 'create' ? 'New sale' : 'Edit sale'}</h2>
-            {initial ? <div className={styles.hint}>Sale #{initial.id} · {initial.status}</div> : null}
+            <h2 className={styles.formTitle}>
+              {mode === 'create' ? 'New sale' : 'Edit sale'}
+            </h2>
+
+            {initial ? (
+              <div className={styles.hint}>
+                Sale #{initial.id} · {initial.status}
+              </div>
+            ) : null}
           </div>
-          <button className={styles.iconBtn} onClick={onClose} aria-label="Close">×</button>
+
+          <button className={styles.iconBtn} onClick={onClose} aria-label="Close">
+            ×
+          </button>
         </div>
 
         {ended ? (
@@ -196,27 +233,50 @@ export function SaleForm({
         <div className={styles.formGrid}>
           <label className={`${styles.field} ${styles.fieldFull}`}>
             <span className={styles.label}>Title</span>
-            <input className={styles.input} value={form.title} onChange={e => set('title', e.target.value)} placeholder="Harmattan Sale — Evening Session" />
+            <input
+              className={styles.input}
+              value={form.title}
+              onChange={e => set('title', e.target.value)}
+              placeholder="Harmattan Sale — Evening Session"
+              disabled={readOnly}
+            />
           </label>
 
           <label className={`${styles.field} ${styles.fieldFull}`}>
             <span className={styles.label}>Description</span>
-            <textarea className={styles.textarea} value={form.description} onChange={e => set('description', e.target.value)} placeholder="What this session is about." />
+            <textarea
+              className={styles.textarea}
+              value={form.description}
+              onChange={e => set('description', e.target.value)}
+              placeholder="What this session is about."
+              disabled={readOnly}
+            />
           </label>
 
-          <label className={`${styles.field} ${styles.fieldFull}`}>
-            <span className={styles.label}>Poster image URL</span>
-            <input className={styles.input} value={form.image_url} onChange={e => set('image_url', e.target.value)} placeholder="https://…" />
-            <span className={styles.hint}>Shown on the floor card and the ticket-page hero.</span>
-          </label>
+          <div className={`${styles.field} ${styles.fieldFull}`}>
+            <ImageUploadField
+              label="Poster image"
+              hint="Upload from your device, or paste an image URL. Shown on the floor card and the ticket-page hero."
+              value={form.image_url}
+              onChange={url => set('image_url', url)}
+              disabled={readOnly}
+              aspect="16 / 9"
+            />
+          </div>
         </div>
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Access &amp; pricing</legend>
+
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Access mode</span>
-              <select className={styles.select} value={form.tier} onChange={e => set('tier', e.target.value as AccessMode)}>
+              <select
+                className={styles.select}
+                value={form.tier}
+                onChange={e => set('tier', e.target.value as AccessMode)}
+                disabled={readOnly}
+              >
                 <option value="open">Open — anyone can claim a paddle</option>
                 <option value="vip">VIP — active VIP members only</option>
                 <option value="invite">Invite — house-issued paddles only</option>
@@ -225,24 +285,53 @@ export function SaleForm({
 
             <label className={styles.field}>
               <span className={styles.label}>Paddle price</span>
-              <input className={styles.input} value={form.ticket_price} onChange={e => set('ticket_price', e.target.value)} inputMode="decimal" />
+              <input
+                className={styles.input}
+                value={form.ticket_price}
+                onChange={e => set('ticket_price', e.target.value)}
+                inputMode="decimal"
+                disabled={readOnly}
+              />
             </label>
 
             <label className={styles.field}>
               <span className={styles.label}>Sale currency</span>
-              <input className={styles.input} value={form.currency} onChange={e => set('currency', e.target.value)} placeholder="NGN" maxLength={3} />
+              <input
+                className={styles.input}
+                value={form.currency}
+                onChange={e => set('currency', e.target.value)}
+                placeholder="NGN"
+                maxLength={3}
+                disabled={readOnly}
+              />
               <span className={styles.hint}>ISO code. Lots are priced in this currency.</span>
             </label>
 
             <label className={styles.field}>
               <span className={styles.label}>Paddle currency</span>
-              <input className={styles.input} value={form.ticket_currency} onChange={e => set('ticket_currency', e.target.value)} placeholder="same as sale" maxLength={3} />
-              <span className={styles.hint}>Blank = charge the paddle fee in the sale currency.</span>
+              <input
+                className={styles.input}
+                value={form.ticket_currency}
+                onChange={e => set('ticket_currency', e.target.value)}
+                placeholder="same as sale"
+                maxLength={3}
+                disabled={readOnly}
+              />
+              <span className={styles.hint}>
+                Blank = charge the paddle fee in the sale currency.
+              </span>
             </label>
 
             <label className={styles.field}>
               <span className={styles.label}>Capacity</span>
-              <input className={styles.input} value={form.ticket_capacity} onChange={e => set('ticket_capacity', e.target.value)} inputMode="numeric" placeholder="unlimited" />
+              <input
+                className={styles.input}
+                value={form.ticket_capacity}
+                onChange={e => set('ticket_capacity', e.target.value)}
+                inputMode="numeric"
+                placeholder="unlimited"
+                disabled={readOnly}
+              />
               <span className={styles.hint}>Max paddles. Blank = unlimited.</span>
             </label>
           </div>
@@ -250,14 +339,28 @@ export function SaleForm({
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Schedule</legend>
+
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Starts at</span>
-              <input className={styles.input} type="datetime-local" value={form.starts_at} onChange={e => set('starts_at', e.target.value)} />
+              <input
+                className={styles.input}
+                type="datetime-local"
+                value={form.starts_at}
+                onChange={e => set('starts_at', e.target.value)}
+                disabled={readOnly}
+              />
             </label>
+
             <label className={styles.field}>
               <span className={styles.label}>Ends at</span>
-              <input className={styles.input} type="datetime-local" value={form.ends_at} onChange={e => set('ends_at', e.target.value)} />
+              <input
+                className={styles.input}
+                type="datetime-local"
+                value={form.ends_at}
+                onChange={e => set('ends_at', e.target.value)}
+                disabled={readOnly}
+              />
               <span className={styles.hint}>Drives the live “ends in…” countdown.</span>
             </label>
           </div>
@@ -265,25 +368,43 @@ export function SaleForm({
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Broadcast</legend>
+
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Stream type</span>
-              <select className={styles.select} value={form.stream_type} onChange={e => set('stream_type', e.target.value)}>
+              <select
+                className={styles.select}
+                value={form.stream_type}
+                onChange={e => set('stream_type', e.target.value)}
+                disabled={readOnly}
+              >
                 <option value="external">External (YouTube / Twitch / Zoom)</option>
               </select>
               <span className={styles.hint}>In-app video is deferred; external embed only.</span>
             </label>
+
             <label className={`${styles.field} ${styles.fieldFull}`}>
               <span className={styles.label}>Stream URL</span>
-              <input className={styles.input} value={form.stream_url} onChange={e => set('stream_url', e.target.value)} placeholder="https://youtu.be/…" />
+              <input
+                className={styles.input}
+                value={form.stream_url}
+                onChange={e => set('stream_url', e.target.value)}
+                placeholder="https://youtu.be/…"
+                disabled={readOnly}
+              />
             </label>
           </div>
         </fieldset>
 
         <div className={styles.formActions}>
-          <button className={`${styles.linkButton} ${styles.primaryLink}`} onClick={() => void submit()} disabled={busy || ended}>
+          <button
+            className={`${styles.linkButton} ${styles.primaryLink}`}
+            onClick={() => void submit()}
+            disabled={readOnly}
+          >
             {busy ? 'Saving…' : mode === 'create' ? 'Create sale' : 'Save changes'}
           </button>
+
           <button className={styles.linkButton} onClick={onClose} disabled={busy}>
             Cancel
           </button>

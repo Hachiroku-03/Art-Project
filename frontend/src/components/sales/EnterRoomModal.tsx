@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { enterSale } from '../../lib/sales'
 import styles from './sales.module.css'
 
@@ -6,23 +6,33 @@ export function EnterRoomModal({
   open,
   saleId,
   viewer,
+  initialCode = '',
   onClose,
   onEntered,
 }: {
   open: boolean
   saleId: number
   viewer: string
+  initialCode?: string
   onClose: () => void
   onEntered: () => void
 }) {
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(initialCode)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setCode(initialCode)
+      setError('')
+    }
+  }, [open, initialCode])
 
   if (!open) return null
 
   const submit = async () => {
     const trimmed = code.trim()
+
     if (!trimmed) {
       setError('Enter your paddle code.')
       return
@@ -70,7 +80,11 @@ export function EnterRoomModal({
             {busy ? 'Checking…' : 'Enter room'}
           </button>
 
-          <button className={`${styles.button} ${styles.secondary}`} onClick={onClose} disabled={busy}>
+          <button
+            className={`${styles.button} ${styles.secondary}`}
+            onClick={onClose}
+            disabled={busy}
+          >
             Cancel
           </button>
         </div>

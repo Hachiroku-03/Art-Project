@@ -39,6 +39,10 @@ ACCESS_ALIASES = {                                   # accept the drifted spelli
 DEFAULT_CCY = "NGN"
 DEFAULT_CURRENCY = DEFAULT_CCY    # compatibility alias, safe if anything references it
 
+# How long an ended sale remains visible on the public auction floor.
+# The house/control room still sees all their sales forever via /my_sales.
+ENDED_FLOOR_RETENTION_HOURS = 72  # 3 days
+
 
 def _ccy(value, default=DEFAULT_CCY):
     c = (str(value or default)).strip().upper()
@@ -207,10 +211,19 @@ def my_sales(viewer: str = ""):
                 a.ticket_capacity,
                 a.starts_at::text AS starts_at,
                 a.ends_at::text AS ends_at,
+                a.ended_at::text AS ended_at,
                 a.settled_at::text AS settled_at,
                 a.payout_status,
                 (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count,
-                (SELECT COUNT(*) FROM tickets t WHERE t.auction_id = a.id) AS tickets_sold
+                (SELECT COUNT(*) FROM tickets t WHERE t.auction_id = a.id) AS tickets_sold,
+                CASE
+                    WHEN a.ticket_capacity IS NULL THEN NULL
+                    ELSE GREATEST(a.ticket_capacity - (
+                        SELECT COUNT(*)
+                        FROM tickets t2
+                        WHERE t2.auction_id = a.id
+                    ), 0)
+                END AS tickets_remaining
             FROM auctions a
             WHERE a.host_username = %s
             ORDER BY a.created_at DESC
@@ -230,6 +243,13 @@ def my_sales(viewer: str = ""):
 
 @router.get("/sales")
 def list_sales(viewer: str = ""):
+    """
+    Public auction floor.
+
+    Ended sales remain visible for ENDED_FLOOR_RETENTION_HOURS after they end,
+    then disappear from the public floor. The house still sees all their own
+    sales through /my_sales.
+    """
     conn = None
     try:
         conn = get_db()
@@ -237,30 +257,74 @@ def list_sales(viewer: str = ""):
 
         cursor.execute(
             """
-            SELECT a.id, a.host_username, a.title, a.description, a.image_url,
-                   a.tier, a.status,
-                   a.starts_at::text AS starts_at,
-                   a.ends_at::text AS ends_at,
-                   a.ticket_price::text AS ticket_price,
-                   a.ticket_currency,
-                   a.currency,
-                   a.ticket_capacity,
-                   (SELECT COUNT(*) FROM tickets t WHERE t.auction_id = a.id) AS tickets_sold,
-                   (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count
+            SELECT
+                a.id,
+                a.host_username,
+                a.title,
+                a.description,
+                a.image_url,
+                a.tier,
+                a.status,
+                a.starts_at::text AS starts_at,
+                a.ends_at::text AS ends_at,
+                a.ended_at::text AS ended_at,
+                a.ticket_price::text AS ticket_price,
+                a.ticket_currency,
+                a.currency,
+                a.ticket_capacity,
+                (
+                    SELECT COUNT(*)
+                    FROM tickets t
+                    WHERE t.auction_id = a.id
+                ) AS tickets_sold,
+                (
+                    SELECT COUNT(*)
+                    FROM lots l
+                    WHERE l.sale_id = a.id
+                ) AS lot_count,
+                CASE
+                    WHEN a.ticket_capacity IS NULL THEN NULL
+                    ELSE GREATEST(a.ticket_capacity - (
+                        SELECT COUNT(*)
+                        FROM tickets t2
+                        WHERE t2.auction_id = a.id
+                    ), 0)
+                END AS tickets_remaining
             FROM auctions a
-            WHERE a.status IN ('upcoming', 'live', 'ended')
-            ORDER BY a.created_at DESC
-            """
+            WHERE
+                a.status IN ('upcoming', 'live')
+                OR (
+                    a.status = 'ended'
+                    AND COALESCE(a.ended_at, a.ends_at, a.created_at) >
+                        CURRENT_TIMESTAMP - make_interval(hours => %s)
+                )
+            ORDER BY
+                CASE
+                    WHEN a.status = 'live' THEN 0
+                    WHEN a.status = 'upcoming' THEN 1
+                    ELSE 2
+                END,
+                COALESCE(a.ended_at, a.ends_at, a.created_at) DESC
+            """,
+            (ENDED_FLOOR_RETENTION_HOURS,),
         )
 
         rows = cursor.fetchall()
         out = []
+
         for s in rows:
             acc = auction_access(cursor, s, viewer)
             if acc["visible"]:
-                out.append({**s, **acc})
+                out.append(
+                    {
+                        **s,
+                        "access_mode": s.get("tier"),
+                        **acc,
+                    }
+                )
 
         return {"sales": out}
+
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -297,9 +361,112 @@ def set_stream(sale_id: int, data: dict):
         )
         conn.commit()
         return {"message": "stream updated"}
+
     except Exception as e:
         if conn:
             conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/sales/{sale_id}/paddles")
+def list_paddles(sale_id: int, viewer: str = ""):
+    """
+    Host-only paddle holder list.
+
+    Returns tickets for this sale with:
+      - username
+      - display name / avatar if available
+      - source: purchased | invited | complimentary | void
+      - masked code
+      - won lots count
+      - won total
+
+    The full paddle code is intentionally not returned here.
+    The house receives the full code only at invite time.
+    """
+    conn = None
+    try:
+        host = str(viewer or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT host_username, status, ticket_capacity
+            FROM auctions
+            WHERE id = %s
+            """,
+            (sale_id,),
+        )
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found"}
+
+        if sale["host_username"] != host:
+            return {"error": "not your sale"}
+
+        cursor.execute(
+            """
+            SELECT
+                t.id,
+                t.user_name,
+                t.source,
+                t.code,
+                t.purchased_at::text AS purchased_at,
+                u.role,
+                u.tier,
+                p.display_name,
+                p.avatar_url,
+                (
+                    SELECT COUNT(*)
+                    FROM lots l
+                    WHERE l.sale_id = %s
+                      AND l.status = 'sold'
+                      AND l.winner_username = t.user_name
+                ) AS won_lots,
+                (
+                    SELECT COALESCE(SUM(l.sold_price), 0)::text
+                    FROM lots l
+                    WHERE l.sale_id = %s
+                      AND l.status = 'sold'
+                      AND l.winner_username = t.user_name
+                ) AS won_total
+            FROM tickets t
+            LEFT JOIN users u ON u.username = t.user_name
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE t.auction_id = %s
+            ORDER BY t.purchased_at DESC
+            """,
+            (sale_id, sale_id, sale_id),
+        )
+
+        rows = cursor.fetchall()
+        out = []
+
+        for r in rows:
+            d = dict(r)
+
+            # Never expose the full paddle code in the host list.
+            code = d.pop("code", None)
+            d["code_masked"] = f"••••{str(code)[-4:]}" if code else None
+
+            out.append(d)
+
+        return {
+            "paddles": out,
+            "capacity": sale["ticket_capacity"],
+            "sold": len(out),
+            "status": sale["status"],
+        }
+
+    except Exception as e:
         return {"error": str(e)}
     finally:
         if conn:
@@ -396,6 +563,7 @@ def update_sale(sale_id: int, data: dict):
 
         conn.commit()
         return {"message": "sale updated"}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -510,7 +678,7 @@ def add_lot(sale_id: int, data: dict):
                 position,
                 title,
                 str(data.get("description") or ""),
-                str(data.get("image_url") or ""),
+                data.get("image_url") or None,
                 starting_price or 0.0,
                 reserve,
                 estimate_low,
@@ -543,6 +711,258 @@ def add_lot(sale_id: int, data: dict):
         if conn:
             conn.close()
 
+
+@router.patch("/lots/{lot_id}")
+def update_lot(lot_id: int, data: dict):
+    """
+    Host-only lot editor.
+
+    Rules:
+      - sealed lot: all fields editable
+      - on_block lot: only presentation fields editable
+      - sold/passed lot: immutable
+      - ended sale: immutable
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                l.id,
+                l.sale_id,
+                l.status AS lot_status,
+                l.starting_price,
+                l.reserve,
+                l.estimate_low,
+                l.estimate_high,
+                l.currency,
+                a.host_username,
+                a.status AS sale_status,
+                a.currency AS sale_currency
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.id = %s
+            """,
+            (lot_id,),
+        )
+        lot = cursor.fetchone()
+
+        if not lot:
+            return {"error": "lot not found"}
+        if lot["host_username"] != host:
+            return {"error": "not your sale"}
+        if lot["sale_status"] == "ended":
+            return {"error": "sale has ended"}
+        if lot["lot_status"] in ("sold", "passed"):
+            return {"error": "this lot is finalized and cannot be edited"}
+
+        sets, params = [], []
+
+        def parse_money(key: str):
+            raw = data.get(key)
+
+            if raw is None or raw == "":
+                return None, None
+
+            try:
+                value = round(float(raw), 2)
+            except (TypeError, ValueError):
+                return None, f"invalid {key}"
+
+            if value < 0:
+                return None, f"{key} cannot be negative"
+
+            return value, None
+
+        if "title" in data:
+            title = str(data.get("title") or "").strip()
+            if not title:
+                return {"error": "title cannot be empty"}
+            sets.append("title = %s")
+            params.append(title)
+
+        if "description" in data:
+            sets.append("description = %s")
+            params.append(str(data.get("description") or ""))
+
+        if "image_url" in data:
+            sets.append("image_url = %s")
+            params.append(data.get("image_url") or None)
+
+        if lot["lot_status"] == "on_block":
+            forbidden = {"starting_price", "reserve", "currency", "position"}
+            for key in forbidden:
+                if key in data:
+                    return {"error": f"{key} cannot be changed once the lot is on the block"}
+
+        if "starting_price" in data:
+            value, err = parse_money("starting_price")
+            if err:
+                return {"error": err}
+            sets.append("starting_price = %s")
+            params.append(value if value is not None else 0.0)
+
+        if "reserve" in data:
+            value, err = parse_money("reserve")
+            if err:
+                return {"error": err}
+            sets.append("reserve = %s")
+            params.append(value)
+
+        if "estimate_low" in data:
+            value, err = parse_money("estimate_low")
+            if err:
+                return {"error": err}
+            sets.append("estimate_low = %s")
+            params.append(value)
+
+        if "estimate_high" in data:
+            value, err = parse_money("estimate_high")
+            if err:
+                return {"error": err}
+            sets.append("estimate_high = %s")
+            params.append(value)
+
+        if "currency" in data:
+            sale_currency = str(lot.get("sale_currency") or "NGN").strip().upper() or "NGN"
+            lot_currency = str(data.get("currency") or sale_currency).strip().upper() or sale_currency
+            if len(lot_currency) != 3 or not lot_currency.isalpha():
+                lot_currency = sale_currency
+            sets.append("currency = %s")
+            params.append(lot_currency)
+
+        # Validate estimate range using incoming values if present, else existing.
+        incoming_low = data.get("estimate_low", lot.get("estimate_low"))
+        incoming_high = data.get("estimate_high", lot.get("estimate_high"))
+
+        low_val, low_err = (
+            parse_money("estimate_low") if "estimate_low" in data else (lot.get("estimate_low"), None)
+        )
+        high_val, high_err = (
+            parse_money("estimate_high") if "estimate_high" in data else (lot.get("estimate_high"), None)
+        )
+
+        if low_err:
+            return {"error": low_err}
+        if high_err:
+            return {"error": high_err}
+
+        if low_val is not None and high_val is not None and high_val < low_val:
+            return {"error": "estimate_high cannot be lower than estimate_low"}
+
+        if not sets:
+            return {"error": "nothing to update"}
+
+        params.append(lot_id)
+        cursor.execute(
+            f"UPDATE lots SET {', '.join(sets)} WHERE id = %s RETURNING id, position, title, status, currency",
+            tuple(params),
+        )
+
+        updated = cursor.fetchone()
+        conn.commit()
+
+        return {"lot": dict(updated) if updated else None, "message": "lot updated"}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/lots/{lot_id}/delete")
+def delete_lot(lot_id: int, data: dict):
+    """
+    Host-only lot deletion.
+
+    Allowed only while:
+      - sale is upcoming
+      - lot is sealed
+      - lot has no bids
+
+    Remaining lot positions are renumbered after deletion.
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                l.id,
+                l.sale_id,
+                l.status AS lot_status,
+                a.host_username,
+                a.status AS sale_status
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.id = %s
+            """,
+            (lot_id,),
+        )
+        lot = cursor.fetchone()
+
+        if not lot:
+            return {"error": "lot not found"}
+        if lot["host_username"] != host:
+            return {"error": "not your sale"}
+        if lot["sale_status"] != "upcoming":
+            return {"error": "lots can only be deleted before the sale goes live"}
+        if lot["lot_status"] != "sealed":
+            return {"error": "only sealed lots can be deleted"}
+
+        cursor.execute(
+            "SELECT 1 FROM lot_bids WHERE lot_id = %s LIMIT 1",
+            (lot_id,),
+        )
+        if cursor.fetchone():
+            return {"error": "this lot already has bids and cannot be deleted"}
+
+        cursor.execute("DELETE FROM lots WHERE id = %s", (lot_id,))
+
+        # Renumber remaining lots so the catalogue stays sequential.
+        cursor.execute(
+            """
+            WITH ranked AS (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY position) AS rn
+                FROM lots
+                WHERE sale_id = %s
+            )
+            UPDATE lots l
+            SET position = r.rn
+            FROM ranked r
+            WHERE l.id = r.id
+            """,
+            (lot["sale_id"],),
+        )
+
+        conn.commit()
+        return {"message": "lot deleted", "lot_id": lot_id}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
 @router.get("/sales/{sale_id}")
 def get_sale(sale_id: int, viewer: str = "", code: str = ""):
     conn = None
@@ -552,18 +972,41 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
 
         cursor.execute(
             """
-            SELECT id, host_username, title, description, image_url, tier, status,
-                   starts_at::text AS starts_at,
-                   ends_at::text AS ends_at,
-                   ticket_price::text AS ticket_price,
-                   ticket_currency,
-                   currency,
-                   ticket_capacity,
-                   payout_status,
-                   settled_at::text AS settled_at,
-                   stream_type, stream_url, stream_peer_id
-            FROM auctions
-            WHERE id = %s
+            SELECT
+                a.id,
+                a.host_username,
+                a.title,
+                a.description,
+                a.image_url,
+                a.tier,
+                a.status,
+                a.starts_at::text AS starts_at,
+                a.ends_at::text AS ends_at,
+                a.ended_at::text AS ended_at,
+                a.ticket_price::text AS ticket_price,
+                a.ticket_currency,
+                a.currency,
+                a.ticket_capacity,
+                a.payout_status,
+                a.settled_at::text AS settled_at,
+                a.stream_type,
+                a.stream_url,
+                a.stream_peer_id,
+                (
+                    SELECT COUNT(*)
+                    FROM tickets t
+                    WHERE t.auction_id = a.id
+                ) AS tickets_sold,
+                CASE
+                    WHEN a.ticket_capacity IS NULL THEN NULL
+                    ELSE GREATEST(a.ticket_capacity - (
+                        SELECT COUNT(*)
+                        FROM tickets t2
+                        WHERE t2.auction_id = a.id
+                    ), 0)
+                END AS tickets_remaining
+            FROM auctions a
+            WHERE a.id = %s
             """,
             (sale_id,),
         )
@@ -597,6 +1040,7 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
         allowed = is_host or has_ticket or proved
         meta = {
             **sale,
+            "access_mode": sale.get("tier"),
             **acc,
             "is_host": is_host,
             "has_ticket": has_ticket,
@@ -608,19 +1052,24 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
 
         cursor.execute(
             """
-            SELECT l.id, l.position, l.title, l.description, l.image_url,
-                   l.starting_price::text AS starting_price,
-                   l.reserve::text AS reserve,
-                   l.estimate_low::text AS estimate_low,
-                   l.estimate_high::text AS estimate_high,
-                   l.currency,
-                   l.status,
-                   l.sold_price::text AS sold_price,
-                   l.winner_username,
-                   l.payment_status,
-                   l.hammer_at::text AS hammer_at,
-                   (SELECT MAX(amount)::text FROM lot_bids b WHERE b.lot_id = l.id) AS current_bid,
-                   (SELECT COUNT(*) FROM lot_bids b WHERE b.lot_id = l.id) AS bid_count
+            SELECT
+                l.id,
+                l.position,
+                l.title,
+                l.description,
+                l.image_url,
+                l.starting_price::text AS starting_price,
+                l.reserve::text AS reserve,
+                l.estimate_low::text AS estimate_low,
+                l.estimate_high::text AS estimate_high,
+                l.currency,
+                l.status,
+                l.sold_price::text AS sold_price,
+                l.winner_username,
+                l.payment_status,
+                l.hammer_at::text AS hammer_at,
+                (SELECT MAX(amount)::text FROM lot_bids b WHERE b.lot_id = l.id) AS current_bid,
+                (SELECT COUNT(*) FROM lot_bids b WHERE b.lot_id = l.id) AS bid_count
             FROM lots l
             WHERE l.sale_id = %s
             ORDER BY l.position
@@ -636,11 +1085,13 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
 
             # Blind rule: sealed content is omitted for everyone but the host.
             if d["status"] == "sealed" and not is_host:
-                out_lots.append({
-                    "id": d["id"],
-                    "position": d["position"],
-                    "status": "sealed",
-                })
+                out_lots.append(
+                    {
+                        "id": d["id"],
+                        "position": d["position"],
+                        "status": "sealed",
+                    }
+                )
                 continue
 
             # Reserve is house-sensitive. Never expose it to buyers, even after reveal.
@@ -685,6 +1136,7 @@ def go_live(sale_id: int, data: dict):
         cursor.execute("UPDATE auctions SET status='live' WHERE id = %s", (sale_id,))
         conn.commit()
         return {"message": "sale is live"}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -697,7 +1149,7 @@ def go_live(sale_id: int, data: dict):
 @router.post("/sales/{sale_id}/end")
 def end_sale(sale_id: int, data: dict):
     """
-    Rostrum 'close sale': stamps ended + ends_at=now.
+    Rostrum 'close sale': stamps ended + ended_at=now.
     Required before settle. Refuses while a lot is still on the block.
     """
     conn = None
@@ -729,6 +1181,7 @@ def end_sale(sale_id: int, data: dict):
             """
             UPDATE auctions
             SET status = 'ended',
+                ended_at = CURRENT_TIMESTAMP,
                 ends_at = COALESCE(ends_at, CURRENT_TIMESTAMP)
             WHERE id = %s
             """,
@@ -736,6 +1189,7 @@ def end_sale(sale_id: int, data: dict):
         )
         conn.commit()
         return {"message": "sale ended"}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -792,6 +1246,7 @@ def reveal_next(sale_id: int, data: dict):
         lot = cursor.fetchone()
         conn.commit()
         return {"lot": lot}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -817,10 +1272,11 @@ def hammer_lot(lot_id: int, data: dict):
 
         cursor.execute(
             """
-            SELECT l.status AS lot_status,
-                   l.reserve,
-                   a.host_username,
-                   a.status AS sale_status
+            SELECT
+                l.status AS lot_status,
+                l.reserve,
+                a.host_username,
+                a.status AS sale_status
             FROM lots l
             JOIN auctions a ON a.id = l.sale_id
             WHERE l.id = %s
@@ -849,16 +1305,36 @@ def hammer_lot(lot_id: int, data: dict):
         reserve = row["reserve"]
 
         if not win:
-            cursor.execute("UPDATE lots SET status='passed' WHERE id = %s", (lot_id,))
+            cursor.execute(
+                """
+                UPDATE lots
+                SET status = 'passed',
+                    hammer_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (lot_id,),
+            )
             conn.commit()
             return {"message": "passed", "reason": "no bids"}
 
         top_user, top_amt = win["user_name"], win["amount"]
 
         if reserve is not None and top_amt < reserve:
-            cursor.execute("UPDATE lots SET status='passed' WHERE id = %s", (lot_id,))
+            cursor.execute(
+                """
+                UPDATE lots
+                SET status = 'passed',
+                    hammer_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (lot_id,),
+            )
             conn.commit()
-            return {"message": "passed", "reason": "below reserve", "reserve": str(reserve)}
+            return {
+                "message": "passed",
+                "reason": "below reserve",
+                "reserve": str(reserve),
+            }
 
         cursor.execute(
             """
@@ -873,6 +1349,69 @@ def hammer_lot(lot_id: int, data: dict):
         )
         conn.commit()
         return {"message": "sold", "sold_price": str(top_amt), "winner": top_user}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/lots/{lot_id}/pass")
+def pass_lot(lot_id: int, data: dict):
+    """
+    Manually pass the current on-block lot.
+
+    This is the auctioneer's "no sale" button.
+    It marks the lot as passed and stamps hammer_at.
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                l.status AS lot_status,
+                a.host_username,
+                a.status AS sale_status
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.id = %s
+            """,
+            (lot_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row or row["host_username"] != host:
+            return {"error": "not your sale"}
+
+        if row["sale_status"] != "live":
+            return {"error": "sale is not live"}
+
+        if row["lot_status"] != "on_block":
+            return {"error": "lot is not on the block"}
+
+        cursor.execute(
+            """
+            UPDATE lots
+            SET status = 'passed',
+                hammer_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (lot_id,),
+        )
+
+        conn.commit()
+        return {"message": "passed", "lot_id": lot_id}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -903,12 +1442,14 @@ def bid_on_lot(lot_id: int, data: dict):
 
         cursor.execute(
             """
-            SELECT l.status AS lot_status,
-                   l.sale_id,
-                   l.starting_price,
-                   l.currency,
-                   a.status AS sale_status,
-                   a.tier
+            SELECT
+                l.status AS lot_status,
+                l.sale_id,
+                l.starting_price,
+                l.currency,
+                a.status AS sale_status,
+                a.tier,
+                a.host_username
             FROM lots l
             JOIN auctions a ON a.id = l.sale_id
             WHERE l.id = %s
@@ -923,9 +1464,24 @@ def bid_on_lot(lot_id: int, data: dict):
         if row["sale_status"] != "live":
             return {"error": "the sale is not live"}
 
-        acc = auction_access(cursor, {"id": row["sale_id"], "tier": row["tier"]}, viewer)
+        acc = auction_access(
+            cursor,
+            {
+                "id": row["sale_id"],
+                "tier": row["tier"],
+                "host_username": row["host_username"],
+            },
+            viewer,
+        )
+
         if not acc["can_bid"]:
             return {"error": "you do not have bidding rights here"}
+
+        # Lock the lot row so two simultaneous bids cannot both think they are the new top bid.
+        cursor.execute(
+            "SELECT id FROM lots WHERE id = %s FOR UPDATE",
+            (lot_id,),
+        )
 
         cursor.execute(
             "SELECT COALESCE(MAX(amount), 0) AS top FROM lot_bids WHERE lot_id = %s",
@@ -941,13 +1497,25 @@ def bid_on_lot(lot_id: int, data: dict):
             """
             INSERT INTO lot_bids (lot_id, user_name, amount, currency)
             VALUES (%s, %s, %s, %s)
-            RETURNING id
+            RETURNING
+                id,
+                user_name,
+                amount::text AS amount,
+                currency,
+                created_at::text AS created_at
             """,
             (lot_id, viewer, amount, _ccy(row["currency"])),
         )
-        bid_id = cursor.fetchone()["id"]
+
+        bid = cursor.fetchone()
         conn.commit()
-        return {"id": bid_id, "amount": amount}
+
+        return {
+            "message": "bid placed",
+            "bid": dict(bid),
+            "current_bid": str(bid["amount"]),
+        }
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -974,6 +1542,7 @@ def lot_bids_feed(lot_id: int, since: int = 0):
         )
         rows = cursor.fetchall()
         return {"bids": rows}
+
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -1019,6 +1588,7 @@ def enter_sale(sale_id: int, data: dict):
             return {"error": "Tickets are unique to one account."}
 
         return {"ok": True}
+
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -1039,10 +1609,15 @@ def issue_paddle(sale_id: int, data: dict):
 
         cursor.execute(
             """
-            SELECT id, host_username, title, tier, status,
-                   ticket_price::text AS ticket_price,
-                   ticket_currency,
-                   ticket_capacity
+            SELECT
+                id,
+                host_username,
+                title,
+                tier,
+                status,
+                ticket_price::text AS ticket_price,
+                ticket_currency,
+                ticket_capacity
             FROM auctions
             WHERE id = %s
             FOR UPDATE
@@ -1125,6 +1700,7 @@ def issue_paddle(sale_id: int, data: dict):
             "currency": ticket_ccy,
             "charged": price > 0,
         }
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -1168,7 +1744,10 @@ def invite_paddle(sale_id: int, data: dict):
         cursor.execute("SELECT username FROM users WHERE username = %s", (target_raw,))
         u = cursor.fetchone()
         if not u:
-            cursor.execute("SELECT username FROM users WHERE lower(username) = lower(%s)", (target_raw,))
+            cursor.execute(
+                "SELECT username FROM users WHERE lower(username) = lower(%s)",
+                (target_raw,),
+            )
             u = cursor.fetchone()
         if not u:
             return {"error": "unknown user"}
@@ -1223,12 +1802,15 @@ def invite_paddle(sale_id: int, data: dict):
             actor=host,
             source_type="sale",
             source_id=sale_id,
-            data={"sale_id": sale_id, "code": code},
+            # Safer for production: do not store the full code in notification payload.
+            # The invited user can enter by account, and the house received the code once.
+            data={"sale_id": sale_id},
             cursor=cursor,
         )
 
         conn.commit()
         return {"message": "paddle issued", "user_name": target, "code": code}
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -1259,6 +1841,10 @@ def _attempt_settle_charges(cursor, sale, won):
 
     Returns (initiated, awaiting, outcomes). Safe to call again from /collect once
     keys exist: it only touches unpaid/failed lots, so a paid lot is never re-charged.
+
+    Important:
+    paystack.initialize_charge must convert money to Paystack minor units server-side.
+    The browser must never call https://api.paystack.co directly.
     """
     initiated = 0
     awaiting = 0
@@ -1499,6 +2085,7 @@ def settle_sale(sale_id: int, data: dict):
             "collection_state": "pending" if initiated else "awaiting_rail",
             "outcomes": outcomes,
         }
+
     except Exception as e:
         if conn:
             conn.rollback()
@@ -1576,6 +2163,457 @@ def collect_sale(sale_id: int, data: dict):
             "payout_status": payout_status,
             "outcomes": outcomes,
         }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/sales/{sale_id}/settlement")
+def settlement_view(sale_id: int, viewer: str = ""):
+    """
+    Host-only settlement preview.
+
+    This does NOT mutate anything. It only computes the Flow A house-net split
+    for won lots and returns payment status so the control room can display it.
+    """
+    conn = None
+    try:
+        host = str(viewer or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                host_username,
+                title,
+                status,
+                currency,
+                ticket_currency,
+                settled_at::text AS settled_at,
+                ended_at::text AS ended_at,
+                payout_status,
+                payout_reference
+            FROM auctions
+            WHERE id = %s
+            """,
+            (sale_id,),
+        )
+
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found"}
+
+        if sale["host_username"] != host:
+            return {"error": "not your sale"}
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                position,
+                title,
+                sold_price::text AS sold_price,
+                winner_username,
+                payment_status,
+                hammer_at::text AS hammer_at,
+                currency
+            FROM lots
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+            ORDER BY position
+            """,
+            (sale_id,),
+        )
+
+        rows = cursor.fetchall()
+
+        sale_currency = _ccy(sale.get("currency"))
+
+        lots = []
+
+        hammer_total = 0.0
+        premium_total = 0.0
+        collected_total = 0.0
+        commission_total = 0.0
+        net_total = 0.0
+
+        counts = {
+            "paid": 0,
+            "pending": 0,
+            "unpaid": 0,
+            "failed": 0,
+        }
+
+        for r in rows:
+            d = dict(r)
+
+            hammer = float(d.get("sold_price") or 0)
+            premium = round(hammer * BUYER_PREMIUM_RATE, 2)
+            collected = round(hammer + premium, 2)
+            commission = round(collected * PLATFORM_COMMISSION_RATE, 2)
+            net = round(collected - commission, 2)
+
+            payment_status = str(d.get("payment_status") or "unpaid").strip().lower()
+            if payment_status not in counts:
+                payment_status = "unpaid"
+
+            counts[payment_status] += 1
+
+            lot_currency = _ccy(d.get("currency") or sale_currency)
+
+            d.update(
+                {
+                    "hammer": f"{hammer:.2f}",
+                    "premium": f"{premium:.2f}",
+                    "collected": f"{collected:.2f}",
+                    "commission": f"{commission:.2f}",
+                    "net_to_house": f"{net:.2f}",
+                    "currency": lot_currency,
+                    "payment_status": payment_status,
+                }
+            )
+
+            lots.append(d)
+
+            hammer_total = round(hammer_total + hammer, 2)
+            premium_total = round(premium_total + premium, 2)
+            collected_total = round(collected_total + collected, 2)
+            commission_total = round(commission_total + commission, 2)
+            net_total = round(net_total + net, 2)
+
+        settled = sale.get("settled_at") is not None
+
+        if not settled:
+            collection_state = "not_settled"
+        elif len(lots) == 0:
+            collection_state = "collected"
+        elif counts["paid"] == len(lots):
+            collection_state = "collected"
+        elif counts["pending"] > 0:
+            collection_state = "pending"
+        elif counts["unpaid"] + counts["failed"] > 0:
+            collection_state = "awaiting_collection"
+        else:
+            collection_state = "none"
+
+        return {
+            "sale": dict(sale),
+            "lots": lots,
+            "totals": {
+                "hammer_total": f"{hammer_total:.2f}",
+                "premium_total": f"{premium_total:.2f}",
+                "collected_total": f"{collected_total:.2f}",
+                "commission_total": f"{commission_total:.2f}",
+                "net_to_house": f"{net_total:.2f}",
+                "currency": sale_currency,
+            },
+            "counts": counts,
+            "settled": settled,
+            "collection_state": collection_state,
+            "rates": {
+                "buyer_premium_rate": BUYER_PREMIUM_RATE,
+                "platform_commission_rate": PLATFORM_COMMISSION_RATE,
+            },
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/house/payout")
+def get_house_payout(viewer: str = ""):
+    """
+    Host-only payout profile read.
+
+    Returns the house's saved payout destination, if any.
+    """
+    conn = None
+    try:
+        host = str(viewer or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT role FROM users WHERE username = %s", (host,))
+        u = cursor.fetchone()
+
+        if not u or u["role"] != "house":
+            return {"error": "only accredited houses may manage payout settings"}
+
+        cursor.execute(
+            "SELECT * FROM house_payout_profiles WHERE user_name = %s",
+            (host,),
+        )
+        row = cursor.fetchone()
+
+        return {"profile": dict(row) if row else None}
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/house/payout")
+def upsert_house_payout(data: dict):
+    """
+    Host-only payout profile upsert.
+
+    Stores bank details for later payout transfers. This does not move money.
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        business_name = str(data.get("business_name") or "").strip()
+        bank_code = str(data.get("bank_code") or "").strip().upper()
+        account_number = str(data.get("account_number") or "").strip()
+        account_name = str(data.get("account_name") or "").strip()
+        currency = _ccy(data.get("currency"))
+
+        subaccount = str(data.get("paystack_subaccount_code") or "").strip() or None
+        recipient = str(data.get("paystack_recipient_code") or "").strip() or None
+
+        if not business_name:
+            return {"error": "business_name is required"}
+        if len(business_name) > 160:
+            return {"error": "business_name is too long"}
+
+        if not bank_code:
+            return {"error": "bank_code is required"}
+        if not (3 <= len(bank_code) <= 12) or not all(ch.isalnum() for ch in bank_code):
+            return {"error": "bank_code must be 3-12 letters/numbers"}
+
+        if not account_number:
+            return {"error": "account_number is required"}
+        if not (7 <= len(account_number) <= 20) or not account_number.isdigit():
+            return {"error": "account_number must be 7-20 digits"}
+
+        if not account_name:
+            return {"error": "account_name is required"}
+        if len(account_name) > 160:
+            return {"error": "account_name is too long"}
+
+        if subaccount and not subaccount.upper().startswith("SUB_"):
+            return {"error": "paystack_subaccount_code should start with SUB_"}
+
+        if recipient and not recipient.upper().startswith("BT_"):
+            return {"error": "paystack_recipient_code should start with BT_"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT role FROM users WHERE username = %s", (host,))
+        u = cursor.fetchone()
+
+        if not u or u["role"] != "house":
+            return {"error": "only accredited houses may manage payout settings"}
+
+        status = "ready"
+
+        cursor.execute(
+            """
+            INSERT INTO house_payout_profiles (
+                user_name,
+                business_name,
+                bank_code,
+                account_number,
+                account_name,
+                currency,
+                paystack_subaccount_code,
+                paystack_recipient_code,
+                status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_name) DO UPDATE SET
+                business_name = EXCLUDED.business_name,
+                bank_code = EXCLUDED.bank_code,
+                account_number = EXCLUDED.account_number,
+                account_name = EXCLUDED.account_name,
+                currency = EXCLUDED.currency,
+                paystack_subaccount_code = EXCLUDED.paystack_subaccount_code,
+                paystack_recipient_code = EXCLUDED.paystack_recipient_code,
+                status = EXCLUDED.status,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *
+            """,
+            (
+                host,
+                business_name,
+                bank_code,
+                account_number,
+                account_name,
+                currency,
+                subaccount,
+                recipient,
+                status,
+            ),
+        )
+
+        row = cursor.fetchone()
+        conn.commit()
+
+        return {
+            "message": "payout profile saved",
+            "profile": dict(row) if row else None,
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/sales/{sale_id}/payout")
+def sale_payout_view(sale_id: int, viewer: str = ""):
+    """
+    Host-only payout view for one sale.
+
+    This reuses settlement_view and adds the house payout profile.
+    """
+    base = settlement_view(sale_id, viewer)
+
+    if base.get("error"):
+        return base
+
+    sale = base.get("sale") or {}
+    host = str(sale.get("host_username") or "").strip()
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT * FROM house_payout_profiles WHERE user_name = %s",
+            (host,),
+        )
+        row = cursor.fetchone()
+
+        base["payout_profile"] = dict(row) if row else None
+        return base
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/sales/{sale_id}/payout/mark_paid")
+def mark_payout_paid(sale_id: int, data: dict):
+    """
+    Host-only manual payout marker.
+
+    This is for offline/local settlement. It only marks the sale payout as paid
+    after the sale is settled and every won lot has been collected/paid.
+    It does not call Paystack and does not move money.
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        reference = str(data.get("reference") or "").strip()
+
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT host_username, status, settled_at, payout_status
+            FROM auctions
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (sale_id,),
+        )
+
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found"}
+
+        if sale["host_username"] != host:
+            return {"error": "not your sale"}
+
+        if sale["status"] != "ended":
+            return {"error": "sale is not ended"}
+
+        if sale["settled_at"] is None:
+            return {"error": "sale is not settled"}
+
+        if sale["payout_status"] == "paid":
+            return {
+                "message": "payout already marked paid",
+                "payout_status": "paid",
+                "payout_reference": sale.get("payout_reference"),
+            }
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)::int AS c
+            FROM lots
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+              AND payment_status <> 'paid'
+            """,
+            (sale_id,),
+        )
+
+        unpaid = int(cursor.fetchone()["c"] or 0)
+
+        if unpaid > 0:
+            return {
+                "error": f"cannot mark payout paid: {unpaid} won lot(s) are not paid yet"
+            }
+
+        if not reference:
+            reference = f"manual_payout_{sale_id}_{secrets.token_hex(4)}"
+
+        cursor.execute(
+            """
+            UPDATE auctions
+            SET payout_status = 'paid',
+                payout_reference = %s
+            WHERE id = %s
+            """,
+            (reference, sale_id),
+        )
+
+        conn.commit()
+
+        return {
+            "message": "payout marked paid",
+            "payout_status": "paid",
+            "payout_reference": reference,
+        }
+
     except Exception as e:
         if conn:
             conn.rollback()

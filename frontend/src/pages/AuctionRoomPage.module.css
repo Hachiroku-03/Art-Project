@@ -219,6 +219,204 @@
 .ledgerAmount { font-family: var(--font-display); font-size: .88rem; color: var(--t1); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .ledgerEmpty { text-align: center; font-family: var(--font-label); font-style: italic; color: var(--t7); padding: 2.2rem 1rem; margin: 0; }
 
+/* ---- room additions: host controls, start note, passed lots, spinner ---- */
+
+.startNote {
+  margin: 1.1rem auto 0;
+  max-width: 42ch;
+  color: var(--t4);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.hostActionsInline {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.hostBar {
+  background: var(--s1);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  margin-bottom: var(--gap);
+}
+
+.hostBarHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
+.hostMeta {
+  font-size: 0.7rem;
+  color: var(--t5);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hostActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.hostBtn {
+  appearance: none;
+  border: 1px solid var(--edge-3);
+  background: var(--s2);
+  color: var(--t1);
+  border-radius: 999px;
+  padding: 0.5rem 0.85rem;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s var(--ease), opacity 0.15s;
+}
+
+.hostBtn:hover:not(:disabled) {
+  background: var(--s3);
+  border-color: var(--edge-2);
+  transform: translateY(-1px);
+}
+
+.hostBtn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.hostBtn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.hostBtnDanger {
+  color: #ff8a80;
+  border-color: rgba(255, 69, 58, 0.25);
+}
+
+.hostBtnDanger:hover:not(:disabled) {
+  background: rgba(255, 69, 58, 0.12);
+  border-color: rgba(255, 69, 58, 0.35);
+}
+
+.hostError {
+  margin-top: 0.55rem;
+  font-size: 0.78rem;
+  color: var(--live);
+}
+
+.hostNotice {
+  margin-top: 0.55rem;
+  font-size: 0.78rem;
+  color: var(--ok);
+}
+
+.chapterPassed {
+  opacity: 0.38;
+  filter: grayscale(1);
+}
+
+.passedStamp {
+  position: absolute;
+  top: 8px;
+  right: -22px;
+  transform: rotate(35deg);
+  background: var(--t5);
+  color: var(--t1);
+  font-family: var(--font-display, Georgia, serif);
+  font-size: 0.55rem;
+  letter-spacing: 0.14em;
+  padding: 0.2rem 1.45rem;
+}
+
+.liveEnd {
+  margin-left: 0.55rem;
+  color: var(--t4);
+  font-variant-numeric: tabular-nums;
+}
+
+.spin {
+  animation: roomSpin 0.9s linear infinite;
+}
+
+@keyframes roomSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.streamShell {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--s0);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.06);
+  margin-bottom: var(--gap);
+}
+
+.streamShell .streamFrame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.streamFallback {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  background: rgba(0,0,0,.62);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 999px;
+  padding: .42rem .75rem;
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  backdrop-filter: blur(8px);
+  opacity: .78;
+  transition: opacity .15s, background .15s, transform .12s var(--ease);
+}
+
+.streamFallback:hover {
+  opacity: 1;
+  background: rgba(0,0,0,.78);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 980px) {
+  .hostBar {
+    margin-bottom: 0.75rem;
+  }
+
+  .hostActions {
+    gap: 0.35rem;
+  }
+
+  .hostBtn {
+    padding: 0.45rem 0.7rem;
+    font-size: 0.62rem;
+  }
+}
+
+
 /* ============ RESPONSIVE ============ */
 @media (max-width: 980px) {
   .layout { padding: calc(var(--nav) + 1rem) .9rem 3rem; }

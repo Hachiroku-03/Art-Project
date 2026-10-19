@@ -504,3 +504,24 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+    # ============ HOUSE PAYOUT PROFILE ============
+    # Stores the house's payout destination. This is not a wallet. It is the
+    # bank/subaccount information used later for real payouts.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS house_payout_profiles (
+            user_name TEXT PRIMARY KEY,
+            business_name TEXT,
+            bank_code TEXT,
+            account_number TEXT,
+            account_name TEXT,
+            currency TEXT NOT NULL DEFAULT 'NGN',
+            paystack_subaccount_code TEXT,
+            paystack_recipient_code TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_house_payout_status ON house_payout_profiles (status)")

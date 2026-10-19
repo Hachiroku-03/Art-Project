@@ -66,6 +66,7 @@ export type Sale = {
   status: SaleStatus
   starts_at: string | null
   ends_at: string | null
+  ended_at?: string | null
   ticket_price: string
   stream_type: string
   stream_url: string
@@ -82,6 +83,7 @@ export type Sale = {
   ticket_currency?: string
   ticket_capacity?: number | null
   tickets_sold?: number | null
+  tickets_remaining?: number | null
   visible?: boolean
   is_invited?: boolean
   has_ticket?: boolean
@@ -91,7 +93,13 @@ export type Sale = {
   settled_at?: string | null
 }
 
-export type LotBid = { id: number; user_name: string; amount: string; created_at: string }
+export type LotBid = {
+  id: number
+  user_name: string
+  amount: string
+  created_at: string
+  currency?: string
+}
 
 // ---- ORIGINAL auction-lib exports (kept verbatim for AuctionsPage etc.) ----
 export type AuctionTier = 'open' | 'vip_only' | 'invite_only'
@@ -175,9 +183,26 @@ export function timeLeft(target: string | null): string {
 
 export type SaleFetch = { sale?: Sale; lots?: Lot[]; error?: string }
 export type SalesFetch = { sales?: Sale[]; error?: string }
-export type BuyPaddleResult = { message?: string; code?: string; price?: string; currency?: string; charged?: boolean; error?: string }
+
+export type BuyPaddleResult = {
+  message?: string
+  code?: string
+  price?: string
+  currency?: string
+  charged?: boolean
+  error?: string
+}
+
 export type EnterSaleResult = { ok?: boolean; error?: string }
-export type PlaceBidResult = { id?: number; amount?: number; error?: string }
+
+export type PlaceBidResult = {
+  message?: string
+  bid?: LotBid
+  current_bid?: string
+  id?: number
+  amount?: number | string
+  error?: string
+}
 
 export function parseTs(value?: string | null): Date | null {
   if (!value) return null
@@ -194,7 +219,10 @@ export function formatMoney(value: string | number | null | undefined, currency 
 }
 
 function normalizeSale(raw: any): Sale {
-  return { ...raw, access_mode: normalizeAccessMode(raw?.access_mode ?? raw?.tier) } as Sale
+  return {
+    ...raw,
+    access_mode: normalizeAccessMode(raw?.access_mode ?? raw?.tier),
+  } as Sale
 }
 
 async function jget(path: string): Promise<any> {
@@ -210,6 +238,19 @@ async function jpost(path: string, body: unknown): Promise<any> {
   try {
     const res = await fetch(`${API}${path}`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return await res.json()
+  } catch {
+    return { error: 'network error' }
+  }
+}
+
+async function jpatch(path: string, body: unknown): Promise<any> {
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
@@ -262,14 +303,16 @@ export type MySale = {
   ticket_currency?: string
   ticket_price?: string
   ticket_capacity?: number | null
+  tickets_sold?: number | null
+  tickets_remaining?: number | null
 
   starts_at?: string | null
   ends_at?: string | null
+  ended_at?: string | null
   settled_at?: string | null
   payout_status?: string
 
   lot_count?: number
-  tickets_sold?: number
 }
 
 export type MySalesFetch = {
@@ -295,19 +338,6 @@ export async function fetchMySales(viewer: string): Promise<MySalesFetch> {
 
 // ---- Section 2: sale mutations (create / edit / stream) ----
 export type SaleMutationResult = { id?: number; message?: string; error?: string }
-
-async function jpatch(path: string, body: unknown): Promise<any> {
-  try {
-    const res = await fetch(`${API}${path}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    return await res.json()
-  } catch {
-    return { error: 'network error' }
-  }
-}
 
 // create_sale is POST /sales and accepts image_url + stream_type/stream_url in the
 // same body (after the backend fix above), so creation is a single call.
@@ -354,6 +384,9 @@ export type AddLotResult = {
   lot?: {
     id: number
     position: number
+    title?: string
+    status?: string
+    currency?: string
   }
   error?: string
 }
@@ -364,4 +397,340 @@ export async function addLot(
   payload: AddLotPayload,
 ): Promise<AddLotResult> {
   return jpost(`/sales/${saleId}/lots`, { viewer, ...payload })
+}
+
+export type UpdateLotPayload = {
+  title?: string
+  description?: string
+  image_url?: string | null
+  starting_price?: number | null
+  reserve?: number | null
+  estimate_low?: number | null
+  estimate_high?: number | null
+  currency?: string
+}
+
+export type UpdateLotResult = {
+  lot?: {
+    id: number
+    position: number
+    title?: string
+    status?: string
+    currency?: string
+  }
+  message?: string
+  error?: string
+}
+
+export async function updateLot(
+  lotId: number | string,
+  viewer: string,
+  payload: UpdateLotPayload,
+): Promise<UpdateLotResult> {
+  return jpatch(`/lots/${lotId}`, { viewer, ...payload })
+}
+
+export type DeleteLotResult = {
+  message?: string
+  lot_id?: number
+  error?: string
+}
+
+export async function deleteLot(
+  lotId: number | string,
+  viewer: string,
+): Promise<DeleteLotResult> {
+  return jpost(`/lots/${lotId}/delete`, { viewer })
+}
+
+// ---- Section 4: entry / paddles ----
+export type Paddle = {
+  id: number
+  user_name: string
+  source: string
+  code_masked?: string | null
+  purchased_at?: string | null
+  role?: string | null
+  tier?: string | null
+  display_name?: string | null
+  avatar_url?: string | null
+  won_lots?: number
+  won_total?: string | null
+}
+
+export type PaddlesFetch = {
+  paddles?: Paddle[]
+  capacity?: number | null
+  sold?: number
+  status?: string
+  error?: string
+}
+
+export type InvitePaddleResult = {
+  message?: string
+  user_name?: string
+  code?: string
+  error?: string
+}
+
+export async function fetchPaddles(
+  saleId: number | string,
+  viewer: string,
+): Promise<PaddlesFetch> {
+  const p = new URLSearchParams()
+  p.set('viewer', viewer)
+  return jget(`/sales/${saleId}/paddles?${p.toString()}`)
+}
+
+export async function invitePaddle(
+  saleId: number | string,
+  viewer: string,
+  userName: string,
+): Promise<InvitePaddleResult> {
+  return jpost(`/sales/${saleId}/invite`, {
+    viewer,
+    user_name: userName,
+  })
+}
+
+// ---- Section 5: rostrum / live ----
+export type RostrumActionResult = {
+  message?: string
+  lot?: {
+    id: number
+    position: number
+  }
+  sold_price?: string
+  winner?: string
+  reason?: string
+  error?: string
+}
+
+export async function goLive(
+  saleId: number | string,
+  viewer: string,
+): Promise<RostrumActionResult> {
+  return jpost(`/sales/${saleId}/go_live`, { viewer })
+}
+
+export async function revealNext(
+  saleId: number | string,
+  viewer: string,
+): Promise<RostrumActionResult> {
+  return jpost(`/sales/${saleId}/reveal_next`, { viewer })
+}
+
+export async function hammerLot(
+  lotId: number | string,
+  viewer: string,
+): Promise<RostrumActionResult> {
+  return jpost(`/lots/${lotId}/hammer`, { viewer })
+}
+
+export async function passLot(
+  lotId: number | string,
+  viewer: string,
+): Promise<RostrumActionResult> {
+  return jpost(`/lots/${lotId}/pass`, { viewer })
+}
+
+export async function endSale(
+  saleId: number | string,
+  viewer: string,
+): Promise<RostrumActionResult> {
+  return jpost(`/sales/${saleId}/end`, { viewer })
+}
+
+// ---- Section 6: settlement ----
+export type SettlementLot = {
+  id: number
+  position: number
+  title?: string | null
+  sold_price?: string | null
+  winner_username?: string | null
+  payment_status?: string | null
+  hammer_at?: string | null
+  currency?: string | null
+
+  // computed by backend settlement view
+  hammer?: string
+  premium?: string
+  collected?: string
+  commission?: string
+  net_to_house?: string
+}
+
+export type SettlementSale = {
+  id: number
+  host_username: string
+  title: string
+  status: string
+  currency?: string | null
+  ticket_currency?: string | null
+  settled_at?: string | null
+  ended_at?: string | null
+  payout_status?: string | null
+  payout_reference?: string | null
+}
+
+export type SettlementTotals = {
+  hammer_total?: string
+  premium_total?: string
+  collected_total?: string
+  commission_total?: string
+  net_to_house?: string
+  currency?: string
+}
+
+export type SettlementCounts = {
+  paid: number
+  pending: number
+  unpaid: number
+  failed: number
+}
+
+export type SettlementView = {
+  sale?: SettlementSale
+  lots?: SettlementLot[]
+  totals?: SettlementTotals
+  counts?: SettlementCounts
+  settled?: boolean
+  collection_state?: string
+  rates?: {
+    buyer_premium_rate?: number
+    platform_commission_rate?: number
+  }
+  error?: string
+}
+
+export type SettleOutcome = {
+  lot_id: number
+  position: number
+  winner: string
+  hammer: string
+  premium: string
+  collected: string
+  commission: string
+  net_to_house: string
+  currency: string
+  status: string
+  reason?: string
+  checkout?: string
+}
+
+export type SettleResult = {
+  message?: string
+  lots_sold?: number
+  hammer_total?: string
+  premium_total?: string
+  collected_total?: string
+  commission_total?: string
+  net_to_house?: string
+  charges_initiated?: number
+  awaiting_collection?: number
+  payout_status?: string
+  collection_state?: string
+  outcomes?: SettleOutcome[]
+  error?: string
+}
+
+export async function fetchSettlement(
+  saleId: number | string,
+  viewer: string,
+): Promise<SettlementView> {
+  const p = new URLSearchParams()
+  p.set('viewer', viewer)
+  return jget(`/sales/${saleId}/settlement?${p.toString()}`)
+}
+
+export async function settleSale(
+  saleId: number | string,
+  viewer: string,
+): Promise<SettleResult> {
+  return jpost(`/sales/${saleId}/settle`, { viewer })
+}
+
+export async function collectSale(
+  saleId: number | string,
+  viewer: string,
+): Promise<SettleResult> {
+  return jpost(`/sales/${saleId}/collect`, { viewer })
+}
+
+// ---- Section 7: payout / settings ----
+export type HousePayoutProfile = {
+  user_name: string
+  business_name?: string | null
+  bank_code?: string | null
+  account_number?: string | null
+  account_name?: string | null
+  currency?: string | null
+  paystack_subaccount_code?: string | null
+  paystack_recipient_code?: string | null
+  status?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type HousePayoutFetch = {
+  profile?: HousePayoutProfile | null
+  error?: string
+}
+
+export type HousePayoutSaveResult = {
+  message?: string
+  profile?: HousePayoutProfile | null
+  error?: string
+}
+
+export type SalePayoutView = SettlementView & {
+  payout_profile?: HousePayoutProfile | null
+}
+
+export type MarkPayoutPaidResult = {
+  message?: string
+  payout_status?: string
+  payout_reference?: string | null
+  error?: string
+}
+
+export async function fetchHousePayout(viewer: string): Promise<HousePayoutFetch> {
+  const p = new URLSearchParams()
+  p.set('viewer', viewer)
+  return jget(`/house/payout?${p.toString()}`)
+}
+
+export async function saveHousePayout(
+  viewer: string,
+  payload: {
+    business_name: string
+    bank_code: string
+    account_number: string
+    account_name: string
+    currency: string
+    paystack_subaccount_code?: string | null
+    paystack_recipient_code?: string | null
+  },
+): Promise<HousePayoutSaveResult> {
+  return jpost('/house/payout', { viewer, ...payload })
+}
+
+export async function fetchSalePayout(
+  saleId: number | string,
+  viewer: string,
+): Promise<SalePayoutView> {
+  const p = new URLSearchParams()
+  p.set('viewer', viewer)
+  return jget(`/sales/${saleId}/payout?${p.toString()}`)
+}
+
+export async function markPayoutPaid(
+  saleId: number | string,
+  viewer: string,
+  reference?: string,
+): Promise<MarkPayoutPaidResult> {
+  return jpost(`/sales/${saleId}/payout/mark_paid`, {
+    viewer,
+    reference: reference || '',
+  })
 }

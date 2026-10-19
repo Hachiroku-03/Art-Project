@@ -448,6 +448,766 @@
   white-space: nowrap;
 }
 
+/* ---- Section 4: entry / paddles ---- */
+.entryTop {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.entrySummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft, #666);
+}
+
+.inviteBar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.85rem 0 1rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--line, #e4dfd7);
+  border-radius: 18px;
+  background: rgba(20, 18, 15, 0.025);
+}
+
+.inviteField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 240px;
+  flex: 1 1 240px;
+}
+
+.inviteInput {
+  width: 100%;
+  border: 1px solid var(--line-strong, #cdc5b8);
+  background: #fff;
+  color: var(--ink, #15121a);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.92rem;
+  outline: none;
+}
+
+.inviteInput:focus {
+  border-color: rgba(20, 18, 15, 0.35);
+}
+
+.noticeOk {
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: #166534;
+  background: rgba(22, 101, 52, 0.08);
+  border: 1px solid rgba(22, 101, 52, 0.16);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+}
+
+.sourcePill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.sourcePurchased {
+  color: #14532d;
+  background: rgba(20, 83, 45, 0.08);
+  border-color: rgba(20, 83, 45, 0.16);
+}
+
+.sourceInvited {
+  color: #5b21b6;
+  background: rgba(91, 33, 182, 0.08);
+  border-color: rgba(91, 33, 182, 0.16);
+}
+
+.sourceComplimentary {
+  color: #9a3412;
+  background: rgba(154, 52, 18, 0.08);
+  border-color: rgba(154, 52, 18, 0.16);
+}
+
+.sourceVoid {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.18);
+}
+
+.memberCell {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 220px;
+}
+
+.memberAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: #f4f2ee;
+  border: 1px solid rgba(20, 18, 15, 0.08);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+  font-weight: 900;
+  color: #15121a;
+}
+
+.memberText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.memberName {
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memberHandle {
+  font-size: 0.78rem;
+  color: var(--ink-soft, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codeText {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+  color: var(--ink-soft, #666);
+}
+
+.moneyText {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Section 5: rostrum / live ---- */
+.rostrumTop {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.rostrumMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft, #666);
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.9rem 0 1rem;
+}
+
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.6rem;
+  margin: 0.8rem 0 1rem;
+}
+
+.statBox {
+  border: 1px solid var(--line, #e4dfd7);
+  background: rgba(20, 18, 15, 0.025);
+  border-radius: 18px;
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.statLabel {
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+}
+
+.statValue {
+  font-size: 1.05rem;
+  font-weight: 900;
+  color: var(--ink, #15121a);
+}
+
+.rostrumGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.75fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+@media (max-width: 980px) {
+  .rostrumGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.currentLotPanel,
+.bidFeedPanel {
+  border: 1px solid var(--line, #e4dfd7);
+  background: #fff;
+  border-radius: 22px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 30px rgba(20, 18, 15, 0.05);
+}
+
+.panelTitleSmall {
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+  margin-bottom: 0.65rem;
+}
+
+.lotMediaRow {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
+.lotHeroImage {
+  width: 140px;
+  height: 140px;
+  object-fit: cover;
+  border-radius: 18px;
+  background: #f4f2ee;
+  flex: 0 0 auto;
+}
+
+.lotHeroBlank {
+  width: 140px;
+  height: 140px;
+  border-radius: 18px;
+  background: #f4f2ee;
+  flex: 0 0 auto;
+}
+
+.lotHeroBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.lotHeroTitle {
+  font-size: 1.15rem;
+  font-weight: 950;
+  color: var(--ink, #15121a);
+}
+
+.lotHeroDesc {
+  font-size: 0.9rem;
+  color: var(--ink-soft, #666);
+  line-height: 1.45;
+}
+
+.lotMoneyGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.lotMoneyBox {
+  border: 1px solid var(--line, #e4dfd7);
+  border-radius: 16px;
+  padding: 0.6rem 0.7rem;
+  background: rgba(20, 18, 15, 0.02);
+}
+
+.lotMoneyLabel {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+  margin-bottom: 0.18rem;
+}
+
+.lotMoneyValue {
+  font-weight: 900;
+  color: var(--ink, #15121a);
+  white-space: nowrap;
+}
+
+.bidFeed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.bidRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line, #e4dfd7);
+  border-radius: 16px;
+  padding: 0.55rem 0.7rem;
+  background: rgba(20, 18, 15, 0.02);
+}
+
+.bidUser {
+  font-weight: 850;
+  color: var(--ink, #15121a);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bidAmount {
+  font-weight: 900;
+  color: var(--ink, #15121a);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bidTime {
+  font-size: 0.74rem;
+  color: var(--ink-faint, #888);
+  white-space: nowrap;
+}
+
+.emptyState {
+  border: 1px dashed var(--line-strong, #cdc5b8);
+  border-radius: 22px;
+  padding: 1rem;
+  color: var(--ink-soft, #666);
+  background: rgba(20, 18, 15, 0.02);
+}
+
+.noticeOk {
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: #166534;
+  background: rgba(22, 101, 52, 0.08);
+  border: 1px solid rgba(22, 101, 52, 0.16);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+}
+
+.dangerLink {
+  color: #8b1f2f;
+  border-color: rgba(139, 31, 47, 0.18);
+}
+
+.dangerLink:hover {
+  background: rgba(139, 31, 47, 0.06);
+}
+
+/* ---- Section 6: settlement ---- */
+.settleTop {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.settleMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft, #666);
+}
+
+.settleActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.9rem 0 1rem;
+}
+
+.settleStats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+  margin: 0.8rem 0 1rem;
+}
+
+.settleStat {
+  border: 1px solid var(--line, #e4dfd7);
+  background: rgba(20, 18, 15, 0.025);
+  border-radius: 18px;
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.settleStatLabel {
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+}
+
+.settleStatValue {
+  font-size: 1rem;
+  font-weight: 900;
+  color: var(--ink, #15121a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outcomePanel {
+  border: 1px solid var(--line, #e4dfd7);
+  background: #fff;
+  border-radius: 22px;
+  padding: 0.9rem;
+  margin: 0.85rem 0 1rem;
+  box-shadow: 0 10px 30px rgba(20, 18, 15, 0.05);
+}
+
+.outcomeList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.outcomeRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line, #e4dfd7);
+  border-radius: 16px;
+  padding: 0.6rem 0.7rem;
+  background: rgba(20, 18, 15, 0.02);
+}
+
+.outcomeTitle {
+  font-weight: 900;
+  color: var(--ink, #15121a);
+}
+
+.outcomeMeta {
+  font-size: 0.82rem;
+  color: var(--ink-soft, #666);
+  margin-top: 0.15rem;
+}
+
+.outcomeMoney {
+  text-align: right;
+  font-weight: 900;
+  color: var(--ink, #15121a);
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: flex-end;
+}
+
+.checkoutLink {
+  font-size: 0.76rem;
+  font-weight: 850;
+  color: #166534;
+  text-decoration: none;
+  border: 1px solid rgba(22, 101, 52, 0.18);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  background: rgba(22, 101, 52, 0.08);
+}
+
+.checkoutLink:hover {
+  background: rgba(22, 101, 52, 0.14);
+}
+
+.payPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.payPaid {
+  color: #14532d;
+  background: rgba(20, 83, 45, 0.08);
+  border-color: rgba(20, 83, 45, 0.16);
+}
+
+.payPending {
+  color: #92400e;
+  background: rgba(146, 64, 14, 0.08);
+  border-color: rgba(146, 64, 14, 0.16);
+}
+
+.payUnpaid {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.18);
+}
+
+.payFailed {
+  color: #8b1f2f;
+  background: rgba(139, 31, 47, 0.08);
+  border-color: rgba(139, 31, 47, 0.16);
+}
+
+.settleHint {
+  margin: 0.5rem 0 0;
+  font-size: 0.84rem;
+  color: var(--ink-soft, #666);
+}
+
+/* ---- Section 7: payout / settings ---- */
+.payoutGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+.payoutCard {
+  border: 1px solid var(--line, #e4dfd7);
+  background: #fff;
+  border-radius: 22px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 30px rgba(20, 18, 15, 0.05);
+}
+
+.payoutCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.payoutCardTitle {
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+}
+
+.payoutCardSub {
+  margin-top: 0.25rem;
+  font-size: 0.88rem;
+  color: var(--ink-soft, #666);
+}
+
+.payoutFormGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.65rem;
+}
+
+.payoutField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.payoutInput {
+  width: 100%;
+  border: 1px solid var(--line-strong, #cdc5b8);
+  background: #fff;
+  color: var(--ink, #15121a);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.92rem;
+  outline: none;
+}
+
+.payoutInput:focus {
+  border-color: rgba(20, 18, 15, 0.35);
+}
+
+.payoutInput:disabled {
+  background: #f7f4ef;
+  color: #777;
+}
+
+.payoutHint {
+  font-size: 0.76rem;
+  color: var(--ink-faint, #888);
+}
+
+.payoutActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.payoutBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.payoutReady {
+  color: #14532d;
+  background: rgba(20, 83, 45, 0.08);
+  border-color: rgba(20, 83, 45, 0.16);
+}
+
+.payoutDraft {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.18);
+}
+
+.payoutPaid {
+  color: #14532d;
+  background: rgba(20, 83, 45, 0.08);
+  border-color: rgba(20, 83, 45, 0.16);
+}
+
+.payoutPending {
+  color: #92400e;
+  background: rgba(146, 64, 14, 0.08);
+  border-color: rgba(146, 64, 14, 0.16);
+}
+
+.payoutNone {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border-color: rgba(107, 114, 128, 0.18);
+}
+
+.payoutStats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+  margin: 0.75rem 0;
+}
+
+.payoutStat {
+  border: 1px solid var(--line, #e4dfd7);
+  background: rgba(20, 18, 15, 0.025);
+  border-radius: 18px;
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.payoutStatLabel {
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+}
+
+.payoutStatValue {
+  font-size: 1rem;
+  font-weight: 900;
+  color: var(--ink, #15121a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.payoutNotice {
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: #166534;
+  background: rgba(22, 101, 52, 0.08);
+  border: 1px solid rgba(22, 101, 52, 0.16);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+}
+
+.payoutWarn {
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: #92400e;
+  background: rgba(146, 64, 14, 0.08);
+  border: 1px solid rgba(146, 64, 14, 0.16);
+  border-radius: 14px;
+  padding: 0.55rem 0.7rem;
+}
+
+.payoutMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft, #666);
+}
+
+.payoutCode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+  color: var(--ink-soft, #666);
+  word-break: break-all;
+}
+
+.panelTitleSmall {
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+  margin-bottom: 0.65rem;
+}
+
 @media (max-width: 900px) {
   .shell {
     grid-template-columns: 1fr;

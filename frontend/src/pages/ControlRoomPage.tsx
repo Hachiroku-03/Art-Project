@@ -10,6 +10,10 @@ import { getViewer } from '../lib/session'
 import { AccessBadge } from '../components/sales/AccessBadge'
 import { SalesTab } from '../components/house/SalesTab'
 import { CatalogueTab } from '../components/house/CatalogueTab'
+import { EntryTab } from '../components/house/EntryTab'
+import { RostrumTab } from '../components/house/RostrumTab'
+import { SettlementTab } from '../components/house/SettlementTab'
+import { PayoutTab } from '../components/house/PayoutTab'
 import styles from '../components/house/control.module.css'
 import salesStyles from '../components/sales/sales.module.css'
 
@@ -201,13 +205,40 @@ export function ControlRoomPage() {
               viewer={viewer}
               reload={reload}
             />
+          ) : tab === 'entry' ? (
+            <EntryTab
+              sales={sales}
+              selectedSaleId={id ? Number(id) : null}
+              viewer={viewer}
+              reload={reload}
+            />
+          ) : tab === 'rostrum' ? (
+            <RostrumTab
+              sales={sales}
+              selectedSaleId={id ? Number(id) : null}
+              viewer={viewer}
+              reload={reload}
+            />
+          ) : tab === 'settlement' ? (
+            <SettlementTab
+              sales={sales}
+              selectedSaleId={id ? Number(id) : null}
+              viewer={viewer}
+              reload={reload}
+            />
+          ) : tab === 'payout' ? (
+            <PayoutTab
+              sales={sales}
+              selectedSaleId={id ? Number(id) : null}
+              viewer={viewer}
+              reload={reload}
+            />
           ) : (
             <div className={styles.placeholder}>
               <h2 className={styles.panelTitle}>{TABS.find(t => t.key === tab)?.label}</h2>
               <p className={styles.muted}>
-                This section is intentionally empty for now — we build the control room one
-                section at a time. The next one is <strong>Entry / Paddles</strong>, where the
-                house can invite users and inspect paddle holders.
+                Core control-room sections are complete: Sales, Catalogue, Entry, Rostrum,
+                Settlement, and Payout / Settings.
               </p>
             </div>
           )}

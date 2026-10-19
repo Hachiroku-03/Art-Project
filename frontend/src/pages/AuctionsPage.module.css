@@ -36,10 +36,39 @@
 
 .toolRight { display: flex; align-items: center; gap: 0.9rem; margin-left: auto; }
 .showing { font-size: 0.74rem; color: var(--ink-faint); white-space: nowrap; }
+
+/* sort dropdown — native <select>, styled to match the search pill.
+   Only the closed control can be styled; the open list is drawn by the OS. */
 .sort {
-  background: var(--paper); border: 1px solid var(--line); border-radius: 999px;
-  padding: 0.5rem 0.9rem; font-family: var(--font-ui); font-size: 0.74rem; font-weight: 600;
-  letter-spacing: 0.04em; color: var(--ink); cursor: pointer; outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  height: 2.45rem;                                   /* same height as .search */
+  padding: 0 2.3rem 0 1rem;                          /* room for the chevron */
+  font-family: var(--font-label); font-style: italic; /* the choice reads like the strap */
+  font-size: 0.98rem; line-height: 1;
+  color: var(--ink);
+  cursor: pointer; outline: none;
+  /* chevron: ink-faint, 10px, parked at the right */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='%239A9A9A' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.9rem center;
+  background-size: 10px 10px;
+  transition: border-color 0.15s, box-shadow 0.15s, background-image 0.15s;
+}
+.sort:hover { border-color: var(--line-strong); }
+.sort:focus-visible {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 4px rgba(14,14,14,0.05);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='%230E0E0E' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+.sort::-ms-expand { display: none; }
+/* the OS list: keep it readable and on-palette where browsers allow */
+.sort option {
+  font-family: var(--font-ui); font-style: normal; font-size: 0.9rem;
+  color: var(--ink); background: var(--paper); padding: 0.4rem 0.6rem;
 }
 
 /* the rostrum strip */
@@ -71,4 +100,5 @@
   .colsOpen .railCol { display: block; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.9rem; }
   .toolRight { width: 100%; margin-left: 0; justify-content: space-between; }
+  .sort { flex: 1; max-width: 60%; }
 }

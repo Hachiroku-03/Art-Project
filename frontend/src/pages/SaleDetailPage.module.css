@@ -1,0 +1,492 @@
+/* SaleDetailPage — "the work first" layout.
+   This page uses its own display face (Cormorant Garamond italic) on top of the global tokens. */
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400;1,500&display=swap');
+
+.page {
+  --font-sale: 'Cormorant Garamond', Georgia, serif;
+  --r-button: 999px;  /* pill button */
+  --r-lot: 10px;      /* slightly rounded lot corners */
+  min-height: 100vh;
+  background: var(--wall, #f6f6f4);
+  color: var(--ink, #0e0e0e);
+  font-family: var(--font-ui, Inter, system-ui, sans-serif);
+}
+
+/* ---------- banner ---------- */
+
+.banner {
+  position: relative;
+  width: 100%;
+  height: clamp(320px, 58vh, 620px);
+  overflow: hidden;
+  background: var(--wall, #f6f6f4);
+}
+
+.bannerImg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  /* the fade: image dissolves into the wall, nothing drawn on top of it */
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 50%, rgba(0, 0, 0, 0.6) 74%, rgba(0, 0, 0, 0.15) 92%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 50%, rgba(0, 0, 0, 0.6) 74%, rgba(0, 0, 0, 0.15) 92%, transparent 100%);
+}
+
+.bannerEmpty {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, var(--room, #0a0a0a), var(--wall, #f6f6f4));
+}
+
+.bannerTop::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 -120%;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.22), transparent);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.bannerTop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem clamp(1rem, 4vw, 3rem);
+  color: var(--paper, #ffffff);
+  font-size: 0.8rem;
+  z-index: 2;
+}
+
+.back {
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.8;
+  transition: opacity 0.2s var(--ease, ease);
+}
+
+.back:hover {
+  opacity: 1;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.statusLive .statusDot {
+  background: var(--live, #c8102e);
+  opacity: 1;
+  box-shadow: 0 0 0 0 rgba(200, 16, 46, 0.6);
+  animation: pulse 1.8s var(--ease, ease) infinite;
+}
+
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(200, 16, 46, 0.55); }
+  100% { box-shadow: 0 0 0 10px rgba(200, 16, 46, 0); }
+}
+
+/* ---------- head: avatar straddles the fade ---------- */
+
+.wrap {
+  width: min(1040px, 100% - 2 * clamp(1rem, 4vw, 3rem));
+  margin: 0 auto;
+}
+
+.head {
+  --avatar: 96px;
+  margin-top: calc(-1 * var(--avatar) / 2);
+  position: relative;
+  z-index: 3;
+  display: grid;
+  gap: 1rem;
+}
+
+.host {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 1rem;
+  text-decoration: none;
+  color: inherit;
+  width: fit-content;
+}
+
+.avatar {
+  width: var(--avatar);
+  height: var(--avatar);
+  border-radius: 50%;
+  overflow: hidden;
+  flex: 0 0 auto;
+  background: var(--paper, #ffffff);
+  /* paper ring lets the circle sit on both image and wall */
+  box-shadow: 0 0 0 5px var(--wall, #f6f6f4), var(--shadow-lift, 0 24px 48px rgba(14, 14, 14, 0.14));
+  display: grid;
+  place-items: center;
+}
+
+.avatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.avatarInitial {
+  font-family: var(--font-sale);
+  font-style: italic;
+  font-size: 2.2rem;
+  color: var(--ink, #0e0e0e);
+}
+
+.hostText {
+  /* banner bottom = avatar centre; name starts below that line, on the wall */
+  padding-top: calc(var(--avatar) / 2 + 0.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.hostName {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.hostHandle {
+  font-size: 0.8rem;
+  color: var(--ink-faint, #9a9a9a);
+}
+
+.host:hover .hostHandle {
+  color: var(--ink-soft, #6b6b6b);
+}
+
+/* ---------- details ---------- */
+
+.title {
+  margin: 0.3rem 0 0;
+  font-family: var(--font-sale);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(2.3rem, 5.4vw, 3.8rem);
+  line-height: 0.98;
+  letter-spacing: -0.015em;
+  max-width: 18ch;
+  text-wrap: balance;
+}
+
+.meta {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--ink-soft, #6b6b6b);
+  line-height: 1.6;
+}
+
+.meta b {
+  font-weight: 600;
+  color: var(--ink, #0e0e0e);
+}
+
+.sep {
+  margin: 0 0.5rem;
+  color: var(--ink-faint, #9a9a9a);
+}
+
+.access {
+  color: var(--vip, #5b3a8e);
+  font-weight: 600;
+}
+
+.desc {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--ink-soft, #6b6b6b);
+}
+
+/* ---------- the one action ---------- */
+
+.action {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+}
+
+.primary {
+  appearance: none;
+  border: 0;
+  border-radius: var(--r-button);
+  min-height: 46px;
+  padding: 0 1.4rem;
+  background: var(--ink, #0e0e0e);
+  color: var(--paper, #ffffff);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  transition: transform 0.25s var(--ease, ease), opacity 0.2s;
+}
+
+.primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.primary:disabled {
+  background: transparent;
+  color: var(--ink-faint, #9a9a9a);
+  box-shadow: inset 0 0 0 1px var(--line-strong, rgba(14, 14, 14, 0.35));
+  cursor: default;
+}
+
+.primaryPrice {
+  opacity: 0.6;
+  font-weight: 400;
+}
+
+.link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--ink, #0e0e0e);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
+  text-decoration-color: var(--line-strong, rgba(14, 14, 14, 0.35));
+  transition: text-decoration-color 0.2s;
+}
+
+.link:hover:not(:disabled) {
+  text-decoration-color: currentColor;
+}
+
+.link:disabled {
+  color: var(--ink-faint, #9a9a9a);
+  text-decoration: none;
+  cursor: default;
+}
+
+.help {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ink-faint, #9a9a9a);
+}
+
+.msg {
+  margin: 0;
+  padding-left: 0.85rem;
+  border-left: 2px solid currentColor;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.msgErr {
+  color: var(--err, #6d1a24);
+}
+
+.msgOk {
+  color: var(--ink, #0e0e0e);
+  border-color: var(--vip, #5b3a8e);
+}
+
+/* ---------- paddle code: a line, not a box ---------- */
+
+.code {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--line, rgba(14, 14, 14, 0.14));
+  border-bottom: 1px solid var(--line, rgba(14, 14, 14, 0.14));
+  font-size: 0.85rem;
+  color: var(--ink-soft, #6b6b6b);
+  flex-wrap: wrap;
+}
+
+.codeValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.05rem;
+  letter-spacing: 0.18em;
+  color: var(--ink, #0e0e0e);
+}
+
+.codeActions {
+  margin-left: auto;
+  display: flex;
+  gap: 1rem;
+}
+
+/* ---------- catalogue: small lots ---------- */
+
+.catalogue {
+  margin-top: 3rem;
+  padding-bottom: 5rem;
+}
+
+.catHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line, rgba(14, 14, 14, 0.14));
+  margin-bottom: 1.1rem;
+}
+
+.catTitle {
+  margin: 0;
+  font-family: var(--font-sale);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.6rem;
+}
+
+.catCount {
+  font-size: 0.8rem;
+  color: var(--ink-faint, #9a9a9a);
+}
+
+.catEmpty {
+  font-size: 0.9rem;
+  color: var(--ink-soft, #6b6b6b);
+  margin: 0;
+}
+
+.lots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1.4rem 1rem;
+}
+
+.lot {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.lotNo {
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint, #9a9a9a);
+  display: flex;
+  justify-content: space-between;
+}
+
+.lotImg {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  background: var(--ink, #0e0e0e);
+  border-radius: var(--r-lot);
+  box-shadow: var(--shadow-card, 0 1px 2px rgba(14, 14, 14, 0.04));
+  transition: transform 0.4s var(--ease, ease), box-shadow 0.4s var(--ease, ease);
+}
+
+.lot:hover .lotImg {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift, 0 24px 48px rgba(14, 14, 14, 0.14));
+}
+
+.lotSealed {
+  aspect-ratio: 1;
+  background:
+    repeating-linear-gradient(135deg, transparent 0 7px, rgba(14, 14, 14, 0.05) 7px 8px),
+    var(--paper, #ffffff);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-sale);
+  font-style: italic;
+  font-size: 1.05rem;
+  color: var(--ink-faint, #9a9a9a);
+  border: 1px solid var(--line, rgba(14, 14, 14, 0.14));
+  border-radius: var(--r-lot);
+}
+
+.lotTitle {
+  font-family: var(--font-sale);
+  font-style: italic;
+  font-size: 1.08rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lotLine {
+  font-size: 0.78rem;
+  color: var(--ink-soft, #6b6b6b);
+}
+
+.lotLive {
+  color: var(--vip, #5b3a8e);
+  font-weight: 600;
+}
+
+.lotSold {
+  color: var(--ink-faint, #9a9a9a);
+}
+
+.lotBid {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--vip, #5b3a8e);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+/* ---------- states ---------- */
+
+.loading,
+.notFound {
+  padding: 6rem 1rem;
+  text-align: center;
+  color: var(--ink-soft, #6b6b6b);
+  font-size: 0.95rem;
+}
+
+@media (max-width: 640px) {
+  .banner { height: clamp(260px, 48vh, 420px); }
+  .head { --avatar: 76px; }
+  .lots { grid-template-columns: repeat(3, 1fr); gap: 1.1rem 0.7rem; }
+  .lotTitle { font-size: 0.95rem; }
+  .codeActions { margin-left: 0; flex-basis: 100%; }
+}
+
+@media (max-width: 400px) {
+  .lots { grid-template-columns: repeat(2, 1fr); }
+}
