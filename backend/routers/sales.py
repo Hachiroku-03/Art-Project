@@ -115,76 +115,99 @@ def _refresh_payout_status(cursor, sale_id: int) -> str:
     return status
 
 
-@router.post("/sales")
-def create_sale(data: dict):
+@router.get("/sales")
+def list_sales(viewer: str = ""):
+    """
+    Public auction floor.
+
+    Ended sales remain visible for ENDED_FLOOR_RETENTION_HOURS after they end,
+    then disappear from the public floor. The house still sees all their own
+    sales through /my_sales.
+
+    IMPORTANT: every matching row is returned with its access flags. We do NOT
+    hide invite/VIP rooms from the floor when the viewer lacks a paddle — the
+    card renders them locked, and the real gating happens in get_sale + the room.
+    (Hiding them here is what made a manually-openable room vanish from the list.)
+    """
     conn = None
     try:
-        host = (data.get("viewer") or "").strip()
-        title = (data.get("title") or "").strip()
-
-        if not host:
-            return {"error": "viewer required"}
-        if not title:
-            return {"error": "title required"}
-
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT role FROM users WHERE username = %s", (host,))
-        u = cursor.fetchone()
-        if not u or u["role"] != "house":
-            return {"error": "only accredited houses may open a room"}
-
-        tier = ACCESS_ALIASES.get(str(data.get("tier", "open")).strip().lower(), "open")
-        currency = _ccy(data.get("currency"))
-        ticket_currency = _ccy(data.get("ticket_currency"), currency)
-
-        try:
-            ticket_price = round(float(data.get("ticket_price", 0) or 0), 2)
-        except (TypeError, ValueError):
-            return {"error": "invalid ticket_price"}
-        if ticket_price < 0:
-            return {"error": "ticket_price cannot be negative"}
-
-        ticket_capacity, cap_err = _capacity_or_none(data.get("ticket_capacity"))
-        if cap_err:
-            return {"error": cap_err}
-
         cursor.execute(
             """
-            INSERT INTO auctions (
-                host_username, title, description, image_url, tier, status,
-                starts_at, ends_at,
-                ticket_price, ticket_currency, ticket_capacity,
-                currency, stream_type, stream_url
-            )
-            VALUES (%s, %s, %s, %s, %s, 'upcoming', %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
+            SELECT
+                a.id,
+                a.host_username,
+                a.title,
+                a.description,
+                a.image_url,
+                a.tier,
+                a.status,
+                a.starts_at::text AS starts_at,
+                a.ends_at::text AS ends_at,
+                a.ended_at::text AS ended_at,
+                a.created_at::text AS created_at,
+                a.ticket_price::text AS ticket_price,
+                a.ticket_currency,
+                a.currency,
+                a.ticket_capacity,
+                (
+                    SELECT COUNT(*)
+                    FROM tickets t
+                    WHERE t.auction_id = a.id
+                ) AS tickets_sold,
+                (
+                    SELECT COUNT(*)
+                    FROM lots l
+                    WHERE l.sale_id = a.id
+                ) AS lot_count,
+                CASE
+                    WHEN a.ticket_capacity IS NULL THEN NULL
+                    ELSE GREATEST(a.ticket_capacity - (
+                        SELECT COUNT(*)
+                        FROM tickets t2
+                        WHERE t2.auction_id = a.id
+                    ), 0)
+                END AS tickets_remaining
+            FROM auctions a
+            WHERE
+                a.status IN ('upcoming', 'live')
+                OR (
+                    a.status = 'ended'
+                    AND COALESCE(a.ended_at, a.ends_at, a.created_at) >
+                        CURRENT_TIMESTAMP - make_interval(hours => %s)
+                )
+            ORDER BY
+                CASE
+                    WHEN a.status = 'live' THEN 0
+                    WHEN a.status = 'upcoming' THEN 1
+                    ELSE 2
+                END,
+                COALESCE(a.ended_at, a.ends_at, a.created_at) DESC
             """,
-            (
-                host,
-                title,
-                data.get("description", ""),
-                data.get("image_url") or None,
-                tier,
-                data.get("starts_at") or None,
-                data.get("ends_at") or None,
-                ticket_price,
-                ticket_currency,
-                ticket_capacity,
-                currency,
-                data.get("stream_type", "external"),
-                data.get("stream_url", ""),
-            ),
+            (ENDED_FLOOR_RETENTION_HOURS,),
         )
 
-        sid = cursor.fetchone()["id"]
-        conn.commit()
-        return {"id": sid}
+        rows = cursor.fetchall()
+        out = []
+
+        for s in rows:
+            acc = auction_access(cursor, s, viewer) or {}
+
+            # Always include the room on the floor; the card shows it locked.
+            out.append(
+                {
+                    **s,
+                    "access_mode": s.get("tier"),
+                    **acc,
+                    "visible": acc.get("visible", True),
+                }
+            )
+
+        return {"sales": out}
 
     except Exception as e:
-        if conn:
-            conn.rollback()
         return {"error": str(e)}
     finally:
         if conn:
@@ -268,6 +291,7 @@ def list_sales(viewer: str = ""):
                 a.starts_at::text AS starts_at,
                 a.ends_at::text AS ends_at,
                 a.ended_at::text AS ended_at,
+                a.created_at::text AS created_at,
                 a.ticket_price::text AS ticket_price,
                 a.ticket_currency,
                 a.currency,
@@ -313,18 +337,21 @@ def list_sales(viewer: str = ""):
         out = []
 
         for s in rows:
-            acc = auction_access(cursor, s, viewer)
-            if acc["visible"]:
-                out.append(
-                    {
-                        **s,
-                        "access_mode": s.get("tier"),
-                        **acc,
-                    }
-                )
+            acc = auction_access(cursor, s, viewer) or {}
+
+            # List the room regardless of entitlement; the card renders it locked.
+            # Bidding/entry is still enforced by get_sale + the room page.
+            out.append(
+                {
+                    **s,
+                    "access_mode": s.get("tier"),
+                    **acc,
+                    "visible": acc.get("visible", True),
+                }
+            )
 
         return {"sales": out}
-
+    
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -839,14 +866,15 @@ def update_lot(lot_id: int, data: dict):
             params.append(lot_currency)
 
         # Validate estimate range using incoming values if present, else existing.
-        incoming_low = data.get("estimate_low", lot.get("estimate_low"))
-        incoming_high = data.get("estimate_high", lot.get("estimate_high"))
-
         low_val, low_err = (
-            parse_money("estimate_low") if "estimate_low" in data else (lot.get("estimate_low"), None)
+            parse_money("estimate_low")
+            if "estimate_low" in data
+            else (float(lot.get("estimate_low")) if lot.get("estimate_low") is not None else None, None)
         )
         high_val, high_err = (
-            parse_money("estimate_high") if "estimate_high" in data else (lot.get("estimate_high"), None)
+            parse_money("estimate_high")
+            if "estimate_high" in data
+            else (float(lot.get("estimate_high")) if lot.get("estimate_high") is not None else None, None)
         )
 
         if low_err:
@@ -1067,6 +1095,9 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
                 l.sold_price::text AS sold_price,
                 l.winner_username,
                 l.payment_status,
+                l.checkout_url,
+                l.payment_reference,
+                l.payment_updated_at::text AS payment_updated_at,
                 l.hammer_at::text AS hammer_at,
                 (SELECT MAX(amount)::text FROM lot_bids b WHERE b.lot_id = l.id) AS current_bid,
                 (SELECT COUNT(*) FROM lot_bids b WHERE b.lot_id = l.id) AS bid_count
@@ -1094,13 +1125,23 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
                 )
                 continue
 
+            winner = d.get("winner_username")
+
             # Reserve is house-sensitive. Never expose it to buyers, even after reveal.
             if not is_host:
                 d.pop("reserve", None)
 
                 # Payment status is only meaningful to the host and the winner.
-                if d.get("winner_username") != viewer:
+                if winner != viewer:
                     d.pop("payment_status", None)
+
+            # Checkout links are private to the winning buyer.
+            # The host can see payment status in settlement, but should not receive
+            # the buyer's Paystack authorization URL through the public sale view.
+            if winner != viewer:
+                d.pop("checkout_url", None)
+                d.pop("payment_reference", None)
+                d.pop("payment_updated_at", None)
 
             out_lots.append(d)
 
@@ -1903,11 +1944,34 @@ def _attempt_settle_charges(cursor, sale, won):
 
         if resp.get("status") and (resp.get("data") or {}).get("authorization_url"):
             initiated += 1
-            cursor.execute("UPDATE lots SET payment_status='pending' WHERE id = %s", (w["id"],))
-            outcomes.append({**base, "status": "pending", "checkout": resp["data"]["authorization_url"]})
+            checkout_url = resp["data"]["authorization_url"]
+
+            cursor.execute(
+                """
+                UPDATE lots
+                SET payment_status = 'pending',
+                    checkout_url = %s,
+                    payment_reference = %s,
+                    payment_updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (checkout_url, ref, w["id"]),
+            )
+
+            outcomes.append(
+                {
+                    **base,
+                    "status": "pending",
+                    "checkout": checkout_url,
+                    "payment_reference": ref,
+                }
+            )
         else:
             awaiting += 1
             reason = resp.get("error") or resp.get("message") or "charge not initiated"
+
+            # Do not mark failed when Paystack is simply not configured.
+            # Keep the lot unpaid so /collect can retry later.
             outcomes.append({**base, "status": "unpaid", "reason": reason})
 
     return initiated, awaiting, outcomes
@@ -2325,6 +2389,128 @@ def settlement_view(sale_id: int, viewer: str = ""):
             "rates": {
                 "buyer_premium_rate": BUYER_PREMIUM_RATE,
                 "platform_commission_rate": PLATFORM_COMMISSION_RATE,
+            },
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.get("/my/won-lots")
+def my_won_lots(viewer: str = ""):
+    """
+    Buyer-facing won lots.
+
+    Returns sold lots where the signed-in user is the winner.
+    Includes sale info, hammer/premium/total, payment status,
+    and checkout URL if one was generated by settlement.
+
+    Important:
+    The browser must never call https://api.paystack.co directly.
+    It may only open the checkout_url returned by this backend endpoint.
+    """
+    conn = None
+    try:
+        buyer = str(viewer or "").strip()
+        if not buyer:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                l.id AS lot_id,
+                l.position,
+                l.title AS lot_title,
+                l.description AS lot_description,
+                l.image_url AS lot_image_url,
+                l.sold_price::text AS hammer,
+                l.currency AS lot_currency,
+                l.payment_status,
+                l.checkout_url,
+                l.payment_reference,
+                l.payment_updated_at::text AS payment_updated_at,
+                l.hammer_at::text AS hammered_at,
+
+                a.id AS sale_id,
+                a.title AS sale_title,
+                a.host_username,
+                a.status AS sale_status,
+                a.currency AS sale_currency,
+                a.settled_at::text AS settled_at
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.winner_username = %s
+              AND l.status = 'sold'
+            ORDER BY a.created_at DESC, l.position ASC
+            """,
+            (buyer,),
+        )
+
+        rows = cursor.fetchall()
+
+        lots = []
+
+        total_hammer = 0.0
+        total_premium = 0.0
+        total_collected = 0.0
+        total_paid = 0.0
+        total_outstanding = 0.0
+
+        for r in rows:
+            d = dict(r)
+
+            sale_ccy = _ccy(d.get("sale_currency") or d.get("lot_currency"))
+            hammer = float(d.get("hammer") or 0)
+            premium = round(hammer * BUYER_PREMIUM_RATE, 2)
+            collected = round(hammer + premium, 2)
+
+            payment_status = str(d.get("payment_status") or "unpaid").strip().lower()
+            if payment_status not in {"paid", "pending", "unpaid", "failed"}:
+                payment_status = "unpaid"
+
+            d.update(
+                {
+                    "currency": sale_ccy,
+                    "hammer": f"{hammer:.2f}",
+                    "premium": f"{premium:.2f}",
+                    "collected": f"{collected:.2f}",
+                    "payment_status": payment_status,
+                }
+            )
+
+            lots.append(d)
+
+            total_hammer = round(total_hammer + hammer, 2)
+            total_premium = round(total_premium + premium, 2)
+            total_collected = round(total_collected + collected, 2)
+
+            if payment_status == "paid":
+                total_paid = round(total_paid + collected, 2)
+            else:
+                total_outstanding = round(total_outstanding + collected, 2)
+
+        first = dict(rows[0]) if rows else {}
+        summary_currency = _ccy(first.get("sale_currency") or DEFAULT_CCY)
+
+        return {
+            "lots": lots,
+            "summary": {
+                "count": len(lots),
+                "total_hammer": f"{total_hammer:.2f}",
+                "total_premium": f"{total_premium:.2f}",
+                "total_collected": f"{total_collected:.2f}",
+                "total_paid": f"{total_paid:.2f}",
+                "total_outstanding": f"{total_outstanding:.2f}",
+                "currency": summary_currency,
+            },
+            "rates": {
+                "buyer_premium_rate": BUYER_PREMIUM_RATE,
             },
         }
 

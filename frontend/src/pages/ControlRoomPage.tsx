@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   fetchMySales,
   formatMoney,
@@ -51,16 +51,23 @@ function settlementLabel(sale: MySale) {
 
 export function ControlRoomPage() {
   const { id } = useParams<{ id?: string }>()
+  const navigate = useNavigate()
   const viewer = getViewer()
 
   const [sales, setSales] = useState<MySale[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(true)     // first fetch only
+  const [refreshing, setRefreshing] = useState(false) // background reloads
   const [error, setError] = useState('')
   const [tab, setTab] = useState<TabKey>('overview')
 
+  const didLoad = useRef(false)
+
+  // Background-safe reload: never blanks the dashboard after the first paint.
   const reload = useCallback(async () => {
-    setLoading(true)
+    if (!didLoad.current) setLoading(true)
+    else setRefreshing(true)
     setError('')
+
     const d = await fetchMySales(viewer)
     if (d.error) {
       setError(d.error)
@@ -68,12 +75,21 @@ export function ControlRoomPage() {
     } else {
       setSales(d.sales || [])
     }
+
+    didLoad.current = true
     setLoading(false)
+    setRefreshing(false)
   }, [viewer])
 
+  // Auth guard + first load in one effect (matches every other page).
   useEffect(() => {
+    if (!localStorage.getItem('space_token')) {
+      setLoading(false)
+      navigate('/login', { replace: true })
+      return
+    }
     void reload()
-  }, [reload])
+  }, [reload, navigate])
 
   const selectedSale = useMemo(() => {
     if (!id) return null
@@ -135,11 +151,22 @@ export function ControlRoomPage() {
               </p>
             </div>
 
-            {selectedSale ? (
-              <Link className={styles.linkButton} to={`/sales/${selectedSale.id}`}>
-                Open ticket page
-              </Link>
-            ) : null}
+            <div className={styles.headerActions}>
+              {refreshing ? (
+                <span className={styles.refreshTag}>updating…</span>
+              ) : null}
+
+              {selectedSale ? (
+                <>
+                  <Link className={styles.linkButton} to="/sales/control">
+                    All sales
+                  </Link>
+                  <Link className={styles.linkButton} to={`/sales/${selectedSale.id}`}>
+                    Open ticket page
+                  </Link>
+                </>
+              ) : null}
+            </div>
           </header>
 
           {tab === 'overview' ? (

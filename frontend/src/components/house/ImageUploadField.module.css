@@ -1,11 +1,20 @@
+/* ImageUploadField — thumbnail on the left, controls on the right.
+   The preview is capped at --thumb wide; the aspect prop still shapes it. */
+
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  --thumb: 168px;
+  display: grid;
+  grid-template-columns: var(--thumb) minmax(0, 1fr);
+  grid-auto-rows: max-content;
+  column-gap: 1rem;
+  row-gap: 0.5rem;
+  align-items: start;
   min-width: 0;
 }
 
+/* label + hint span the full width */
 .head {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
@@ -25,10 +34,16 @@
   line-height: 1.4;
 }
 
+/* the thumbnail: fixed column, aspect from the prop, never taller than 240px */
 .preview {
   position: relative;
+  grid-column: 1;
+  grid-row: 2 / span 4;           /* sits beside controls, url row, error */
   width: 100%;
-  border-radius: 16px;
+  max-width: var(--thumb);
+  aspect-ratio: 4 / 5;            /* default; inline style from `aspect` overrides */
+  max-height: 240px;
+  border-radius: 12px;
   overflow: hidden;
   background: #f4f2ee;
   border: 1px solid rgba(14, 14, 14, 0.08);
@@ -48,8 +63,10 @@
   flex-direction: column;
   align-items: center;
   gap: 0.3rem;
+  padding: 0.5rem;
+  text-align: center;
   color: var(--ink-faint, #888);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-style: italic;
 }
 
@@ -68,12 +85,14 @@
   font-weight: 700;
 }
 
-.spin {
-  animation: iufSpin 0.9s linear infinite;
-}
+.spin { animation: iufSpin 0.9s linear infinite; }
+@keyframes iufSpin { to { transform: rotate(360deg); } }
 
-@keyframes iufSpin {
-  to { transform: rotate(360deg); }
+/* everything else flows into the right column */
+.controls,
+.urlRow,
+.error {
+  grid-column: 2;
 }
 
 .controls {
@@ -123,9 +142,7 @@
   background: rgba(139, 31, 47, 0.06);
 }
 
-.hiddenInput {
-  display: none;
-}
+.hiddenInput { display: none; }
 
 .urlRow {
   display: flex;
@@ -135,6 +152,7 @@
   background: #fff;
   border-radius: 12px;
   padding: 0.5rem 0.7rem;
+  min-width: 0;
 }
 
 .urlIcon {
@@ -153,12 +171,17 @@
   outline: none;
 }
 
-.urlInput:disabled {
-  color: #999;
-}
+.urlInput:disabled { color: #999; }
 
 .error {
   margin: 0;
   font-size: 0.8rem;
   color: var(--err, #8b1f2f);
+}
+
+/* narrow: stack, thumbnail stays small */
+@media (max-width: 520px) {
+  .field { grid-template-columns: 1fr; }
+  .preview { grid-row: auto; max-width: 140px; max-height: 180px; }
+  .controls, .urlRow, .error { grid-column: 1; }
 }

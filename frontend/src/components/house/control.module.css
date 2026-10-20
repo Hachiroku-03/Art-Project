@@ -448,6 +448,42 @@
   white-space: nowrap;
 }
 
+/* ---- appended: lot-status chip shape (colour variants come from sales.module.css) ---- */
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+/* ---- appended: header right cluster + background-refresh tag ---- */
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.refreshTag {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint, #888);
+  background: rgba(20, 18, 15, 0.04);
+  border: 1px solid var(--line, #e4dfd7);
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+}
+
 /* ---- Section 4: entry / paddles ---- */
 .entryTop {
   display: flex;

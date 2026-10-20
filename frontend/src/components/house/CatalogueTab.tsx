@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  deleteLot,
   formatMoney,
   getSaleView,
   normalizeAccessMode,
@@ -49,7 +50,9 @@ export function CatalogueTab({
   const [lots, setLots] = useState<Lot[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [formOpen, setFormOpen] = useState(false)
+
+  const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null)
+  const [editingLotId, setEditingLotId] = useState<number | null>(null)
 
   useEffect(() => {
     if (selectedSaleId) setSaleId(selectedSaleId)
@@ -99,6 +102,41 @@ export function CatalogueTab({
 
   const currency = sale?.currency || 'NGN'
   const ended = sale?.status === 'ended'
+  const canDelete = sale?.status === 'upcoming'
+
+  const closeForm = () => {
+    setFormMode(null)
+    setEditingLotId(null)
+  }
+
+  const afterSave = () => {
+    void load()
+    reload()
+    closeForm()
+  }
+
+  const onDelete = async (lot: Lot) => {
+    if (!viewer) return
+
+    const ok = window.confirm(
+      `Delete Lot ${lot.position} (“${lot.title || 'untitled'}”)? This cannot be undone.`,
+    )
+    if (!ok) return
+
+    const r = await deleteLot(lot.id, viewer)
+    if (r.error) {
+      setError(r.error)
+      return
+    }
+
+    void load()
+    reload()
+  }
+
+  const editingLot =
+    editingLotId != null
+      ? lots.find(l => Number(l.id) === editingLotId) ?? null
+      : null
 
   return (
     <div className={styles.panel}>
@@ -145,7 +183,10 @@ export function CatalogueTab({
 
           <button
             className={`${styles.linkButton} ${styles.primaryLink}`}
-            onClick={() => setFormOpen(true)}
+            onClick={() => {
+              setEditingLotId(null)
+              setFormMode('create')
+            }}
             disabled={!sale || ended || !viewer}
           >
             ＋ Add lot
@@ -186,59 +227,114 @@ export function CatalogueTab({
                 <th>Sold</th>
                 <th>Winner</th>
                 <th>Payment</th>
+                <th>Actions</th>
               </tr>
             </thead>
+
             <tbody>
               {lots.length ? (
-                lots.map(lot => (
-                  <tr key={lot.id}>
-                    <td className={styles.nowrap}>{lot.position}</td>
+                lots.map(lot => {
+                  const finalized = lot.status === 'sold' || lot.status === 'passed'
+                  const deletable = lot.status === 'sealed' && canDelete && !!viewer
 
-                    <td>
-                      <span className={`${styles.statusPill} ${lotStatusClass(lot.status)}`}>
-                        {lotStatusLabel(lot.status)}
-                      </span>
-                    </td>
+                  return (
+                    <tr key={lot.id}>
+                      <td className={styles.nowrap}>{lot.position}</td>
 
-                    <td>
-                      <div className={styles.lotCell}>
-                        {lot.image_url ? (
-                          <img className={styles.thumb} src={lot.image_url} alt="" />
-                        ) : (
-                          <div className={styles.thumb} />
-                        )}
+                      <td>
+                        <span className={`${styles.statusPill} ${lotStatusClass(lot.status)}`}>
+                          {lotStatusLabel(lot.status)}
+                        </span>
+                      </td>
 
-                        <div className={styles.lotCellText}>
-                          <div className={styles.lotName}>{lot.title || `Lot ${lot.position}`}</div>
-                          {lot.description ? (
-                            <div className={styles.smallMuted}>
-                              {lot.description.length > 90
-                                ? `${lot.description.slice(0, 90)}…`
-                                : lot.description}
+                      <td>
+                        <div className={styles.lotCell}>
+                          {lot.image_url ? (
+                            <img className={styles.thumb} src={lot.image_url} alt="" />
+                          ) : (
+                            <div className={styles.thumb} />
+                          )}
+
+                          <div className={styles.lotCellText}>
+                            <div className={styles.lotName}>
+                              {lot.title || `Lot ${lot.position}`}
                             </div>
-                          ) : null}
+
+                            {lot.description ? (
+                              <div className={styles.smallMuted}>
+                                {lot.description.length > 90
+                                  ? `${lot.description.slice(0, 90)}…`
+                                  : lot.description}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    <td className={styles.nowrap}>{formatMoney(lot.starting_price, lot.currency || currency)}</td>
-                    <td className={styles.nowrap}>{formatMoney(lot.reserve, lot.currency || currency)}</td>
+                      <td className={styles.nowrap}>
+                        {formatMoney(lot.starting_price, lot.currency || currency)}
+                      </td>
 
-                    <td className={styles.nowrap}>
-                      {lot.estimate_low || lot.estimate_high
-                        ? `${formatMoney(lot.estimate_low, lot.currency || currency)} – ${formatMoney(lot.estimate_high, lot.currency || currency)}`
-                        : '—'}
-                    </td>
+                      <td className={styles.nowrap}>
+                        {formatMoney(lot.reserve, lot.currency || currency)}
+                      </td>
 
-                    <td className={styles.nowrap}>{formatMoney(lot.current_bid, lot.currency || currency)}</td>
-                    <td className={styles.nowrap}>{formatMoney(lot.sold_price, lot.currency || currency)}</td>
-                    <td>{lot.winner_username || '—'}</td>
-                    <td>{lot.payment_status || '—'}</td>
-                  </tr>
-                ))
+                      <td className={styles.nowrap}>
+                        {lot.estimate_low || lot.estimate_high
+                          ? `${formatMoney(lot.estimate_low, lot.currency || currency)} – ${formatMoney(
+                              lot.estimate_high,
+                              lot.currency || currency,
+                            )}`
+                          : '—'}
+                      </td>
+
+                      <td className={styles.nowrap}>
+                        {formatMoney(lot.current_bid, lot.currency || currency)}
+                      </td>
+
+                      <td className={styles.nowrap}>
+                        {formatMoney(lot.sold_price, lot.currency || currency)}
+                      </td>
+
+                      <td>{lot.winner_username || '—'}</td>
+                      <td>{lot.payment_status || '—'}</td>
+
+                      <td>
+                        <div className={styles.actions}>
+                          <button
+                            className={styles.linkButton}
+                            disabled={finalized || !viewer}
+                            title={finalized ? 'Finalized lots cannot be edited.' : 'Edit lot'}
+                            onClick={() => {
+                              setEditingLotId(Number(lot.id))
+                              setFormMode('edit')
+                            }}
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            className={styles.linkButton}
+                            disabled={!deletable}
+                            title={
+                              lot.status !== 'sealed'
+                                ? 'Only sealed lots can be deleted.'
+                                : !canDelete
+                                  ? 'Lots can only be deleted before the sale goes live.'
+                                  : 'Delete lot'
+                            }
+                            onClick={() => void onDelete(lot)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
               ) : (
                 <tr>
-                  <td colSpan={10}>
+                  <td colSpan={11}>
                     <div className={styles.empty}>
                       No lots yet. Click <strong>＋ Add lot</strong> to create the first sealed lot.
                     </div>
@@ -250,19 +346,30 @@ export function CatalogueTab({
         </div>
       )}
 
-      {formOpen && saleId ? (
+      {formMode === 'create' && saleId ? (
         <LotForm
+          mode="create"
           saleId={saleId}
           viewer={viewer}
-          currency={currency}
-          disabled={ended}
-          onClose={() => setFormOpen(false)}
-          onAdded={() => {
-            void load()
-            reload()
-          }}
+          initial={null}
+          onClose={closeForm}
+          onSaved={afterSave}
+        />
+      ) : null}
+
+      {formMode === 'edit' && saleId && editingLotId != null ? (
+        <LotForm
+          mode="edit"
+          saleId={saleId}
+          viewer={viewer}
+          lotId={editingLotId}
+          initial={editingLot}
+          onClose={closeForm}
+          onSaved={afterSave}
         />
       ) : null}
     </div>
   )
 }
+
+export default CatalogueTab

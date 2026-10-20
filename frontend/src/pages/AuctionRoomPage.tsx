@@ -10,6 +10,7 @@ import {
   Radio,
   SkipForward,
   Square,
+  Trophy,
 } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import { Preloader } from '../components/Preloader'
@@ -40,13 +41,10 @@ function pad(n: number) {
 
 function parseTimestamp(value?: string | null): number | null {
   if (!value) return null
-
   const raw = String(value).trim()
   if (!raw) return null
-
   const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T')
   const time = new Date(normalized).getTime()
-
   return Number.isFinite(time) ? time : null
 }
 
@@ -55,15 +53,17 @@ function formatDuration(ms: number) {
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
-
   return `${pad(h)}:${pad(m)}:${pad(s)}`
 }
 
 /**
- * Converts normal YouTube watch / youtu.be links into embeddable URLs.
+ * YouTube embed handling.
  *
- * Do not scrape youtu.be.
- * Only embed the resulting YouTube embed URL.
+ * Do NOT scrape https://youtu.be — it is just YouTube's normal watch/share page.
+ * Only ever iframe a real https://www.youtube.com/embed/<VIDEO_ID> URL.
+ * A bare /embed with no id (or a private / embedding-disabled video) will show
+ * YouTube's own "An error occurred / Unable to execute JavaScript" frame — that
+ * is YouTube, not your app. The fallback link covers that case.
  */
 function normalizeHost(host: string) {
   return host.replace(/^www\./, '').replace(/^m\./, '').toLowerCase()
@@ -77,13 +77,11 @@ function buildYouTubeEmbed(videoId: string, nocookie = false) {
   const base = nocookie
     ? 'https://www.youtube-nocookie.com/embed'
     : 'https://www.youtube.com/embed'
-
   const params = new URLSearchParams({
     rel: '0',
     modestbranding: '1',
     playsinline: '1',
   })
-
   return `${base}/${videoId}?${params.toString()}`
 }
 
@@ -91,29 +89,19 @@ function buildYouTubeChannelLiveEmbed(channelId: string, nocookie = false) {
   const base = nocookie
     ? 'https://www.youtube-nocookie.com/embed'
     : 'https://www.youtube.com/embed'
-
   const params = new URLSearchParams({
     channel: channelId,
     rel: '0',
     modestbranding: '1',
   })
-
   return `${base}/live_stream?${params.toString()}`
 }
 
-/**
- * Converts YouTube watch / youtu.be / shorts / live URLs into embeddable URLs.
- *
- * Important:
- * Do not scrape youtu.be.
- * Only embed the resulting YouTube embed URL.
- */
 function toEmbedUrl(raw?: string | null): string {
   const value = (raw || '').trim()
   if (!value) return ''
 
   let u: URL
-
   try {
     u = new URL(value.startsWith('http') ? value : `https://${value}`)
   } catch {
@@ -126,37 +114,28 @@ function toEmbedUrl(raw?: string | null): string {
   const path = stripTrailingSlash(u.pathname)
   const nocookie = host === 'youtube-nocookie.com'
 
-  // https://youtu.be/VIDEO_ID
   if (host === 'youtu.be') {
     const id = path.slice(1).split('/')[0]
     if (id) return buildYouTubeEmbed(id, nocookie)
     return ''
   }
 
-  // https://youtube.com / https://www.youtube.com / https://youtube-nocookie.com
   if (host === 'youtube.com' || nocookie) {
-    // https://youtube.com/watch?v=VIDEO_ID
     if (path === '/watch') {
       const id = u.searchParams.get('v')
       if (id) return buildYouTubeEmbed(id, nocookie)
     }
 
-    // https://youtube.com/embed/VIDEO_ID
-    // https://youtube.com/shorts/VIDEO_ID
-    // https://youtube.com/live/VIDEO_ID
     const idMatch = path.match(/^\/(?:embed|shorts|live)\/([\w-]+)/)
-    if (idMatch?.[1]) {
-      return buildYouTubeEmbed(idMatch[1], nocookie)
-    }
+    if (idMatch?.[1]) return buildYouTubeEmbed(idMatch[1], nocookie)
 
-    // https://youtube.com/embed/live_stream?channel=CHANNEL_ID
     if (path === '/embed/live_stream') {
       const channel = u.searchParams.get('channel')
       if (channel) return buildYouTubeChannelLiveEmbed(channel, nocookie)
     }
   }
 
-  // Twitch / Zoom / other external embeds: return as-is if it looks valid.
+  // Twitch / Zoom / other external embeds: pass through if it looks valid.
   if (/^https?:\/\//.test(value)) return value
 
   return ''
@@ -167,7 +146,6 @@ function toExternalStreamUrl(raw?: string | null): string {
   if (!value) return ''
 
   let u: URL
-
   try {
     u = new URL(value.startsWith('http') ? value : `https://${value}`)
   } catch {
@@ -189,7 +167,6 @@ function toExternalStreamUrl(raw?: string | null): string {
     const idMatch = path.match(/^\/(?:embed|shorts|live)\/([\w-]+)/)
     if (idMatch?.[1]) {
       const kind = path.split('/')[1]
-
       if (kind === 'shorts') return `https://www.youtube.com/shorts/${idMatch[1]}`
       if (kind === 'live') return `https://www.youtube.com/live/${idMatch[1]}`
       return `https://www.youtube.com/watch?v=${idMatch[1]}`
@@ -232,44 +209,30 @@ export function AuctionRoomPage() {
     [lots],
   )
 
-  const sealedCount = useMemo(
-    () => lots.filter(l => l.status === 'sealed').length,
-    [lots],
-  )
+  const sealedCount = useMemo(() => lots.filter(l => l.status === 'sealed').length, [lots])
+  const soldCount = useMemo(() => lots.filter(l => l.status === 'sold').length, [lots])
+  const passedCount = useMemo(() => lots.filter(l => l.status === 'passed').length, [lots])
 
-  const soldCount = useMemo(
-    () => lots.filter(l => l.status === 'sold').length,
-    [lots],
-  )
-
-  const passedCount = useMemo(
-    () => lots.filter(l => l.status === 'passed').length,
-    [lots],
-  )
-
-const stream = useMemo(() => {
-  const embed = toEmbedUrl(sale?.stream_url)
-  const external = toExternalStreamUrl(sale?.stream_url)
-
-  const isYouTube =
-    !!embed &&
-    (/youtube\.com\/embed\//.test(embed) ||
-      /youtube-nocookie\.com\/embed\//.test(embed))
-
-  return {
-    embed,
-    external,
-    isYouTube,
-  }
-}, [sale?.stream_url])
+  const stream = useMemo(() => {
+    const embed = toEmbedUrl(sale?.stream_url)
+    const external = toExternalStreamUrl(sale?.stream_url)
+    const isYouTube =
+      !!embed &&
+      (/youtube\.com\/embed\//.test(embed) || /youtube-nocookie\.com\/embed\//.test(embed))
+    return { embed, external, isYouTube }
+  }, [sale?.stream_url])
 
   const canGoLive = Boolean(sale?.is_host && sale?.status === 'upcoming')
-  const canReveal = Boolean(
-    sale?.is_host && sale?.status === 'live' && !activeLot && sealedCount > 0,
-  )
+  const canReveal = Boolean(sale?.is_host && sale?.status === 'live' && !activeLot && sealedCount > 0)
   const canHammer = Boolean(sale?.is_host && sale?.status === 'live' && activeLot)
   const canPass = canHammer
   const canEnd = Boolean(sale?.is_host && sale?.status === 'live' && !activeLot)
+
+  // Did this viewer win anything in this sale? (winner_username is left visible by get_sale)
+  const wonLots = useMemo(
+    () => (viewer ? lots.filter(l => l.winner_username === viewer).length : 0),
+    [lots, viewer],
+  )
 
   const loadSale = useCallback(async () => {
     if (!Number.isFinite(saleId)) {
@@ -280,7 +243,6 @@ const stream = useMemo(() => {
 
     try {
       const data = await fetchSale(String(saleId), viewer)
-
       if (data.sale) {
         setSale(data.sale)
         setLots(data.lots || [])
@@ -301,11 +263,10 @@ const stream = useMemo(() => {
       navigate('/login', { replace: true })
       return
     }
-
     void loadSale()
   }, [loadSale, navigate])
 
-  // Upcoming start countdown.
+  // Upcoming start countdown — stops hard at zero (no repeated loadSale loop).
   useEffect(() => {
     if (!sale || sale.status !== 'upcoming' || !sale.starts_at) {
       setStartCountdown('')
@@ -319,15 +280,19 @@ const stream = useMemo(() => {
     }
 
     let cancelled = false
+    let done = false
+    let timer: number | undefined
 
     const tick = () => {
       if (cancelled) return
-
       const diff = target - Date.now()
 
       if (diff <= 0) {
+        done = true
         setStartCountdown('00:00:00')
-        void loadSale()
+        if (timer) window.clearInterval(timer)
+        timer = undefined
+        void loadSale() // one reconcile so upcoming->live is picked up
         return
       }
 
@@ -335,15 +300,15 @@ const stream = useMemo(() => {
     }
 
     tick()
-    const timer = window.setInterval(tick, 1000)
+    if (!done && !cancelled) timer = window.setInterval(tick, 1000)
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer) window.clearInterval(timer)
     }
   }, [sale?.status, sale?.starts_at, loadSale])
 
-  // Live end countdown.
+  // Live end countdown — stops hard at zero.
   useEffect(() => {
     if (!sale || sale.status !== 'live' || !sale.ends_at) {
       setEndCountdown('')
@@ -357,14 +322,18 @@ const stream = useMemo(() => {
     }
 
     let cancelled = false
+    let done = false
+    let timer: number | undefined
 
     const tick = () => {
       if (cancelled) return
-
       const diff = target - Date.now()
 
       if (diff <= 0) {
+        done = true
         setEndCountdown('00:00:00')
+        if (timer) window.clearInterval(timer)
+        timer = undefined
         void loadSale()
         return
       }
@@ -373,62 +342,61 @@ const stream = useMemo(() => {
     }
 
     tick()
-    const timer = window.setInterval(tick, 1000)
+    if (!done && !cancelled) timer = window.setInterval(tick, 1000)
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer) window.clearInterval(timer)
     }
   }, [sale?.status, sale?.ends_at, loadSale])
 
-  // Poll sale status while not ended.
-  // This catches:
-  // - upcoming -> live when host presses Go live
-  // - live lot changes
-  // - live -> ended
+  // Poll sale status while not ended (snappier lot propagation).
   useEffect(() => {
     if (!sale || sale.status === 'ended') return
-
-    const timer = window.setInterval(() => {
-      void loadSale()
-    }, 4000)
-
+    const timer = window.setInterval(() => void loadSale(), 2500)
     return () => window.clearInterval(timer)
   }, [sale?.status, loadSale])
 
-  // Reset ledger when active lot changes.
+  // Single source of truth for the ledger. Keyed ONLY on activeLot?.id so a lot
+  // change always clears the board. Merge is strictly id-deduped so an optimistic
+  // row can never coexist with the polled real row (kills the duplicates).
   useEffect(() => {
-    if (!activeLot) {
+    const lotId = activeLot?.id
+
+    if (!lotId) {
       setBids([])
       lastBidId.current = 0
       return
     }
 
     let alive = true
-
     setBids([])
     lastBidId.current = 0
 
-    fetchLotBids(activeLot.id, 0).then(list => {
+    const merge = (incoming: LotBid[]) => {
+      setBids(prev => {
+        const seen = new Set(prev.map(b => b.id))
+        const add = incoming.filter(
+          b => b.id > 0 && b.id > lastBidId.current && !seen.has(b.id),
+        )
+        if (!add.length) return prev
+        const maxId = add.reduce((m, b) => Math.max(m, b.id), lastBidId.current)
+        lastBidId.current = maxId
+        return [...add.slice().reverse(), ...prev]
+      })
+    }
+
+    fetchLotBids(lotId, 0).then(list => {
       if (!alive) return
-
-      if (list.length) {
-        lastBidId.current = list[list.length - 1].id
-      }
-
-      setBids([...list].reverse())
+      const real = list.filter(b => b.id > 0)
+      if (real.length) lastBidId.current = real[real.length - 1].id
+      setBids(real.slice().reverse())
     })
 
     const timer = window.setInterval(async () => {
-      const fresh = await fetchLotBids(activeLot.id, lastBidId.current)
-
-      if (!alive) return
-
-      if (fresh.length > 0) {
-        lastBidId.current = fresh[fresh.length - 1].id
-        setBids(prev => [...[...fresh].reverse(), ...prev])
-      }
-    }, 1500)
+      const fresh = await fetchLotBids(lotId, lastBidId.current)
+      if (alive && fresh.length) merge(fresh)
+    }, 1000)
 
     return () => {
       alive = false
@@ -437,21 +405,63 @@ const stream = useMemo(() => {
   }, [activeLot?.id])
 
   function handleMyBid(b: LotBid) {
-    lastBidId.current = Math.max(lastBidId.current, b.id)
+    // Only trust real backend ids; the poll will also surface it and merge() dedupes.
+    if (b.id > 0) {
+      lastBidId.current = Math.max(lastBidId.current, b.id)
+      setBids(prev => (prev.some(x => x.id === b.id) ? prev : [b, ...prev]))
+    }
 
-    setBids(prev => [b, ...prev])
     setLots(prev =>
       prev.map(l =>
         l.id === activeLot?.id
-          ? {
-              ...l,
-              current_bid: b.amount,
-              bid_count: (l.bid_count || 0) + 1,
-            }
+          ? { ...l, current_bid: b.amount, bid_count: (l.bid_count || 0) + 1 }
           : l,
       ),
     )
   }
+
+  // Flip local state the instant an action succeeds, so the board moves without
+  // waiting on the network reconcile.
+  const applyOptimistic = useCallback((key: HostActionKey, res: any) => {
+    if (!res || res.error) return
+
+    if (key === 'live') {
+      setSale(prev => (prev ? { ...prev, status: 'live' } : prev))
+      return
+    }
+
+    if (key === 'end') {
+      setSale(prev =>
+        prev ? { ...prev, status: 'ended', ended_at: new Date().toISOString() } : prev,
+      )
+      return
+    }
+
+    if (key === 'reveal' && res.lot?.id) {
+      const id = res.lot.id
+      setLots(prev => prev.map(l => (l.id === id ? { ...l, status: 'on_block' as const } : l)))
+      return
+    }
+
+    if ((key === 'hammer' || key === 'pass') && res.message) {
+      setLots(prev =>
+        prev.map(l => {
+          if (l.status !== 'on_block') return l
+          if (res.message === 'sold') {
+            return {
+              ...l,
+              status: 'sold' as const,
+              sold_price: res.sold_price ?? l.current_bid,
+              winner_username: res.winner ?? l.winner_username,
+              payment_status: 'unpaid',
+              hammer_at: new Date().toISOString(),
+            }
+          }
+          return { ...l, status: 'passed' as const, hammer_at: new Date().toISOString() }
+        }),
+      )
+    }
+  }, [])
 
   const runHostAction = useCallback(
     async (
@@ -467,21 +477,22 @@ const stream = useMemo(() => {
 
       try {
         const res = await fn()
-
         if (res?.error) {
           setActionError(res.error)
           return
         }
 
+        applyOptimistic(key, res)
         setActionNotice(typeof success === 'function' ? success(res) : success)
-        await loadSale()
+
+        void loadSale() // reconcile in background; do NOT block the button on it
       } catch (e) {
         setActionError(e instanceof Error ? e.message : 'Action failed.')
       } finally {
         setActionBusy('')
       }
     },
-    [saleId, viewer, loadSale],
+    [saleId, viewer, loadSale, applyOptimistic],
   )
 
   if (loading) {
@@ -497,12 +508,10 @@ const stream = useMemo(() => {
     return (
       <main className={styles.layout}>
         <Navbar />
-
         <div className={styles.gateCard} style={{ maxWidth: 480, margin: '6rem auto' }}>
           <p className={styles.gateTitle}>
             <Lock size={16} /> {error || 'This room is private.'}
           </p>
-
           <button className={styles.gateBtn} onClick={() => navigate('/auctions')}>
             Back to the floor
           </button>
@@ -518,7 +527,6 @@ const stream = useMemo(() => {
     return (
       <main className={styles.curtainLayout}>
         <Navbar />
-
         <div className={styles.curtain}>
           <p className={styles.curtainLabel}>The auction will start in</p>
           <h1 className={styles.curtainTime}>{startCountdown || '—'}</h1>
@@ -539,25 +547,16 @@ const stream = useMemo(() => {
             <div className={styles.hostActionsInline}>
               <button
                 className={styles.hostBtn}
-                onClick={() =>
-                  void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')
-                }
+                onClick={() => void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')}
                 disabled={actionBusy !== '' || !canGoLive}
               >
-                {actionBusy === 'live' ? (
-                  <Loader2 size={14} className={styles.spin} />
-                ) : (
-                  <Play size={14} />
-                )}
+                {actionBusy === 'live' ? <Loader2 size={14} className={styles.spin} /> : <Play size={14} />}
                 Go live
               </button>
             </div>
           ) : !sale.has_ticket ? (
             <div className={styles.hostActionsInline}>
-              <button
-                className={styles.gateBtn}
-                onClick={() => navigate(`/sales/${saleId}`)}
-              >
+              <button className={styles.gateBtn} onClick={() => navigate(`/sales/${saleId}`)}>
                 Get a paddle
               </button>
             </div>
@@ -573,11 +572,7 @@ const stream = useMemo(() => {
 
       <div className={styles.room}>
         <div className={styles.topBar}>
-          <button
-            className={styles.backBtn}
-            onClick={() => navigate('/auctions')}
-            aria-label="Back to floor"
-          >
+          <button className={styles.backBtn} onClick={() => navigate('/auctions')} aria-label="Back to floor">
             <ArrowLeft size={18} />
           </button>
 
@@ -592,70 +587,52 @@ const stream = useMemo(() => {
         </div>
 
         <section className={styles.main}>
-          {/* THE STREAM — dominant, full width */}
+          {/* THE STREAM */}
           <div className={styles.streamBox}>
-          {stream.embed ? (
-            <div className={styles.streamShell}>
-              <iframe
-                key={stream.embed}
-                className={styles.streamFrame}
-                src={stream.embed}
-                title="Live broadcast"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                referrerPolicy="strict-origin-when-cross-origin"
-                allowFullScreen
-              />
-
-              {stream.external ? (
-                <a
-                  className={styles.streamFallback}
-                  href={stream.external}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open stream externally
-                </a>
-              ) : null}
-            </div>
-          ) : (
-            <div className={styles.streamPlaceholder}>
-              <Radio size={30} />
-              <p>The house has not opened the broadcast yet.</p>
-            </div>
-          )}
+            {stream.embed ? (
+              <div className={styles.streamShell}>
+                <iframe
+                  key={stream.embed}
+                  className={styles.streamFrame}
+                  src={stream.embed}
+                  title="Live broadcast"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  allowFullScreen
+                />
+                {stream.external ? (
+                  <a className={styles.streamFallback} href={stream.external} target="_blank" rel="noreferrer">
+                    Open stream externally
+                  </a>
+                ) : null}
+              </div>
+            ) : (
+              <div className={styles.streamPlaceholder}>
+                <Radio size={30} />
+                <p>The house has not opened the broadcast yet.</p>
+              </div>
+            )}
           </div>
 
-          <AuctionHeader
-            sale={sale}
-            totalLots={lots.length}
-            activeLot={activeLot}
-          />
+          <AuctionHeader sale={sale} totalLots={lots.length} activeLot={activeLot} />
 
           {/* HOST CONTROLS */}
           {sale.is_host ? (
             <div className={styles.hostBar}>
               <div className={styles.hostBarHead}>
                 <span className={styles.ledgerTitle}>Host controls</span>
-
                 <span className={styles.hostMeta}>
-                  {lots.length} lots · {soldCount} sold · {passedCount} passed ·{' '}
-                  {sealedCount} sealed
+                  {lots.length} lots · {soldCount} sold · {passedCount} passed · {sealedCount} sealed
                 </span>
               </div>
 
               <div className={styles.hostActions}>
                 <button
                   className={styles.hostBtn}
-                  onClick={() =>
-                    void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')
-                  }
+                  onClick={() => void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')}
                   disabled={actionBusy !== '' || !canGoLive}
                 >
-                  {actionBusy === 'live' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Play size={14} />
-                  )}
+                  {actionBusy === 'live' ? <Loader2 size={14} className={styles.spin} /> : <Play size={14} />}
                   Go live
                 </button>
 
@@ -670,11 +647,7 @@ const stream = useMemo(() => {
                   }
                   disabled={actionBusy !== '' || !canReveal}
                 >
-                  {actionBusy === 'reveal' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Eye size={14} />
-                  )}
+                  {actionBusy === 'reveal' ? <Loader2 size={14} className={styles.spin} /> : <Eye size={14} />}
                   Reveal next
                 </button>
 
@@ -682,34 +655,22 @@ const stream = useMemo(() => {
                   className={styles.hostBtn}
                   onClick={() => {
                     if (!activeLot) return
-
                     const ok = window.confirm(
-                      `Hammer Lot ${activeLot.position}? This will sell it to the top bidder if reserve is met, otherwise pass it.`,
+                      `Hammer Lot ${activeLot.position}? This sells it to the top bidder if reserve is met, otherwise passes it.`,
                     )
                     if (!ok) return
-
                     void runHostAction(
                       'hammer',
                       () => hammerLot(activeLot.id, viewer),
-                      res => {
-                        if (res.message === 'sold') {
-                          return `Sold Lot ${activeLot.position} to ${res.winner || 'winner'} at ${formatMoney(
-                            res.sold_price,
-                            currency,
-                          )}.`
-                        }
-
-                        return `Lot ${activeLot.position} passed. ${res.reason || ''}`.trim()
-                      },
+                      res =>
+                        res.message === 'sold'
+                          ? `Sold Lot ${activeLot.position} to ${res.winner || 'winner'} at ${formatMoney(res.sold_price, currency)}.`
+                          : `Lot ${activeLot.position} passed. ${res.reason || ''}`.trim(),
                     )
                   }}
                   disabled={actionBusy !== '' || !canHammer}
                 >
-                  {actionBusy === 'hammer' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Gavel size={14} />
-                  )}
+                  {actionBusy === 'hammer' ? <Loader2 size={14} className={styles.spin} /> : <Gavel size={14} />}
                   Hammer
                 </button>
 
@@ -717,46 +678,29 @@ const stream = useMemo(() => {
                   className={styles.hostBtn}
                   onClick={() => {
                     if (!activeLot) return
-
                     const ok = window.confirm(`Pass Lot ${activeLot.position} without selling?`)
                     if (!ok) return
-
-                    void runHostAction(
-                      'pass',
-                      () => passLot(activeLot.id, viewer),
-                      `Lot ${activeLot.position} passed.`,
-                    )
+                    void runHostAction('pass', () => passLot(activeLot.id, viewer), `Lot ${activeLot.position} passed.`)
                   }}
                   disabled={actionBusy !== '' || !canPass}
                 >
-                  {actionBusy === 'pass' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <SkipForward size={14} />
-                  )}
+                  {actionBusy === 'pass' ? <Loader2 size={14} className={styles.spin} /> : <SkipForward size={14} />}
                   Pass
                 </button>
 
                 <button
                   className={`${styles.hostBtn} ${styles.hostBtnDanger}`}
                   onClick={() => {
-                    const ok =
+                    const msg =
                       sealedCount > 0
-                        ? `There are still ${sealedCount} sealed lots. Ending now will leave them unsold. End sale anyway?`
+                        ? `There are still ${sealedCount} sealed lots. Ending now leaves them unsold. End sale anyway?`
                         : 'End this sale?'
-
-                    const confirmed = window.confirm(ok)
-                    if (!confirmed) return
-
+                    if (!window.confirm(msg)) return
                     void runHostAction('end', () => endSale(saleId, viewer), 'Sale ended.')
                   }}
                   disabled={actionBusy !== '' || !canEnd}
                 >
-                  {actionBusy === 'end' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Square size={14} />
-                  )}
+                  {actionBusy === 'end' ? <Loader2 size={14} className={styles.spin} /> : <Square size={14} />}
                   End sale
                 </button>
               </div>
@@ -766,16 +710,14 @@ const stream = useMemo(() => {
             </div>
           ) : null}
 
-          {/* CHAPTERS — the catalogue strip */}
+          {/* CHAPTERS */}
           <div className={styles.chapters}>
             {lots.map(lot => (
               <div
                 key={lot.id}
-                className={`${styles.chapter} ${
-                  lot.status === 'on_block' ? styles.chapterActive : ''
-                } ${lot.status === 'sold' ? styles.chapterSold : ''} ${
-                  lot.status === 'passed' ? styles.chapterPassed : ''
-                }`}
+                className={`${styles.chapter} ${lot.status === 'on_block' ? styles.chapterActive : ''} ${
+                  lot.status === 'sold' ? styles.chapterSold : ''
+                } ${lot.status === 'passed' ? styles.chapterPassed : ''}`}
               >
                 {lot.status === 'sealed' ? (
                   <div className={styles.chapterSealed}>
@@ -785,19 +727,11 @@ const stream = useMemo(() => {
                 ) : (
                   <>
                     {lot.image_url ? (
-                      <img
-                        className={styles.chapterImg}
-                        src={lot.image_url}
-                        alt={lot.title || `Lot ${lot.position}`}
-                      />
+                      <img className={styles.chapterImg} src={lot.image_url} alt={lot.title || `Lot ${lot.position}`} />
                     ) : (
                       <div className={styles.chapterImgBlank} />
                     )}
-
-                    <span className={styles.chapterTitle}>
-                      {lot.title || `Lot ${lot.position}`}
-                    </span>
-
+                    <span className={styles.chapterTitle}>{lot.title || `Lot ${lot.position}`}</span>
                     {lot.status === 'sold' && <span className={styles.soldStamp}>SOLD</span>}
                     {lot.status === 'passed' && <span className={styles.passedStamp}>PASSED</span>}
                   </>
@@ -806,24 +740,22 @@ const stream = useMemo(() => {
             ))}
           </div>
 
-          {/* PADDLE, GATE, OR INTERMISSION */}
+          {/* PADDLE, GATE, INTERMISSION, OR ENDED */}
           {sale.status === 'live' ? (
             activeLot ? (
               sale.can_bid ? (
-              <BidPanel
-                lot={activeLot}
-                viewer={viewer}
-                currency={sale.currency}
-                leadingUsername={
-                  bids.length
-                    ? bids.reduce((top, b) =>
-                        Number(b.amount) > Number(top.amount) ? b : top,
-                      ).user_name
-                    : null
-                }
-                viewerHasBid={bids.some(b => b.user_name === viewer)}
-                onBid={handleMyBid}
-              />                
+                <BidPanel
+                  lot={activeLot}
+                  viewer={viewer}
+                  currency={sale.currency}
+                  leadingUsername={
+                    bids.length
+                      ? bids.reduce((top, b) => (Number(b.amount) > Number(top.amount) ? b : top)).user_name
+                      : null
+                  }
+                  viewerHasBid={bids.some(b => b.user_name === viewer)}
+                  onBid={handleMyBid}
+                />
               ) : (
                 <TicketGate sale={sale} viewer={viewer} onRefresh={loadSale} />
               )
@@ -832,9 +764,7 @@ const stream = useMemo(() => {
                 <p className={styles.gateTitle}>
                   <Radio size={16} /> Between lots
                 </p>
-                <p className={styles.gateText}>
-                  The house will reveal the next lot shortly.
-                </p>
+                <p className={styles.gateText}>The house will reveal the next lot shortly.</p>
               </div>
             )
           ) : sale.status === 'ended' ? (
@@ -842,15 +772,19 @@ const stream = useMemo(() => {
               <p className={styles.gateTitle}>
                 <Lock size={16} /> Sale ended
               </p>
-              <p className={styles.gateText}>
-                Results are visible in the catalogue strip above.
-              </p>
-              <button
-                className={styles.gateBtn}
-                onClick={() => navigate(`/sales/${saleId}`)}
-              >
-                View ticket page
-              </button>
+              <p className={styles.gateText}>Results are visible in the catalogue strip above.</p>
+
+              <div className={styles.hostActionsInline}>
+                <button className={styles.gateBtn} onClick={() => navigate(`/sales/${saleId}`)}>
+                  View ticket page
+                </button>
+
+                {wonLots > 0 ? (
+                  <button className={styles.gateBtn} onClick={() => navigate('/wins')}>
+                    <Trophy size={14} /> You won {wonLots} lot{wonLots === 1 ? '' : 's'} — view
+                  </button>
+                ) : null}
+              </div>
             </div>
           ) : (
             <TicketGate sale={sale} viewer={viewer} onRefresh={loadSale} />
@@ -858,12 +792,10 @@ const stream = useMemo(() => {
         </section>
 
         <aside className={styles.rail}>
-          {/* THE LEDGER */}
           <div className={styles.ledgerHead}>
             <span className={styles.ledgerTitle}>
               Bid ledger {activeLot ? `· Lot ${activeLot.position}` : ''}
             </span>
-
             {sale.status === 'live' && (
               <span className={styles.ledgerLive}>
                 <i /> updating live
@@ -878,14 +810,9 @@ const stream = useMemo(() => {
               <p className={styles.ledgerEmpty}>No bids yet on this lot.</p>
             ) : (
               bids.map((b, i) => (
-                <div
-                  key={b.id}
-                  className={`${styles.ledgerRow} ${i === 0 ? styles.ledgerLead : ''}`}
-                >
+                <div key={b.id} className={`${styles.ledgerRow} ${i === 0 ? styles.ledgerLead : ''}`}>
                   <span className={styles.ledgerUser}>{b.user_name}</span>
-                  <span className={styles.ledgerAmount}>
-                    {formatMoney(b.amount, currency)}
-                  </span>
+                  <span className={styles.ledgerAmount}>{formatMoney(b.amount, currency)}</span>
                 </div>
               ))
             )}

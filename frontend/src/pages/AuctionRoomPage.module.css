@@ -1,8 +1,9 @@
 /* =====================================================================
-   AuctionRoomPage.module.css — structural pass
+   AuctionRoomPage.module.css — structural pass + BidPanel merged
    Colors: UNCHANGED (same hex/rgba, hoisted to scoped tokens).
-   Requires 2 JSX wrappers: <section className={styles.main}> and
-   <aside className={styles.rail}> — see notes.
+   BidPanel.tsx imports THIS file, so its classes live here:
+   .bidStatusRow .bidMeta .bidPill .bidLeading .bidOutbid .bidNeutral
+   .bidForm .quickRow .quickBtn .paddleHint .paddleNotice
    ===================================================================== */
 
 /* ---------- scoped tokens: every value below already existed in the old file ---------- */
@@ -44,6 +45,8 @@
 .curtainLabel { font-size: .72rem; font-weight: 700; letter-spacing: .28em; text-transform: uppercase; color: var(--t6); margin: 0 0 1.4rem; }
 .curtainTime { font-family: var(--font-display); font-size: clamp(3rem, 10vw, 6.5rem); color: var(--t1); letter-spacing: .04em; font-variant-numeric: tabular-nums; line-height: 1; margin: 0; }
 .curtainSub { margin: 1.2rem 0 0; font-family: var(--font-label); font-style: italic; color: var(--t5); font-size: 1.05rem; }
+.startNote { margin: 1.1rem auto 0; max-width: 42ch; color: var(--t4); font-size: 0.88rem; line-height: 1.5; }
+.hostActionsInline { margin-top: 1.25rem; display: flex; justify-content: center; gap: 0.55rem; flex-wrap: wrap; }
 
 /* ============ THE ROOM ============ */
 .layout {
@@ -88,19 +91,31 @@
 .watching { display: flex; align-items: center; gap: .45rem; font-size: .68rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--t4); }
 .watching i, .livePill i, .ledgerLive i { width: 6px; height: 6px; border-radius: 50%; background: var(--live); animation: blink 1.2s infinite; box-shadow: 0 0 0 0 rgba(255,69,58,.45); }
 @keyframes blink { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,69,58,.45); } 50% { opacity: .5; box-shadow: 0 0 0 5px rgba(255,69,58,0); } }
+.liveEnd { margin-left: 0.55rem; color: var(--t4); font-variant-numeric: tabular-nums; }
 
 /* --- the stream --- */
-.streamBox {
+.streamBox,
+.streamShell {
+  position: relative; width: 100%;
   aspect-ratio: 16 / 9; background: var(--s0); border-radius: 14px; overflow: hidden;
   box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.06);
   margin-bottom: var(--gap);
 }
+.streamBox .streamShell { margin-bottom: 0; box-shadow: none; border-radius: 0; } /* shell nested inside box: no double chrome */
 .streamFrame { width: 100%; height: 100%; border: none; display: block; }
 .streamPlaceholder {
   width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
   color: var(--t8); font-family: var(--font-label); font-style: italic; font-size: 1.1rem;
 }
 .streamPlaceholder p { margin: 0; }
+.streamFallback {
+  position: absolute; right: 10px; bottom: 10px; z-index: 3;
+  background: rgba(0,0,0,.62); color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 999px;
+  padding: .42rem .75rem; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  text-decoration: none; backdrop-filter: blur(8px); opacity: .78;
+  transition: opacity .15s, background .15s, transform .12s var(--ease);
+}
+.streamFallback:hover { opacity: 1; background: rgba(0,0,0,.78); transform: translateY(-1px); }
 
 /* --- title row --- */
 .titleRow { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: var(--gap); }
@@ -117,6 +132,26 @@
   font-size: .62rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
   padding: .5rem .9rem; border-radius: 2px; box-shadow: 0 4px 14px rgba(0,0,0,.4);
 }
+
+/* --- host controls --- */
+.hostBar { background: var(--s1); border: 1px solid var(--edge); border-radius: 12px; padding: 0.85rem 0.95rem; margin-bottom: var(--gap); }
+.hostBarHead { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.65rem; }
+.hostMeta { font-size: 0.7rem; color: var(--t5); letter-spacing: 0.06em; text-transform: uppercase; }
+.hostActions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.hostBtn {
+  appearance: none; border: 1px solid var(--edge-3); background: var(--s2); color: var(--t1);
+  border-radius: 999px; padding: 0.5rem 0.85rem;
+  font-family: var(--font-ui, system-ui, sans-serif); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s var(--ease), opacity 0.15s;
+}
+.hostBtn:hover:not(:disabled) { background: var(--s3); border-color: var(--edge-2); transform: translateY(-1px); }
+.hostBtn:active:not(:disabled) { transform: scale(0.97); }
+.hostBtn:disabled { opacity: 0.38; cursor: not-allowed; }
+.hostBtnDanger { color: #ff8a80; border-color: rgba(255, 69, 58, 0.25); }
+.hostBtnDanger:hover:not(:disabled) { background: rgba(255, 69, 58, 0.12); border-color: rgba(255, 69, 58, 0.35); }
+.hostError { margin-top: 0.55rem; font-size: 0.78rem; color: var(--live); }
+.hostNotice { margin-top: 0.55rem; font-size: 0.78rem; color: var(--ok); }
 
 /* --- chapters — filmstrip --- */
 .chapters {
@@ -141,6 +176,7 @@
   padding: .2rem .45rem; border-radius: 2px;
 }
 .chapterSold { opacity: .45; }
+.chapterPassed { opacity: 0.38; filter: grayscale(1); }
 .chapterSealed {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .5rem;
   color: var(--t7); border: 1px dashed var(--edge-3); border-radius: 7px; margin: 4px;
@@ -149,26 +185,70 @@
 .chapterImg { width: 100%; height: 78%; object-fit: cover; }
 .chapterImgBlank { width: 100%; height: 78%; background: var(--s4); }
 .chapterTitle { padding: .35rem .5rem; font-family: var(--font-label); font-style: italic; font-size: .78rem; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.soldStamp {
+.soldStamp,
+.passedStamp {
   position: absolute; top: 8px; right: -22px; transform: rotate(35deg);
-  background: var(--live); color: var(--t1);
-  font-family: var(--font-display); font-size: .55rem; letter-spacing: .14em; padding: .2rem 1.6rem;
+  color: var(--t1); font-family: var(--font-display); font-size: .55rem; letter-spacing: .14em; padding: .2rem 1.6rem;
+}
+.soldStamp   { background: var(--live); }
+.passedStamp { background: var(--t5); padding: 0.2rem 1.45rem; }
+
+/* ============ PADDLE BOX (BidPanel) ============ */
+.paddleBox {
+  background: var(--s1); border: 1px solid var(--edge); border-radius: 12px; padding: 1.1rem 1.2rem;
+  display: grid; gap: .8rem;
+  margin-bottom: var(--gap);
 }
 
-/* --- paddle box --- */
-.paddleBox { background: var(--s1); border: 1px solid var(--edge); border-radius: 12px; padding: 1.1rem 1.2rem; }
-.paddleTop { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
-.paddleLabel { font-size: .68rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--t4); }
-.paddleAmount { font-family: var(--font-display); font-size: 1.75rem; line-height: 1; color: var(--t1); font-variant-numeric: tabular-nums; }
+/* current bid · lot title  +  big number */
+.paddleTop {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  padding-bottom: .8rem; border-bottom: 1px solid var(--edge);
+}
+.paddleLabel { margin: 0; font-size: .68rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--t4); line-height: 1.5; }
+.paddleAmount { font-family: var(--font-display); font-size: 1.75rem; line-height: 1; color: var(--t1); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* minimum next bid  +  your standing */
+.bidStatusRow { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; margin: 0; }
+.bidMeta { font-size: .82rem; color: var(--t3); }
+.bidMeta strong { color: var(--t1); font-variant-numeric: tabular-nums; }
+
+.bidPill {
+  display: inline-flex; align-items: center; gap: .35rem;
+  border-radius: 999px; padding: .35rem .65rem;
+  font-size: .68rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.bidLeading { color: var(--ok); background: rgba(126, 212, 145, 0.1); border-color: rgba(126, 212, 145, 0.22); }
+.bidOutbid  { color: #ff8a80;  background: rgba(255, 69, 58, 0.1);    border-color: rgba(255, 69, 58, 0.24); }
+.bidNeutral { color: var(--t2); background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.12); }
+
+/* form */
+.bidForm { display: grid; gap: .65rem; }
+
+.quickRow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; }
+.quickBtn {
+  appearance: none; border: 1px solid var(--edge-3); background: var(--s2); color: var(--t1);
+  border-radius: 10px; padding: .55rem .45rem;
+  font-family: var(--font-ui, system-ui, sans-serif); font-size: .72rem; font-weight: 850; letter-spacing: .04em;
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; transition: background .15s, border-color .15s, transform .12s var(--ease);
+}
+.quickBtn:hover:not(:disabled) { background: var(--s3); border-color: var(--edge-2); transform: translateY(-1px); }
+.quickBtn:focus-visible { outline: 2px solid var(--t1); outline-offset: 2px; }
+.quickBtn:disabled { opacity: .4; cursor: not-allowed; }
+
 .paddleRow { display: flex; gap: .6rem; }
 .paddleInput {
   flex: 1; min-width: 0; background: var(--s0); border: 1px solid var(--edge-3); border-radius: 8px;
   padding: .75rem 1rem; color: var(--t1); font-family: var(--font-ui); font-size: .95rem; font-variant-numeric: tabular-nums;
   outline: none; transition: border-color .15s, box-shadow .15s;
 }
+.paddleInput::placeholder { color: var(--t6); }
 .paddleInput:focus { border-color: var(--t1); box-shadow: 0 0 0 3px rgba(255,255,255,.08); }
+.paddleInput:disabled { opacity: .5; cursor: not-allowed; }
 .paddleBtn {
-  display: flex; align-items: center; gap: .5rem; background: var(--t1); color: var(--s0);
+  display: flex; align-items: center; justify-content: center; gap: .5rem; background: var(--t1); color: var(--s0);
   border: none; border-radius: 8px; padding: 0 1.3rem;
   font-size: .7rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap;
   cursor: pointer; transition: opacity .15s, transform .12s var(--ease);
@@ -176,7 +256,10 @@
 .paddleBtn:hover:not(:disabled) { opacity: .85; }
 .paddleBtn:active:not(:disabled) { transform: scale(.97); }
 .paddleBtn:disabled { opacity: .4; cursor: not-allowed; }
-.paddleError { margin: .6rem 0 0; font-size: .78rem; color: var(--live); }
+
+.paddleHint { margin: 0; font-size: .74rem; color: var(--t5); line-height: 1.45; }
+.paddleError  { margin: 0; font-size: .78rem; color: var(--live); }
+.paddleNotice { margin: 0; font-size: .8rem;  color: var(--ok); }
 
 /* --- gate — engraved ticket --- */
 .gateCard {
@@ -219,203 +302,9 @@
 .ledgerAmount { font-family: var(--font-display); font-size: .88rem; color: var(--t1); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .ledgerEmpty { text-align: center; font-family: var(--font-label); font-style: italic; color: var(--t7); padding: 2.2rem 1rem; margin: 0; }
 
-/* ---- room additions: host controls, start note, passed lots, spinner ---- */
-
-.startNote {
-  margin: 1.1rem auto 0;
-  max-width: 42ch;
-  color: var(--t4);
-  font-size: 0.88rem;
-  line-height: 1.5;
-}
-
-.hostActionsInline {
-  margin-top: 1.25rem;
-  display: flex;
-  justify-content: center;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-
-.hostBar {
-  background: var(--s1);
-  border: 1px solid var(--edge);
-  border-radius: 12px;
-  padding: 0.85rem 0.95rem;
-  margin-bottom: var(--gap);
-}
-
-.hostBarHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.65rem;
-}
-
-.hostMeta {
-  font-size: 0.7rem;
-  color: var(--t5);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.hostActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-
-.hostBtn {
-  appearance: none;
-  border: 1px solid var(--edge-3);
-  background: var(--s2);
-  color: var(--t1);
-  border-radius: 999px;
-  padding: 0.5rem 0.85rem;
-  font-family: var(--font-ui, system-ui, sans-serif);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, transform 0.12s var(--ease), opacity 0.15s;
-}
-
-.hostBtn:hover:not(:disabled) {
-  background: var(--s3);
-  border-color: var(--edge-2);
-  transform: translateY(-1px);
-}
-
-.hostBtn:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-.hostBtn:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-
-.hostBtnDanger {
-  color: #ff8a80;
-  border-color: rgba(255, 69, 58, 0.25);
-}
-
-.hostBtnDanger:hover:not(:disabled) {
-  background: rgba(255, 69, 58, 0.12);
-  border-color: rgba(255, 69, 58, 0.35);
-}
-
-.hostError {
-  margin-top: 0.55rem;
-  font-size: 0.78rem;
-  color: var(--live);
-}
-
-.hostNotice {
-  margin-top: 0.55rem;
-  font-size: 0.78rem;
-  color: var(--ok);
-}
-
-.chapterPassed {
-  opacity: 0.38;
-  filter: grayscale(1);
-}
-
-.passedStamp {
-  position: absolute;
-  top: 8px;
-  right: -22px;
-  transform: rotate(35deg);
-  background: var(--t5);
-  color: var(--t1);
-  font-family: var(--font-display, Georgia, serif);
-  font-size: 0.55rem;
-  letter-spacing: 0.14em;
-  padding: 0.2rem 1.45rem;
-}
-
-.liveEnd {
-  margin-left: 0.55rem;
-  color: var(--t4);
-  font-variant-numeric: tabular-nums;
-}
-
-.spin {
-  animation: roomSpin 0.9s linear infinite;
-}
-
-@keyframes roomSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.streamShell {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--s0);
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.06);
-  margin-bottom: var(--gap);
-}
-
-.streamShell .streamFrame {
-  width: 100%;
-  height: 100%;
-  border: none;
-  display: block;
-}
-
-.streamFallback {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 3;
-  background: rgba(0,0,0,.62);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 999px;
-  padding: .42rem .75rem;
-  font-size: .68rem;
-  font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  text-decoration: none;
-  backdrop-filter: blur(8px);
-  opacity: .78;
-  transition: opacity .15s, background .15s, transform .12s var(--ease);
-}
-
-.streamFallback:hover {
-  opacity: 1;
-  background: rgba(0,0,0,.78);
-  transform: translateY(-1px);
-}
-
-@media (max-width: 980px) {
-  .hostBar {
-    margin-bottom: 0.75rem;
-  }
-
-  .hostActions {
-    gap: 0.35rem;
-  }
-
-  .hostBtn {
-    padding: 0.45rem 0.7rem;
-    font-size: 0.62rem;
-  }
-}
-
+/* --- spinner --- */
+.spin { animation: roomSpin 0.9s linear infinite; }
+@keyframes roomSpin { to { transform: rotate(360deg); } }
 
 /* ============ RESPONSIVE ============ */
 @media (max-width: 980px) {
@@ -429,11 +318,23 @@
   .streamBox  { order: 1; margin-bottom: .25rem; }
   .paddleBox, .gateCard { order: 2; }
   .titleRow   { order: 3; margin-bottom: .25rem; }
+  .hostBar    { order: 3; margin-bottom: .75rem; }
   .chapters   { order: 4; margin-bottom: .25rem; }
   .ledgerHead { order: 5; }
   .ledger     { order: 6; max-height: 380px; }
   .titleRow { flex-direction: column; align-items: flex-start; gap: .7rem; }
   .lotPlate { align-self: flex-start; }
+
+  .hostActions { gap: 0.35rem; }
+  .hostBtn { padding: 0.45rem 0.7rem; font-size: 0.62rem; }
+}
+
+@media (max-width: 640px) {
+  .paddleBox { padding: 1rem; }
+  .paddleAmount { font-size: 1.5rem; }
+  .quickRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .paddleRow { flex-direction: column; }
+  .paddleBtn { width: 100%; padding: 0.75rem 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

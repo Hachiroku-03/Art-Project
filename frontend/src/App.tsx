@@ -21,6 +21,7 @@ import { CallDetailPage } from './pages/CallDetailPage'
 // existing AuctionsPage (floor) and AuctionRoomPage (room). The files remain on
 // disk; repoint a route here if you'd rather use them instead.
 import { SaleDetailPage } from './pages/SaleDetailPage'
+import { WonLotsPage } from './pages/WonLotsPage'
 
 function Gate() {
   const token = localStorage.getItem('space_token')
@@ -59,6 +60,7 @@ function App() {
         <Route path="/chat-debug" element={<ChatDebugPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/wins"element={<ErrorBoundary><WonLotsPage /></ErrorBoundary>}/>
         <Route path="/calls/:id" element={<CallDetailPage />} />
         <Route path="/profile" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
         <Route path="/profile/:username" element={<ErrorBoundary><ProfilePage /></ErrorBoundary>} />
