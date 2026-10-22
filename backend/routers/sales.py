@@ -7,6 +7,17 @@ from ledger import spend
 from notification_service import create_notification
 import paystack
 
+import os
+import json
+import hmac
+import hashlib
+import secrets
+from decimal import Decimal, ROUND_HALF_UP
+from urllib import request as urlreq, error as urlerr
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 router = APIRouter()
 
 # Platform-controlled v1 rates. Become per-sale columns when houses set their own
@@ -42,6 +53,854 @@ DEFAULT_CURRENCY = DEFAULT_CCY    # compatibility alias, safe if anything refere
 # How long an ended sale remains visible on the public auction floor.
 # The house/control room still sees all their sales forever via /my_sales.
 ENDED_FLOOR_RETENTION_HOURS = 72  # 3 days
+
+# ---------------------------------------------------------------------------
+# Paystack collection + settlement controls
+#
+# Browser never calls api.paystack.co directly.
+# Backend initializes Paystack, stores checkout_url, buyer opens checkout_url,
+# Paystack sends webhook to backend, backend marks lot paid.
+# ---------------------------------------------------------------------------
+
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
+BUYER_PREMIUM_RATE = Decimal(os.getenv("BUYER_PREMIUM_RATE", "0.15"))
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+PAYSTACK_CALLBACK_URL = os.getenv(
+    "PAYSTACK_CALLBACK_URL",
+    f"{FRONTEND_URL}/wins?payment=completed",
+)
+
+
+def _money(value) -> Decimal:
+    try:
+        return Decimal(str(value if value is not None else 0)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    except Exception:
+        return Decimal("0.00")
+
+
+def _minor_amount(amount: Decimal) -> int:
+    return int((amount * 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def _paystack_initialize(
+    email: str,
+    amount_minor: int,
+    currency: str,
+    reference: str,
+    metadata: dict,
+):
+    if not PAYSTACK_SECRET_KEY:
+        raise RuntimeError("PAYSTACK_SECRET_KEY is not configured")
+
+    payload = {
+        "email": email,
+        "amount": amount_minor,
+        "currency": currency,
+        "reference": reference,
+        "callback_url": PAYSTACK_CALLBACK_URL,
+        "metadata": metadata,
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    req = urlreq.Request(
+        "https://api.paystack.co/transaction/initialize",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlreq.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urlerr.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(body)
+        except Exception:
+            return {
+                "status": False,
+                "message": f"Paystack HTTP {e.code}: {body[:300]}",
+            }
+
+
+def _refresh_payout_status(cursor, sale_id: int) -> str:
+    """
+    Recompute collection completion and update auctions.payout_status.
+
+    payout_status meanings used here:
+      none    = no confirmed collection yet / not ready
+      pending = all won lots collected, house payout not marked paid yet
+      paid    = house payout confirmed paid
+    """
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (
+                WHERE COALESCE(payment_status, 'unpaid') = 'paid'
+            )::int AS paid,
+            COUNT(*) FILTER (
+                WHERE COALESCE(payment_status, 'unpaid') IN ('pending', 'processing')
+            )::int AS pending,
+            COUNT(*) FILTER (
+                WHERE COALESCE(payment_status, 'unpaid') = 'unpaid'
+            )::int AS unpaid,
+            COUNT(*) FILTER (
+                WHERE COALESCE(payment_status, 'unpaid') = 'failed'
+            )::int AS failed
+        FROM lots
+        WHERE sale_id = %s
+          AND status = 'sold'
+          AND winner_username IS NOT NULL
+        """,
+        (sale_id,),
+    )
+
+    row = cursor.fetchone() or {}
+
+    total = int(row.get("total") or 0)
+    paid = int(row.get("paid") or 0)
+
+    cursor.execute(
+        "SELECT payout_status FROM auctions WHERE id = %s",
+        (sale_id,),
+    )
+    sale_row = cursor.fetchone()
+    current = (sale_row or {}).get("payout_status") or "none"
+
+    if current == "paid":
+        return "paid"
+
+    new_status = "pending" if total > 0 and paid == total else "none"
+
+    cursor.execute(
+        """
+        UPDATE auctions
+        SET payout_status = %s
+        WHERE id = %s
+        """,
+        (new_status, sale_id),
+    )
+
+    return new_status
+
+
+def _buyer_email_for(cursor, username: str) -> str:
+    email = None
+
+    try:
+        cursor.execute(
+            "SELECT email FROM users WHERE username = %s",
+            (username,),
+        )
+        row = cursor.fetchone()
+        email = (row or {}).get("email")
+    except Exception:
+        email = None
+
+    return email or f"{username}@thespace.local"
+
+
+def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
+    """
+    Internal helper.
+
+    Creates or returns a Paystack checkout URL for one won lot.
+    Does not move money. Does not mark paid. Marks pending and stores reference.
+    """
+    cursor.execute(
+        """
+        SELECT
+            l.id,
+            l.position,
+            l.status,
+            l.winner_username,
+            l.sold_price::text AS sold_price,
+            COALESCE(l.payment_status, 'unpaid') AS payment_status,
+            l.payment_reference,
+            l.checkout_url,
+            l.currency,
+            a.id AS sale_id,
+            a.title AS sale_title,
+            a.host_username,
+            a.currency AS sale_currency,
+            a.settled_at
+        FROM lots l
+        JOIN auctions a ON a.id = l.sale_id
+        WHERE l.id = %s
+        FOR UPDATE OF l
+        """,
+        (lot_id,),
+    )
+
+    row = cursor.fetchone()
+
+    if not row:
+        return {"error": "lot not found"}
+
+    if row["status"] != "sold" or not row["winner_username"]:
+        return {"error": "lot is not won"}
+
+    if row["payment_status"] == "paid":
+        return {
+            "status": "paid",
+            "message": "this lot is already paid",
+        }
+
+    if not row["settled_at"]:
+        return {"error": "sale is not settled yet"}
+
+    if row["payment_status"] == "pending" and row["checkout_url"]:
+        return {
+            "status": "pending",
+            "message": "payment link already available",
+            "checkout_url": row["checkout_url"],
+            "reference": row["payment_reference"],
+        }
+
+    sold_price = _money(row["sold_price"])
+    premium = (sold_price * BUYER_PREMIUM_RATE).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+    collected = sold_price + premium
+    currency = (row["currency"] or row["sale_currency"] or "NGN").upper()
+    reference = f"lot_{lot_id}_{secrets.token_hex(6)}"
+    email = _buyer_email_for(cursor, row["winner_username"])
+
+    metadata = {
+        "purpose": "won_lot_payment",
+        "lot_id": int(row["id"]),
+        "sale_id": int(row["sale_id"]),
+        "winner_username": row["winner_username"],
+        "reference": reference,
+        "custom_fields": [
+            {
+                "variable_name": "lot_id",
+                "value": str(row["id"]),
+                "display_value": f"Lot {row['position']}",
+                "show_on_checkout": True,
+            },
+            {
+                "variable_name": "sale_id",
+                "value": str(row["sale_id"]),
+                "display_value": row["sale_title"],
+                "show_on_checkout": True,
+            },
+        ],
+    }
+
+    try:
+        resp = _paystack_initialize(
+            email=email,
+            amount_minor=_minor_amount(collected),
+            currency=currency,
+            reference=reference,
+            metadata=metadata,
+        )
+    except Exception as e:
+        return {"error": f"Paystack initialize failed: {e}"}
+
+    if not resp.get("status"):
+        return {
+            "error": resp.get("message") or "Paystack initialize failed",
+        }
+
+    checkout_url = (resp.get("data") or {}).get("authorization_url")
+
+    if not checkout_url:
+        return {"error": "Paystack did not return an authorization URL"}
+
+    cursor.execute(
+        """
+        UPDATE lots
+        SET
+            payment_status = 'pending',
+            payment_reference = %s,
+            checkout_url = %s,
+            payment_updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (reference, checkout_url, lot_id),
+    )
+
+    create_notification(
+        user_name=row["winner_username"],
+        category="wallet",
+        type="lot_payment_required",
+        title=f"Payment required · Lot {row['position']} · {row['sale_title']}",
+        body="Open your Won lots page to pay for this lot securely.",
+        actor=row["host_username"],
+        source_type="sale",
+        source_id=row["sale_id"],
+        secondary_id=row["id"],
+        data={
+            "sale_id": row["sale_id"],
+            "lot_id": row["id"],
+            "reference": reference,
+            "amount": str(collected),
+            "currency": currency,
+        },
+        cursor=cursor,
+    )
+
+    return {
+        "status": "pending",
+        "message": "payment link ready",
+        "checkout_url": checkout_url,
+        "reference": reference,
+        "amount": str(collected),
+        "currency": currency,
+    }
+
+
+@router.post("/my/won-lots/{lot_id}/pay")
+def pay_won_lot(lot_id: int, data: dict):
+    """
+    Buyer-facing payment link request.
+
+    The frontend calls this endpoint, then opens the returned checkout_url.
+    The frontend must never call api.paystack.co directly.
+    """
+    conn = None
+
+    try:
+        viewer = str(data.get("viewer") or "").strip()
+
+        if not viewer:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT winner_username FROM lots WHERE id = %s",
+            (lot_id,),
+        )
+        owner = cursor.fetchone()
+
+        if not owner:
+            return {"error": "lot not found"}
+
+        if owner["winner_username"] != viewer:
+            return {"error": "this lot was not won by you"}
+
+        result = _initialize_lot_checkout(cursor, lot_id)
+
+        if result.get("error"):
+            conn.rollback()
+        else:
+            conn.commit()
+
+        return result
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/sales/{sale_id}/collect")
+def collect_sale(sale_id: int, data: dict):
+    """
+    Host retry collection.
+
+    Initializes Paystack checkout links for unpaid/failed won lots.
+    If Paystack is not configured, this fails clearly and the host can use
+    offline collection marking for tests/manual bank transfers.
+    """
+    conn = None
+
+    try:
+        host = str(data.get("viewer") or "").strip()
+
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id, host_username, title, status, settled_at
+            FROM auctions
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (sale_id,),
+        )
+
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found"}
+
+        if sale["host_username"] != host:
+            return {"error": "not your sale"}
+
+        if sale["status"] != "ended":
+            return {"error": "sale is not ended"}
+
+        if not sale["settled_at"]:
+            return {"error": "sale is not settled yet"}
+
+        cursor.execute(
+            """
+            SELECT id, position, winner_username
+            FROM lots
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+              AND COALESCE(payment_status, 'unpaid') IN ('unpaid', 'failed')
+            ORDER BY position
+            """,
+            (sale_id,),
+        )
+
+        due = [dict(r) for r in cursor.fetchall()]
+
+        initiated = 0
+        existing = 0
+        failed = 0
+        errors = []
+
+        for lot in due:
+            result = _initialize_lot_checkout(cursor, lot["id"])
+
+            if result.get("error"):
+                failed += 1
+                errors.append(
+                    {
+                        "lot_id": lot["id"],
+                        "position": lot["position"],
+                        "error": result["error"],
+                    }
+                )
+            elif result.get("status") == "paid":
+                continue
+            elif result.get("message") == "payment link already available":
+                existing += 1
+            else:
+                initiated += 1
+
+        if initiated or existing or failed:
+            create_notification(
+                user_name=host,
+                category="wallet",
+                type="collection_retry_result",
+                title=f"Collection retry · {sale['title']}",
+                body=(
+                    f"{initiated} payment link(s) initiated, "
+                    f"{existing} already available, "
+                    f"{failed} failed."
+                ),
+                actor=None,
+                source_type="sale",
+                source_id=sale_id,
+                data={
+                    "sale_id": sale_id,
+                    "initiated": initiated,
+                    "existing": existing,
+                    "failed": failed,
+                },
+                cursor=cursor,
+            )
+
+        payout_status = _refresh_payout_status(cursor, sale_id)
+        conn.commit()
+
+        return {
+            "message": "collection retried",
+            "charges_initiated": initiated,
+            "links_available": existing,
+            "failed": failed,
+            "errors": errors[:10],
+            "payout_status": payout_status,
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/sales/{sale_id}/collection/mark_paid")
+def mark_collection_paid(sale_id: int, data: dict):
+    """
+    Host-only offline collection marker.
+
+    Use only when buyer payment has been verified outside Paystack,
+    for example bank transfer, cash, or local testing without a live rail.
+
+    This does not move money. It records that collection is complete.
+    """
+    conn = None
+
+    try:
+        host = str(data.get("viewer") or "").strip()
+        reference = str(data.get("reference") or "").strip()
+
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id, host_username, title, status, settled_at
+            FROM auctions
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (sale_id,),
+        )
+
+        sale = cursor.fetchone()
+
+        if not sale:
+            return {"error": "sale not found"}
+
+        if sale["host_username"] != host:
+            return {"error": "not your sale"}
+
+        if sale["status"] != "ended":
+            return {"error": "sale is not ended"}
+
+        if not sale["settled_at"]:
+            return {"error": "sale is not settled"}
+
+        cursor.execute(
+            """
+            SELECT id, position, winner_username
+            FROM lots
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+              AND COALESCE(payment_status, 'unpaid') <> 'paid'
+            ORDER BY position
+            """,
+            (sale_id,),
+        )
+
+        due = [dict(r) for r in cursor.fetchall()]
+
+        if not due:
+            payout_status = _refresh_payout_status(cursor, sale_id)
+            conn.commit()
+            return {
+                "message": "collection already complete",
+                "marked_paid": 0,
+                "payout_status": payout_status,
+            }
+
+        if not reference:
+            reference = f"offline_collection_{sale_id}_{secrets.token_hex(4)}"
+
+        cursor.execute(
+            """
+            UPDATE lots
+            SET
+                payment_status = 'paid',
+                payment_reference = COALESCE(
+                    NULLIF(payment_reference, ''),
+                    %s
+                ),
+                payment_updated_at = CURRENT_TIMESTAMP
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+              AND COALESCE(payment_status, 'unpaid') <> 'paid'
+            """,
+            (reference, sale_id),
+        )
+
+        marked = len(due)
+
+        for lot in due:
+            create_notification(
+                user_name=lot["winner_username"],
+                category="wallet",
+                type="payment_confirmed",
+                title=f"Payment confirmed · Lot {lot['position']} · {sale['title']}",
+                body=(
+                    "Your payment for this won lot has been confirmed. "
+                    "The house can now proceed with payout/release."
+                ),
+                actor=host,
+                source_type="sale",
+                source_id=sale_id,
+                secondary_id=lot["id"],
+                data={
+                    "sale_id": sale_id,
+                    "lot_id": lot["id"],
+                    "reference": reference,
+                    "collection_method": "offline",
+                },
+                cursor=cursor,
+            )
+
+        create_notification(
+            user_name=host,
+            category="wallet",
+            type="collection_marked_paid",
+            title=f"Collection marked paid · {sale['title']}",
+            body=(
+                f"{marked} won lot(s) were manually marked as collected. "
+                "You can now mark the house payout as paid if the transfer to the house is complete."
+            ),
+            actor=None,
+            source_type="sale",
+            source_id=sale_id,
+            data={
+                "sale_id": sale_id,
+                "marked_paid": marked,
+                "reference": reference,
+                "collection_method": "offline",
+            },
+            cursor=cursor,
+        )
+
+        payout_status = _refresh_payout_status(cursor, sale_id)
+        conn.commit()
+
+        return {
+            "message": "collection marked paid",
+            "marked_paid": marked,
+            "reference": reference,
+            "payout_status": payout_status,
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/paystack/webhook")
+async def paystack_webhook(request: Request):
+    """
+    Paystack webhook receiver.
+
+    This is the only sanctioned way a won lot becomes paid automatically.
+    The browser never calls Paystack directly; Paystack calls this backend route.
+    """
+    if not PAYSTACK_SECRET_KEY:
+        return JSONResponse(
+            {"error": "webhook not configured"},
+            status_code=400,
+        )
+
+    body = await request.body()
+    signature = request.headers.get("x-paystack-signature") or ""
+
+    hashed = hmac.new(
+        PAYSTACK_SECRET_KEY.encode("utf-8"),
+        body,
+        hashlib.sha512,
+    ).hexdigest()
+
+    if not hmac.compare_digest(hashed, signature):
+        return JSONResponse(
+            {"error": "invalid signature"},
+            status_code=400,
+        )
+
+    try:
+        event = json.loads(body.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            {"error": "invalid json"},
+            status_code=400,
+        )
+
+    event_name = event.get("event")
+    data = event.get("data") or {}
+    metadata = data.get("metadata") or {}
+
+    reference = data.get("reference") or metadata.get("reference")
+    lot_id = metadata.get("lot_id")
+
+    if event_name not in ("charge.success", "charge.failed"):
+        return {"status": True}
+
+    conn = None
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        conditions = []
+        params = []
+
+        try:
+            if lot_id is not None:
+                conditions.append("l.id = %s")
+                params.append(int(lot_id))
+        except Exception:
+            pass
+
+        if reference:
+            conditions.append("l.payment_reference = %s")
+            params.append(reference)
+
+        if not conditions:
+            return {"status": True}
+
+        where = " OR ".join(conditions)
+
+        cursor.execute(
+            f"""
+            SELECT
+                l.id,
+                l.position,
+                l.status,
+                l.winner_username,
+                COALESCE(l.payment_status, 'unpaid') AS payment_status,
+                l.payment_reference,
+                a.id AS sale_id,
+                a.title AS sale_title,
+                a.host_username
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE ({where})
+            FOR UPDATE OF l
+            """,
+            tuple(params),
+        )
+
+        lot = cursor.fetchone()
+
+        if not lot:
+            return {"status": True}
+
+        if event_name == "charge.success":
+            if lot["payment_status"] == "paid":
+                conn.commit()
+                return {"status": True}
+
+            cursor.execute(
+                """
+                UPDATE lots
+                SET
+                    payment_status = 'paid',
+                    payment_reference = COALESCE(
+                        NULLIF(payment_reference, ''),
+                        NULLIF(%s, ''),
+                        payment_reference
+                    ),
+                    payment_updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (reference or "", lot["id"]),
+            )
+
+            create_notification(
+                user_name=lot["winner_username"],
+                category="wallet",
+                type="payment_confirmed",
+                title=f"Payment confirmed · Lot {lot['position']} · {lot['sale_title']}",
+                body="Your payment was confirmed. The house can now release/payout according to its terms.",
+                actor=lot["host_username"],
+                source_type="sale",
+                source_id=lot["sale_id"],
+                secondary_id=lot["id"],
+                data={
+                    "sale_id": lot["sale_id"],
+                    "lot_id": lot["id"],
+                    "reference": reference,
+                },
+                cursor=cursor,
+            )
+
+            create_notification(
+                user_name=lot["host_username"],
+                category="wallet",
+                type="lot_payment_received",
+                title=f"Payment received · Lot {lot['position']} · {lot['sale_title']}",
+                body=f"{lot['winner_username']} paid for Lot {lot['position']}.",
+                actor=lot["winner_username"],
+                source_type="sale",
+                source_id=lot["sale_id"],
+                secondary_id=lot["id"],
+                data={
+                    "sale_id": lot["sale_id"],
+                    "lot_id": lot["id"],
+                    "winner_username": lot["winner_username"],
+                    "reference": reference,
+                },
+                cursor=cursor,
+            )
+
+            _refresh_payout_status(cursor, lot["sale_id"])
+            conn.commit()
+            return {"status": True}
+
+        if event_name == "charge.failed":
+            if lot["payment_status"] == "paid":
+                conn.commit()
+                return {"status": True}
+
+            cursor.execute(
+                """
+                UPDATE lots
+                SET
+                    payment_status = 'failed',
+                    payment_updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (lot["id"],),
+            )
+
+            create_notification(
+                user_name=lot["winner_username"],
+                category="wallet",
+                type="payment_failed",
+                title=f"Payment failed · Lot {lot['position']} · {lot['sale_title']}",
+                body="Your payment attempt failed. Try again from your Won lots page.",
+                actor=lot["host_username"],
+                source_type="sale",
+                source_id=lot["sale_id"],
+                secondary_id=lot["id"],
+                data={
+                    "sale_id": lot["sale_id"],
+                    "lot_id": lot["id"],
+                    "reference": reference,
+                },
+                cursor=cursor,
+            )
+
+            _refresh_payout_status(cursor, lot["sale_id"])
+            conn.commit()
+            return {"status": True}
+
+    except Exception:
+        if conn:
+            conn.rollback()
+        return JSONResponse(
+            {"error": "webhook processing failed"},
+            status_code=500,
+        )
+    finally:
+        if conn:
+            conn.close()
 
 
 def _ccy(value, default=DEFAULT_CCY):
@@ -397,6 +1256,214 @@ def set_stream(sale_id: int, data: dict):
         if conn:
             conn.close()
 
+@router.post("/lots/{lot_id}/revert_to_passed")
+def revert_lot_to_passed(lot_id: int, data: dict):
+    """
+    Host-only correction for a lot that was hammered SOLD by mistake and should
+    have been PASSED (no real buyer / below reserve / wrong click).
+
+    SAFE LIMITS:
+      - only the owning house
+      - only while the sale is NOT yet settled (settled totals already include
+        this lot as revenue; reverting post-settle would desync the money math.
+        After settle, use /collection/mark_paid or redo the sale in test.)
+      - clears winner, sold_price, payment state and re-stamps hammer_at
+
+    This does not move money. It corrects the catalogue record before settlement.
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT l.id, l.position, l.status AS lot_status, l.winner_username,
+                   a.host_username, a.status AS sale_status, a.settled_at, a.title
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.id = %s
+            FOR UPDATE OF l, a
+            """,
+            (lot_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            return {"error": "lot not found"}
+        if row["host_username"] != host:
+            return {"error": "not your sale"}
+        if row["lot_status"] != "sold":
+            return {"error": "only a sold lot can be reverted to passed"}
+        if row["settled_at"] is not None:
+            return {
+                "error": (
+                    "sale is already settled; reverting would desync the settlement totals. "
+                    "Use /sales/{id}/collection/mark_paid for offline collection, or redo the sale in test."
+                )
+            }
+
+        cursor.execute(
+            """
+            UPDATE lots
+            SET status = 'passed',
+                sold_price = NULL,
+                winner_username = NULL,
+                payment_status = NULL,
+                checkout_url = NULL,
+                payment_reference = NULL,
+                payment_updated_at = NULL,
+                hammer_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (lot_id,),
+        )
+
+        # Tell the (now former) winner their lot did not sell, if there was one.
+        if row["winner_username"]:
+            create_notification(
+                user_name=row["winner_username"],
+                category="auctions",
+                type="lot_lost",
+                title=f"Lot {row['position']} · {row['title']} — correction",
+                body="The house corrected this lot to passed. No payment is due.",
+                actor=host,
+                source_type="sale",
+                source_id=None,
+                secondary_id=lot_id,
+                data={"lot_id": lot_id, "corrected_to": "passed"},
+                cursor=cursor,
+            )
+
+        # Keep the sale's payout_status honest even though it's pre-settle.
+        _refresh_payout_status(cursor, _sale_id_of(cursor, lot_id))
+
+        conn.commit()
+        return {"message": "lot reverted to passed", "lot_id": lot_id, "position": row["position"]}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+@router.post("/lots/{lot_id}/reopen")
+def reopen_lot(lot_id: int, data: dict):
+    """
+    Rostrum correction: put a PASSED lot back ON THE BLOCK so bidding resumes.
+
+    Covers both "I passed it by mistake" and "I hammered it with no qualifying
+    bid (which your hammer logic records as passed)". The previous bids are
+    PRESERVED — reopening resumes the lot where it left off, it does not wipe
+    the ledger. If you want a clean restart instead, that's a different action
+    (clear lot_bids) and is not what "reverse the pass" should mean.
+
+    Limits (deliberate, to protect settlement integrity):
+      - only the owning house
+      - only while the sale is LIVE (a rostrum action; ended/settled is immutable)
+      - only a lot currently in status 'passed'
+      - refuses if ANOTHER lot is already on the block (one lot at a time),
+        so the room's activeLot + ledger stay unambiguous
+    It does not move money and does not touch sold/winner fields (a passed lot
+    already has them null; we re-null defensively in case any path left stale data).
+    """
+    conn = None
+    try:
+        host = str(data.get("viewer") or "").strip()
+        if not host:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Lock the lot + its sale so a concurrent reveal/hammer can't race us.
+        cursor.execute(
+            """
+            SELECT
+                l.id,
+                l.position,
+                l.status AS lot_status,
+                l.sale_id,
+                a.host_username,
+                a.status AS sale_status
+            FROM lots l
+            JOIN auctions a ON a.id = l.sale_id
+            WHERE l.id = %s
+            FOR UPDATE OF l, a
+            """,
+            (lot_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            return {"error": "lot not found"}
+        if row["host_username"] != host:
+            return {"error": "not your sale"}
+        if row["sale_status"] != "live":
+            return {"error": "lots can only be reopened while the sale is live"}
+        if row["lot_status"] != "passed":
+            return {
+                "error": (
+                    "only a passed lot can be reopened. "
+                    "A sold lot cannot be un-sold from the room — use the pre-settle "
+                    "correction (revert_to_passed) before settling, or leave it sold."
+                )
+            }
+
+        # One lot on the block at a time. If another lot is currently open,
+        # refuse so the room never has two active lots.
+        cursor.execute(
+            "SELECT 1 FROM lots WHERE sale_id = %s AND status = 'on_block' AND id <> %s",
+            (row["sale_id"], lot_id),
+        )
+        if cursor.fetchone():
+            return {"error": "another lot is on the block. Hammer or pass it before reopening this one."}
+
+        cursor.execute(
+            """
+            UPDATE lots
+            SET
+                status = 'on_block',
+                hammer_at = NULL,
+                sold_price = NULL,
+                winner_username = NULL,
+                payment_status = NULL,
+                checkout_url = NULL,
+                payment_reference = NULL,
+                payment_updated_at = NULL
+            WHERE id = %s
+            """,
+            (lot_id,),
+        )
+        # NOTE: lot_bids rows are intentionally NOT deleted — reopening resumes
+        # the existing bidding history. The room's ledger refetches them on the
+        # next poll because activeLot changes to this lot.
+
+        conn.commit()
+        return {
+            "message": "reopened",
+            "lot_id": lot_id,
+            "position": row["position"],
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+def _sale_id_of(cursor, lot_id: int) -> int:
+    cursor.execute("SELECT sale_id FROM lots WHERE id = %s", (lot_id,))
+    r = cursor.fetchone()
+    return int(r["sale_id"]) if r else 0
 
 @router.get("/sales/{sale_id}/paddles")
 def list_paddles(sale_id: int, viewer: str = ""):

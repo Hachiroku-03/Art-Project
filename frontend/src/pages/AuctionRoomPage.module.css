@@ -276,6 +276,58 @@
 .gateBtn:disabled { opacity: .4; }
 .gateMsg { font-size: .8rem; color: var(--ok); font-weight: 500; }
 
+/* Passed lot the host can reopen from the rostrum */
+button.chapter {
+  appearance: none;
+  background: none;
+  border: inherit;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chapterReopenable {
+  position: relative;
+}
+
+.chapterReopenable:hover {
+  outline: 1px dashed rgba(20, 18, 15, 0.35);
+  outline-offset: 2px;
+}
+
+.chapterReopenable:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reopenHint {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(20, 18, 15, 0.82);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.chapterReopenable:hover .reopenHint,
+.chapterReopenable:focus-visible .reopenHint {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* --- ledger --- */
 .ledgerHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: -.3rem; }
 .ledgerTitle { font-size: .66rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--t4); }
@@ -287,6 +339,7 @@
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
   padding-bottom: 12px;
 }
+
 .ledger::-webkit-scrollbar { width: 4px; }
 .ledger::-webkit-scrollbar-thumb { background: var(--edge-3); border-radius: 2px; }
 .ledgerRow {

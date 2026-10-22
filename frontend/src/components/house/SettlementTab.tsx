@@ -3,72 +3,61 @@ import {
   collectSale,
   fetchSettlement,
   formatMoney,
+  markCollectionPaid,
+  markPayoutPaid,
   settleSale,
   type MySale,
-  type SettleOutcome,
-  type SettlementCounts,
+  type SettlementLot,
   type SettlementView,
 } from '../../lib/sales'
 import styles from './control.module.css'
 
-function paymentClass(status?: string | null) {
-  const s = String(status || '').trim().toLowerCase()
+type BusyKey = '' | 'settle' | 'collect' | 'collection_offline' | 'payout'
+
+type SettlementLotRow = SettlementLot & {
+  payment_reference?: string | null
+  payment_updated_at?: string | null
+}
+
+function payPillClass(status?: string | null) {
+  const s = String(status || 'unpaid').toLowerCase()
 
   if (s === 'paid') return styles.payPaid
-  if (s === 'pending') return styles.payPending
+  if (s === 'pending' || s === 'processing') return styles.payPending
   if (s === 'failed') return styles.payFailed
 
   return styles.payUnpaid
 }
 
-function paymentLabel(status?: string | null) {
-  const s = String(status || '').trim().toLowerCase()
+function payLabel(status?: string | null) {
+  const s = String(status || 'unpaid').toLowerCase()
 
   if (s === 'paid') return 'Paid'
   if (s === 'pending') return 'Pending'
+  if (s === 'processing') return 'Processing'
   if (s === 'failed') return 'Failed'
 
   return 'Unpaid'
 }
 
+function payoutLabel(status?: string | null) {
+  const s = String(status || 'none').toLowerCase()
+
+  if (s === 'paid') return 'Paid'
+  if (s === 'pending') return 'Pending'
+
+  return 'Not paid'
+}
+
 function collectionLabel(state?: string | null) {
-  const s = String(state || '').trim().toLowerCase()
+  const s = String(state || '').toLowerCase()
 
-  if (s === 'not_settled') return 'Not settled'
-  if (s === 'awaiting_collection') return 'Awaiting collection'
-  if (s === 'pending') return 'Payment pending'
   if (s === 'collected') return 'Collected'
-  if (s === 'none') return 'None'
+  if (s === 'awaiting_collection') return 'Awaiting collection'
+  if (s === 'partial') return 'Partial collection'
+  if (s === 'failed') return 'Collection failed'
 
-  return state || '—'
-}
-
-function saleStatusLabel(status?: string | null) {
-  const s = String(status || '').trim().toLowerCase()
-
-  if (s === 'live') return 'Live'
-  if (s === 'upcoming') return 'Upcoming'
-  if (s === 'ended') return 'Ended'
-
-  return status || '—'
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return '—'
-
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
-  const d = new Date(normalized)
-
-  if (Number.isNaN(d.getTime())) return value
-
-  return d.toLocaleString()
-}
-
-const EMPTY_COUNTS: SettlementCounts = {
-  paid: 0,
-  pending: 0,
-  unpaid: 0,
-  failed: 0,
+  return s || '—'
 }
 
 export function SettlementTab({
@@ -83,12 +72,11 @@ export function SettlementTab({
   reload: () => void
 }) {
   const [saleId, setSaleId] = useState<number | null>(selectedSaleId)
-  const [data, setData] = useState<SettlementView | null>(null)
+  const [view, setView] = useState<SettlementView | null>(null)
   const [loading, setLoading] = useState(false)
-  const [busy, setBusy] = useState<'' | 'settle' | 'collect'>('')
+  const [busy, setBusy] = useState<BusyKey>('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [outcomes, setOutcomes] = useState<SettleOutcome[]>([])
 
   useEffect(() => {
     if (selectedSaleId) setSaleId(selectedSaleId)
@@ -100,157 +88,242 @@ export function SettlementTab({
     }
   }, [saleId, sales])
 
-  useEffect(() => {
-    setOutcomes([])
-    setNotice('')
-    setError('')
-  }, [saleId])
+  const load = useCallback(async () => {
+    if (!saleId) {
+      setView(null)
+      return
+    }
 
-  const selectedSale = useMemo(
-    () => sales.find(s => s.id === saleId) || null,
-    [sales, saleId],
-  )
-
-  const load = useCallback(
-    async (clearOutcomes = false) => {
-      if (!saleId) {
-        setData(null)
-        if (clearOutcomes) setOutcomes([])
-        return
-      }
-
-      if (!viewer) {
-        setError('No signed-in house detected.')
-        setData(null)
-        setLoading(false)
-        return
-      }
-
-      setLoading(true)
-      setError('')
-
-      const d = await fetchSettlement(saleId, viewer)
-
-      if (d.error) {
-        setError(d.error)
-        setData(null)
-      } else {
-        setData(d)
-        if (clearOutcomes) setOutcomes([])
-      }
-
+    if (!viewer) {
+      setError('No signed-in house detected.')
+      setView(null)
       setLoading(false)
-    },
-    [saleId, viewer],
-  )
+      return
+    }
+
+    setLoading(true)
+    setError('')
+
+    const d = await fetchSettlement(saleId, viewer)
+
+    if (d.error) {
+      setError(d.error)
+      setView(null)
+    } else {
+      setView(d)
+    }
+
+    setLoading(false)
+  }, [saleId, viewer])
 
   useEffect(() => {
-    void load(true)
+    void load()
   }, [load])
 
-  const saleStatus = data?.sale?.status || selectedSale?.status || ''
-  const settled = !!data?.sale?.settled_at
-  const counts = data?.counts || EMPTY_COUNTS
-  const currency = data?.totals?.currency || data?.sale?.currency || selectedSale?.currency || 'NGN'
+  const sale = view?.sale ?? null
+  const counts = view?.counts ?? { paid: 0, pending: 0, unpaid: 0, failed: 0 }
+  const totals = view?.totals ?? {}
+  const rates = view?.rates ?? {}
 
-  const dueCount = counts.unpaid + counts.failed
-  const canSettle = saleStatus === 'ended' && !settled && !!viewer && !loading && !busy
-  const canCollect = settled && dueCount > 0 && !!viewer && !loading && !busy
+  const wonLots = useMemo(
+    () =>
+      ((view?.lots || []) as SettlementLotRow[]).filter(
+        l => !!l.winner_username,
+      ),
+    [view],
+  )
 
-  const handleSettle = async () => {
-    if (!saleId) return
+  const settled = !!sale?.settled_at
+  const payoutStatus = String(sale?.payout_status || 'none').toLowerCase()
+  const outstanding = (counts.unpaid || 0) + (counts.failed || 0)
+  const pending = counts.pending || 0
 
-    const ok = window.confirm(
-      'Settle this sale? This computes buyer premium, platform commission, net to house, sends notices, and attempts payment collection where configured.',
-    )
-    if (!ok) return
+  const currency = sale?.currency || totals.currency || 'NGN'
 
-    setBusy('settle')
+  const canSettle = sale?.status === 'ended' && !settled
+  const canCollect = settled && outstanding > 0
+  const canMarkCollectionOffline = settled && outstanding > 0
+  const canMarkPayoutPaid =
+    settled &&
+    outstanding === 0 &&
+    pending === 0 &&
+    payoutStatus !== 'paid'
+
+  // Auto-refresh while collection is still moving.
+  useEffect(() => {
+    if (!saleId || !viewer || !settled) return
+    if (busy !== '') return
+    if (outstanding === 0 && pending === 0) return
+
+    const timer = window.setInterval(() => {
+      void load()
+    }, 15000)
+
+    return () => window.clearInterval(timer)
+  }, [saleId, viewer, settled, outstanding, pending, busy, load])
+
+  const act = async (
+    key: Exclude<BusyKey, ''>,
+    fn: () => Promise<any>,
+    success: string | ((d: any) => string),
+  ) => {
+    if (!saleId || !viewer) return
+
+    setBusy(key)
     setError('')
     setNotice('')
 
-    const res = await settleSale(saleId, viewer)
+    try {
+      const d = await fn()
 
-    setBusy('')
+      if (d?.error) {
+        setError(d.error)
+        return
+      }
 
-    if (res.error) {
-      setError(res.error)
-      return
+      setNotice(typeof success === 'function' ? success(d) : success)
+      await load()
+      reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Action failed.')
+    } finally {
+      setBusy('')
     }
-
-    setOutcomes(res.outcomes || [])
-
-    setNotice(
-      `${res.message || 'Settled.'} ` +
-        `${res.lots_sold ?? 0} won lot(s). ` +
-        `Collected ${formatMoney(res.collected_total, currency)}. ` +
-        `Commission ${formatMoney(res.commission_total, currency)}. ` +
-        `Net to house ${formatMoney(res.net_to_house, currency)}. ` +
-        (res.charges_initiated
-          ? `${res.charges_initiated} payment link(s) initiated.`
-          : 'No payment links initiated — set Paystack keys server-side, then retry collection.'),
-    )
-
-    await load(false)
-    reload()
   }
 
-  const handleCollect = async () => {
+  const onSettle = () => {
     if (!saleId) return
 
     const ok = window.confirm(
-      'Retry collection for unpaid/failed lots? This does not recompute the settlement or resend winner notices.',
+      'Settle this sale? This computes hammer, premium, commission, net-to-house, and prepares buyer collection.',
     )
+
     if (!ok) return
 
-    setBusy('collect')
-    setError('')
-    setNotice('')
+    void act(
+      'settle',
+      () => settleSale(saleId, viewer),
+      d =>
+        `Sale settled. ${d.lots_sold ?? 0} lot(s) sold. Net to house: ${formatMoney(
+          d.net_to_house,
+          d.outcomes?.[0]?.currency || currency,
+        )}.`,
+    )
+  }
 
-    const res = await collectSale(saleId, viewer)
+  const onRetryCollection = () => {
+    if (!saleId) return
 
-    setBusy('')
+    const ok = window.confirm(
+      'Retry collection? This asks Paystack to create payment links for unpaid/failed won lots. Buyers will be notified.',
+    )
 
-    if (res.error) {
-      setError(res.error)
+    if (!ok) return
+
+    void act(
+      'collect',
+      () => collectSale(saleId, viewer),
+      d =>
+        `Collection retried. ${d.charges_initiated ?? 0} link(s) initiated, ${
+          d.links_available ?? 0
+        } already available, ${d.failed ?? 0} failed.`,
+    )
+  }
+
+  const onMarkCollectionOffline = () => {
+    if (!saleId) return
+
+    const reference =
+      window.prompt(
+        'Offline collection reference. Use a bank transfer reference, cash receipt id, or test reference.',
+        `offline_collection_${saleId}_${Date.now()}`,
+      ) || ''
+
+    if (!reference.trim()) {
+      setError('Reference is required for offline collection marking.')
       return
     }
 
-    setOutcomes(res.outcomes || [])
-
-    setNotice(
-      `${res.message || 'Collection retried.'} ` +
-        `${res.charges_initiated ?? 0} payment link(s) initiated. ` +
-        `${res.awaiting_collection ?? 0} still awaiting collection.`,
+    const ok = window.confirm(
+      'Only use this if buyer payment has been verified outside Paystack, or if you are testing locally without a live payment rail. This records collection as complete without moving money.',
     )
 
-    await load(false)
-    reload()
+    if (!ok) return
+
+    void act(
+      'collection_offline',
+      () => markCollectionPaid(saleId, viewer, reference.trim()),
+      d =>
+        `${d.marked_paid ?? 0} won lot(s) marked collected. Reference: ${
+          d.reference || reference
+        }.`,
+    )
+  }
+
+  const onMarkPayoutPaid = () => {
+    if (!saleId) return
+
+    const reference =
+      window.prompt(
+        'House payout reference. Use the bank transfer reference, Paystack transfer reference, or payout receipt id.',
+        `house_payout_${saleId}_${Date.now()}`,
+      ) || ''
+
+    if (!reference.trim()) {
+      setError('Reference is required to mark payout paid.')
+      return
+    }
+
+    const ok = window.confirm(
+      'Confirm that the platform has paid the house. This records the house payout as complete.',
+    )
+
+    if (!ok) return
+
+    void act(
+      'payout',
+      () => markPayoutPaid(saleId, viewer, reference.trim()),
+      d =>
+        `House payout marked paid. Reference: ${
+          d.payout_reference || reference
+        }.`,
+    )
+  }
+
+  if (!sales.length) {
+    return (
+      <section className={styles.panel}>
+        <h2 className={styles.panelTitle}>Settlement</h2>
+        <div className={styles.empty}>
+          No sales yet. Create a sale first in the <strong>Sales / Auctions</strong> tab.
+        </div>
+      </section>
+    )
   }
 
   return (
-    <div className={styles.panel}>
+    <section className={styles.panel}>
       <div className={styles.settleTop}>
         <div>
           <h2 className={styles.panelTitle} style={{ margin: 0 }}>
             Settlement
           </h2>
 
-          {data?.sale || selectedSale ? (
+          {sale ? (
             <>
               <div className={styles.muted}>
-                {data?.sale?.title || selectedSale?.title} · Sale #{saleId}
+                {sale.title} · Sale #{sale.id}
               </div>
 
               <div className={styles.settleMeta}>
-                <span>Status: {saleStatusLabel(saleStatus)}</span>
-                <span>Settled: {settled ? 'Yes' : 'No'}</span>
-                <span>Collection: {collectionLabel(data?.collection_state)}</span>
-                <span>Payout: {data?.sale?.payout_status || selectedSale?.payout_status || 'none'}</span>
+                <span>Status: {sale.status}</span>
+                <span>Settled: {settled ? 'yes' : 'no'}</span>
+                <span>Collection: {collectionLabel(view?.collection_state)}</span>
+                <span>Payout: {payoutLabel(sale.payout_status)}</span>
               </div>
             </>
           ) : (
-            <div className={styles.muted}>Select a sale to review settlement.</div>
+            <div className={styles.muted}>Select a sale to settle and collect.</div>
           )}
         </div>
 
@@ -275,230 +348,253 @@ export function SettlementTab({
 
       {!viewer ? (
         <div className={styles.error}>
-          No signed-in house detected. Sign in again, or make login call `setSession(...)`.
+          No signed-in house detected. Sign in again, or make login call `setViewer(data.username)`.
         </div>
       ) : null}
 
       {error ? <div className={styles.error}>{error}</div> : null}
       {notice ? <p className={styles.noticeOk}>{notice}</p> : null}
 
-      {!sales.length ? (
-        <div className={styles.empty}>
-          No sales yet. Create and run a sale first.
-        </div>
-      ) : loading ? (
+      {loading ? (
         <p className={styles.muted}>Loading settlement…</p>
-      ) : !saleId ? (
+      ) : !sale ? (
         <p className={styles.muted}>Select a sale.</p>
       ) : (
         <>
+          <div className={styles.settleStats}>
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Hammer total</div>
+              <div className={styles.settleStatValue}>
+                {formatMoney(totals.hammer_total, currency)}
+              </div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Buyer premium</div>
+              <div className={styles.settleStatValue}>
+                {formatMoney(totals.premium_total, currency)}
+              </div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Collectible</div>
+              <div className={styles.settleStatValue}>
+                {formatMoney(totals.collected_total, currency)}
+              </div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Commission</div>
+              <div className={styles.settleStatValue}>
+                {formatMoney(totals.commission_total, currency)}
+              </div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Net to house</div>
+              <div className={styles.settleStatValue}>
+                {formatMoney(totals.net_to_house, currency)}
+              </div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Rates</div>
+              <div className={styles.settleStatValue}>
+                Premium {Math.round((rates.buyer_premium_rate ?? 0) * 100)}% ·
+                Commission {Math.round((rates.platform_commission_rate ?? 0) * 100)}%
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.settleStats}>
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Paid</div>
+              <div className={styles.settleStatValue}>{counts.paid || 0}</div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Pending</div>
+              <div className={styles.settleStatValue}>{counts.pending || 0}</div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Unpaid</div>
+              <div className={styles.settleStatValue}>{counts.unpaid || 0}</div>
+            </div>
+
+            <div className={styles.settleStat}>
+              <div className={styles.settleStatLabel}>Failed</div>
+              <div className={styles.settleStatValue}>{counts.failed || 0}</div>
+            </div>
+          </div>
+
           <div className={styles.settleActions}>
             <button
               className={`${styles.linkButton} ${styles.primaryLink}`}
-              onClick={() => void handleSettle()}
-              disabled={!canSettle}
+              onClick={onSettle}
+              disabled={busy !== '' || !canSettle}
+              title={
+                settled
+                  ? 'Already settled.'
+                  : sale.status !== 'ended'
+                    ? 'End the sale before settling.'
+                    : 'Settle this sale.'
+              }
             >
               {busy === 'settle' ? 'Settling…' : 'Settle sale'}
             </button>
 
             <button
-              className={`${styles.linkButton} ${styles.primaryLink}`}
-              onClick={() => void handleCollect()}
-              disabled={!canCollect}
+              className={styles.linkButton}
+              onClick={onRetryCollection}
+              disabled={busy !== '' || !canCollect}
+              title={
+                !settled
+                  ? 'Settle the sale first.'
+                  : outstanding === 0
+                    ? 'No unpaid/failed lots to collect.'
+                    : 'Retry Paystack collection for unpaid/failed lots.'
+              }
             >
               {busy === 'collect' ? 'Retrying…' : 'Retry collection'}
             </button>
+
+            <button
+              className={styles.linkButton}
+              onClick={onMarkCollectionOffline}
+              disabled={busy !== '' || !canMarkCollectionOffline}
+              title={
+                !settled
+                  ? 'Settle the sale first.'
+                  : outstanding === 0
+                    ? 'Collection is already complete.'
+                    : 'Mark buyer collection paid for offline/test transfers.'
+              }
+            >
+              {busy === 'collection_offline'
+                ? 'Marking…'
+                : 'Mark collection paid offline'}
+            </button>
+
+            <button
+              className={`${styles.linkButton} ${styles.primaryLink}`}
+              onClick={onMarkPayoutPaid}
+              disabled={busy !== '' || !canMarkPayoutPaid}
+              title={
+                !settled
+                  ? 'Settle the sale first.'
+                  : outstanding > 0 || pending > 0
+                    ? 'House payout cannot be marked paid until collection is complete.'
+                    : payoutStatus === 'paid'
+                      ? 'Payout already marked paid.'
+                      : 'Mark house payout paid.'
+              }
+            >
+              {busy === 'payout' ? 'Marking…' : 'Mark house payout paid'}
+            </button>
           </div>
 
-          {!settled && saleStatus === 'ended' ? (
+          {!settled ? (
             <p className={styles.settleHint}>
-              This sale is ended but not settled. Click <strong>Settle sale</strong> to compute the
-              money split and notify winners.
+              Settle the sale first. Settlement computes the money split and prepares buyer collection.
             </p>
-          ) : null}
-
-          {saleStatus !== 'ended' ? (
+          ) : outstanding > 0 || pending > 0 ? (
             <p className={styles.settleHint}>
-              Settlement becomes available after the sale is ended from the Rostrum / Live tab.
+              House payout cannot be marked paid until all won lots are collected. Buyers pay from their Won lots page.
             </p>
-          ) : null}
+          ) : payoutStatus === 'paid' ? (
+            <p className={styles.settleHint}>
+              House payout is marked paid. Reference: {sale.payout_reference || '—'}
+            </p>
+          ) : (
+            <p className={styles.settleHint}>
+              Collection is complete. You can now mark the house payout as paid.
+            </p>
+          )}
 
-          <div className={styles.settleStats}>
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Won lots</span>
-              <span className={styles.settleStatValue}>{data?.lots?.length ?? 0}</span>
-            </div>
+          <div className={styles.outcomePanel}>
+            <div className={styles.panelTitleSmall}>Won lots collection</div>
 
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Hammer total</span>
-              <span className={styles.settleStatValue}>
-                {formatMoney(data?.totals?.hammer_total ?? '0', currency)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Buyer premium</span>
-              <span className={styles.settleStatValue}>
-                {formatMoney(data?.totals?.premium_total ?? '0', currency)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Collected total</span>
-              <span className={styles.settleStatValue}>
-                {formatMoney(data?.totals?.collected_total ?? '0', currency)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Platform commission</span>
-              <span className={styles.settleStatValue}>
-                {formatMoney(data?.totals?.commission_total ?? '0', currency)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Net to house</span>
-              <span className={styles.settleStatValue}>
-                {formatMoney(data?.totals?.net_to_house ?? '0', currency)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Paid</span>
-              <span className={styles.settleStatValue}>{counts.paid}</span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Pending</span>
-              <span className={styles.settleStatValue}>{counts.pending}</span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Unpaid / failed</span>
-              <span className={styles.settleStatValue}>{dueCount}</span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Settled at</span>
-              <span className={styles.settleStatValue}>
-                {formatDateTime(data?.sale?.settled_at)}
-              </span>
-            </div>
-
-            <div className={styles.settleStat}>
-              <span className={styles.settleStatLabel}>Payout reference</span>
-              <span className={styles.settleStatValue}>
-                {data?.sale?.payout_reference || '—'}
-              </span>
-            </div>
-          </div>
-
-          {outcomes.length > 0 ? (
-            <div className={styles.outcomePanel}>
-              <div className={styles.panelTitleSmall}>Latest settlement / collection result</div>
-
-              <div className={styles.outcomeList}>
-                {outcomes.map(o => (
-                  <div key={`${o.lot_id}-${o.status}`} className={styles.outcomeRow}>
-                    <div style={{ minWidth: 0 }}>
-                      <div className={styles.outcomeTitle}>
-                        Lot {o.position} · @{o.winner}
-                      </div>
-                      <div className={styles.outcomeMeta}>
-                        {o.status}
-                        {o.reason ? ` — ${o.reason}` : ''}
-                      </div>
-                    </div>
-
-                    <div className={styles.outcomeMoney}>
-                      <div>{formatMoney(o.collected, o.currency)}</div>
-
-                      {o.checkout ? (
-                        <a
-                          className={styles.checkoutLink}
-                          href={o.checkout}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open payment link
-                        </a>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Pos</th>
-                  <th>Lot</th>
-                  <th>Winner</th>
-                  <th>Hammer</th>
-                  <th>Premium</th>
-                  <th>Collected</th>
-                  <th>Commission</th>
-                  <th>Net to house</th>
-                  <th>Payment</th>
-                  <th>Hammered</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {data?.lots?.length ? (
-                  data.lots.map(lot => (
-                    <tr key={lot.id}>
-                      <td className={styles.nowrap}>{lot.position}</td>
-                      <td>{lot.title || `Lot ${lot.position}`}</td>
-                      <td>{lot.winner_username || '—'}</td>
-
-                      <td className={styles.nowrap}>
-                        {formatMoney(lot.hammer || lot.sold_price, lot.currency || currency)}
-                      </td>
-
-                      <td className={styles.nowrap}>
-                        {formatMoney(lot.premium, lot.currency || currency)}
-                      </td>
-
-                      <td className={styles.nowrap}>
-                        {formatMoney(lot.collected, lot.currency || currency)}
-                      </td>
-
-                      <td className={styles.nowrap}>
-                        {formatMoney(lot.commission, lot.currency || currency)}
-                      </td>
-
-                      <td className={styles.nowrap}>
-                        {formatMoney(lot.net_to_house, lot.currency || currency)}
-                      </td>
-
-                      <td>
-                        <span className={`${styles.payPill} ${paymentClass(lot.payment_status)}`}>
-                          {paymentLabel(lot.payment_status)}
-                        </span>
-                      </td>
-
-                      <td className={styles.nowrap}>{formatDateTime(lot.hammer_at)}</td>
+            {wonLots.length === 0 ? (
+              <p className={styles.muted}>No won lots in this sale.</p>
+            ) : (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Lot</th>
+                      <th>Winner</th>
+                      <th>Hammer</th>
+                      <th>Premium</th>
+                      <th>Total payable</th>
+                      <th>Status</th>
+                      <th>Reference</th>
+                      <th>Updated</th>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={10}>
-                      <div className={styles.empty}>
-                        No won lots yet. Hammer lots during the live sale to create settlement items.
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  </thead>
+
+                  <tbody>
+                    {wonLots.map(lot => {
+                      const lotCurrency = lot.currency || currency
+
+                      const reference = lot.payment_reference || '—'
+
+                      const updated = lot.payment_updated_at
+                        ? new Date(
+                            String(lot.payment_updated_at).replace(' ', 'T'),
+                          ).toLocaleString()
+                        : '—'
+
+                      return (
+                        <tr key={lot.id}>
+                          <td className={styles.nowrap}>
+                            #{lot.position}
+                            {lot.title ? ` · ${lot.title}` : ''}
+                          </td>
+
+                          <td>{lot.winner_username || '—'}</td>
+
+                          <td className={styles.nowrap}>
+                            {formatMoney(lot.hammer || lot.sold_price, lotCurrency)}
+                          </td>
+
+                          <td className={styles.nowrap}>
+                            {formatMoney(lot.premium, lotCurrency)}
+                          </td>
+
+                          <td className={styles.nowrap}>
+                            {formatMoney(lot.collected, lotCurrency)}
+                          </td>
+
+                          <td>
+                            <span
+                              className={`${styles.payPill} ${payPillClass(
+                                lot.payment_status,
+                              )}`}
+                            >
+                              {payLabel(lot.payment_status)}
+                            </span>
+                          </td>
+
+                          <td className={styles.codeText}>{reference}</td>
+
+                          <td className={styles.nowrap}>{updated}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
+
+          <p className={styles.settleHint}>
+            Passed and sealed lots are excluded from payout. Only sold lots with a winner are collectible.
+          </p>
         </>
       )}
-    </div>
+    </section>
   )
 }
+
+export default SettlementTab

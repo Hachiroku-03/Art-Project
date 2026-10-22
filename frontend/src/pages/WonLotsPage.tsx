@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   CheckCircle2,
   Clock,
   CreditCard,
-  ExternalLink,
   Gavel,
   XCircle,
 } from 'lucide-react'
@@ -16,6 +15,7 @@ import {
   type WonLotsSummary,
 } from '../lib/sales'
 import { getViewer } from '../lib/session'
+import { WonLotPayButton } from '../components/wins/WonLotPayButton'
 import styles from './WonLotsPage.module.css'
 
 function paymentIcon(status: string) {
@@ -41,23 +41,36 @@ function paymentClass(status: string) {
 
 export function WonLotsPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const viewer = getViewer()
+
+  const focusLotId = Number(
+    (location.state as { lotId?: number | string } | null)?.lotId || 0,
+  )
 
   const [lots, setLots] = useState<WonLot[]>([])
   const [summary, setSummary] = useState<WonLotsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const alive = useRef(true)
 
   useEffect(() => {
-    if (!viewer) {
-      navigate('/login', { replace: true })
-      return
+    return () => {
+      alive.current = false
     }
+  }, [])
 
-    let alive = true
+  const load = useCallback(async () => {
+    if (!viewer) return
 
-    fetchWonLots(viewer).then(d => {
-      if (!alive) return
+    try {
+      const d = await fetchWonLots(viewer)
+
+      if (!alive.current) return
 
       if (d.error) {
         setError(d.error)
@@ -66,14 +79,72 @@ export function WonLotsPage() {
         setSummary(d.summary || null)
         setError('')
       }
+    } catch {
+      if (alive.current) {
+        setError('Could not load your won lots.')
+      }
+    } finally {
+      if (alive.current) {
+        setLoading(false)
+      }
+    }
+  }, [viewer])
 
+  // Auth guard + initial load.
+  useEffect(() => {
+    if (!viewer || !localStorage.getItem('space_token')) {
       setLoading(false)
-    })
+      navigate('/login', { replace: true })
+      return
+    }
+
+    void load()
+  }, [viewer, navigate, load])
+
+  // Scroll to focused lot from notification deep link.
+  useEffect(() => {
+    if (!focusLotId || !lots.length) return
+
+    const el = document.getElementById(`won-lot-${focusLotId}`)
+
+    if (el) {
+      window.setTimeout(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 120)
+    }
+  }, [focusLotId, lots])
+
+  // Refresh when tab regains focus or becomes visible.
+  // This catches the buyer returning from Paystack in another tab.
+  useEffect(() => {
+    if (!viewer) return
+
+    const onFocus = () => void load()
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void load()
+    }
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
-      alive = false
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [viewer, navigate])
+  }, [viewer, load])
+
+  // Handle Paystack callback: /wins?payment=completed
+  useEffect(() => {
+    if (searchParams.get('payment') !== 'completed') return
+
+    setNotice('Payment return detected. Refreshing your won lots…')
+    void load()
+
+    const next = new URLSearchParams(searchParams)
+    next.delete('payment')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams, load])
 
   if (loading) {
     return (
@@ -103,6 +174,22 @@ export function WonLotsPage() {
         </header>
 
         {error ? <div className={styles.error}>{error}</div> : null}
+
+        {notice ? (
+          <div
+            style={{
+              margin: '0 0 1rem',
+              padding: '0.65rem 0.8rem',
+              borderRadius: 14,
+              fontSize: '0.86rem',
+              color: '#166534',
+              background: 'rgba(22, 101, 52, 0.08)',
+              border: '1px solid rgba(22, 101, 52, 0.16)',
+            }}
+          >
+            {notice}
+          </div>
+        ) : null}
 
         {summary ? (
           <section className={styles.summary}>
@@ -160,10 +247,20 @@ export function WonLotsPage() {
           <div className={styles.list}>
             {lots.map(lot => {
               const status = String(lot.payment_status || 'unpaid').toLowerCase()
-              const canPay = status !== 'paid' && Boolean(lot.checkout_url)
+              const isPaid = status === 'paid'
+
+              // Buyer can request/open payment only after the sale is settled.
+              const collectionReady =
+                lot.sale_status === 'ended' && !!lot.settled_at
 
               return (
-                <article key={lot.lot_id} className={styles.card}>
+                <article
+                  key={lot.lot_id}
+                  id={`won-lot-${lot.lot_id}`}
+                  className={`${styles.card} ${
+                    focusLotId === lot.lot_id ? styles.cardFocus : ''
+                  }`}
+                >
                   <div className={styles.media}>
                     {lot.lot_image_url ? (
                       <img
@@ -184,9 +281,7 @@ export function WonLotsPage() {
                         <h2 className={styles.lotTitle}>
                           Lot {lot.position} · {lot.lot_title || 'Untitled'}
                         </h2>
-                        <p className={styles.host}>
-                          Hosted by @{lot.host_username}
-                        </p>
+                        <p className={styles.host}>Hosted by @{lot.host_username}</p>
                       </div>
 
                       <span className={`${styles.status} ${paymentClass(status)}`}>
@@ -224,26 +319,14 @@ export function WonLotsPage() {
                         View sale
                       </button>
 
-                      {canPay ? (
-                        <a
-                          className={styles.primaryBtn}
-                          href={lot.checkout_url || '#'}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Pay now
-                          <ExternalLink size={14} />
-                        </a>
-                      ) : status === 'paid' ? (
+                      {isPaid ? (
                         <span className={styles.paidNote}>Payment received.</span>
-                      ) : status === 'pending' ? (
-                        <span className={styles.waitNote}>
-                          Payment is being processed.
-                        </span>
-                      ) : status === 'failed' ? (
-                        <span className={styles.failNote}>
-                          Payment failed. The house can retry collection.
-                        </span>
+                      ) : collectionReady ? (
+                        <WonLotPayButton
+                          lot={lot}
+                          viewer={viewer}
+                          onOpened={() => void load()}
+                        />
                       ) : (
                         <span className={styles.waitNote}>
                           Payment link will be issued after settlement.

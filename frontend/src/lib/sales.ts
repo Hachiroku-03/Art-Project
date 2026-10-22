@@ -676,3 +676,71 @@ export async function fetchWonLots(viewer: string): Promise<WonLotsResponse> {
   p.set('viewer', viewer)
   return jget(`/my/won-lots?${p.toString()}`)
 }
+
+export type ReopenLotResult = {
+  message?: string
+  lot_id?: number
+  position?: number
+  error?: string
+}
+
+export type RequestLotPaymentResult = {
+  status?: string
+  message?: string
+  checkout_url?: string
+  reference?: string
+  amount?: string
+  currency?: string
+  error?: string
+}
+
+export async function requestWonLotPayment(
+  lotId: number | string,
+  viewer: string,
+): Promise<RequestLotPaymentResult> {
+  const lid = Number(lotId)
+
+  if (!Number.isFinite(lid) || lid <= 0) {
+    return { error: "missing or invalid lot id" }
+  }
+
+  if (!String(viewer || "").trim()) {
+    return { error: "no signed-in buyer detected" }
+  }
+
+  return jpost(`/my/won-lots/${lid}/pay`, { viewer })
+}
+
+export type MarkCollectionPaidResult = {
+  message?: string
+  marked_paid?: number
+  reference?: string
+  payout_status?: string
+  error?: string
+}
+
+export async function markCollectionPaid(
+  saleId: number | string,
+  viewer: string,
+  reference?: string,
+): Promise<MarkCollectionPaidResult> {
+  return jpost(`/sales/${saleId}/collection/mark_paid`, {
+    viewer,
+    reference: reference || "",
+  })
+}
+
+export async function reopenLot(
+  lotId: number | string,
+  viewer: string,
+): Promise<ReopenLotResult> {
+  const lid = Number(lotId)
+  if (!Number.isFinite(lid) || lid <= 0) {
+    return { error: 'missing or invalid lot id — the lot was NOT reopened' }
+  }
+  if (!String(viewer || '').trim()) {
+    return { error: 'no signed-in house detected — the lot was NOT reopened' }
+  }
+  return jpost(`/lots/${lid}/reopen`, { viewer })
+}
+

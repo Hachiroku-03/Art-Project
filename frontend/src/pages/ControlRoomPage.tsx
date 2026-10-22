@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   fetchMySales,
   formatMoney,
@@ -49,26 +49,47 @@ function settlementLabel(sale: MySale) {
   return '—'
 }
 
+function isTabKey(value: string | null): value is TabKey {
+  return !!value && TABS.some(t => t.key === value)
+}
+
 export function ControlRoomPage() {
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const viewer = getViewer()
 
+  // The active tab is driven by the URL so notification deep links work:
+  // /sales/9/control?tab=settlement
+  const requestedTab = searchParams.get('tab')
+  const tab: TabKey = isTabKey(requestedTab) ? requestedTab : 'overview'
+
   const [sales, setSales] = useState<MySale[]>([])
-  const [loading, setLoading] = useState(true)     // first fetch only
+  const [loading, setLoading] = useState(true)       // first fetch only
   const [refreshing, setRefreshing] = useState(false) // background reloads
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<TabKey>('overview')
 
   const didLoad = useRef(false)
 
   // Background-safe reload: never blanks the dashboard after the first paint.
   const reload = useCallback(async () => {
+    if (!viewer) {
+      setSales([])
+      setError('')
+      setLoading(false)
+      setRefreshing(false)
+      didLoad.current = true
+      return
+    }
+
     if (!didLoad.current) setLoading(true)
     else setRefreshing(true)
+
     setError('')
 
     const d = await fetchMySales(viewer)
+
     if (d.error) {
       setError(d.error)
       setSales([])
@@ -81,20 +102,44 @@ export function ControlRoomPage() {
     setRefreshing(false)
   }, [viewer])
 
-  // Auth guard + first load in one effect (matches every other page).
+  // Auth guard + first load.
   useEffect(() => {
     if (!localStorage.getItem('space_token')) {
       setLoading(false)
       navigate('/login', { replace: true })
       return
     }
+
     void reload()
   }, [reload, navigate])
 
+  // Parse sale id safely. Supports:
+  // /sales/control
+  // /sales/9/control
+  const selectedSaleId = useMemo(() => {
+    const n = Number(id)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }, [id])
+
   const selectedSale = useMemo(() => {
-    if (!id) return null
-    return sales.find(s => String(s.id) === id) || null
-  }, [id, sales])
+    if (!selectedSaleId) return null
+    return sales.find(s => s.id === selectedSaleId) || null
+  }, [sales, selectedSaleId])
+
+  const changeTab = useCallback(
+    (key: TabKey) => {
+      const next = new URLSearchParams(searchParams)
+
+      if (key === 'overview') {
+        next.delete('tab')
+      } else {
+        next.set('tab', key)
+      }
+
+      setSearchParams(next, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
 
   const stats = useMemo(() => {
     const total = sales.length
@@ -104,6 +149,7 @@ export function ControlRoomPage() {
     const unsettled = sales.filter(s => s.status === 'ended' && !s.settled_at).length
     const lots = sales.reduce((sum, s) => sum + Number(s.lot_count || 0), 0)
     const paddles = sales.reduce((sum, s) => sum + Number(s.tickets_sold || 0), 0)
+
     return { total, live, upcoming, ended, unsettled, lots, paddles }
   }, [sales])
 
@@ -123,7 +169,7 @@ export function ControlRoomPage() {
               <button
                 key={item.key}
                 className={`${styles.navButton} ${tab === item.key ? styles.navActive : ''}`}
-                onClick={() => setTab(item.key)}
+                onClick={() => changeTab(item.key)}
                 title={item.note}
               >
                 {item.label}
@@ -144,6 +190,7 @@ export function ControlRoomPage() {
               <h1 className={styles.headerTitle}>
                 {selectedSale ? selectedSale.title : 'Auction house studio'}
               </h1>
+
               <p className={styles.headerSub}>
                 {selectedSale
                   ? `Sale #${selectedSale.id} · ${statusLabel(selectedSale.status)}`
@@ -161,6 +208,7 @@ export function ControlRoomPage() {
                   <Link className={styles.linkButton} to="/sales/control">
                     All sales
                   </Link>
+
                   <Link className={styles.linkButton} to={`/sales/${selectedSale.id}`}>
                     Open ticket page
                   </Link>
@@ -174,17 +222,45 @@ export function ControlRoomPage() {
               {error ? <div className={styles.error}>{error}</div> : null}
 
               <div className={styles.stats}>
-                <div className={styles.stat}><div className={styles.statLabel}>Total sales</div><div className={styles.statValue}>{stats.total}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Live</div><div className={styles.statValue}>{stats.live}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Upcoming</div><div className={styles.statValue}>{stats.upcoming}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Ended</div><div className={styles.statValue}>{stats.ended}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Unsettled</div><div className={styles.statValue}>{stats.unsettled}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Lots</div><div className={styles.statValue}>{stats.lots}</div></div>
-                <div className={styles.stat}><div className={styles.statLabel}>Paddles</div><div className={styles.statValue}>{stats.paddles}</div></div>
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Total sales</div>
+                  <div className={styles.statValue}>{stats.total}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Live</div>
+                  <div className={styles.statValue}>{stats.live}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Upcoming</div>
+                  <div className={styles.statValue}>{stats.upcoming}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Ended</div>
+                  <div className={styles.statValue}>{stats.ended}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Unsettled</div>
+                  <div className={styles.statValue}>{stats.unsettled}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Lots</div>
+                  <div className={styles.statValue}>{stats.lots}</div>
+                </div>
+
+                <div className={styles.stat}>
+                  <div className={styles.statLabel}>Paddles</div>
+                  <div className={styles.statValue}>{stats.paddles}</div>
+                </div>
               </div>
 
               <div className={styles.panel}>
                 <h2 className={styles.panelTitle}>Your sales</h2>
+
                 {loading ? (
                   <p className={styles.muted}>Loading control room…</p>
                 ) : !sales.length ? (
@@ -196,23 +272,57 @@ export function ControlRoomPage() {
                     <table className={styles.table}>
                       <thead>
                         <tr>
-                          <th>Sale</th><th>Access</th><th>Status</th><th>Lots</th><th>Paddles</th><th>Paddle price</th><th>Settlement</th><th>Actions</th>
+                          <th>Sale</th>
+                          <th>Access</th>
+                          <th>Status</th>
+                          <th>Lots</th>
+                          <th>Paddles</th>
+                          <th>Paddle price</th>
+                          <th>Settlement</th>
+                          <th>Actions</th>
                         </tr>
                       </thead>
+
                       <tbody>
                         {sales.map(sale => (
                           <tr key={sale.id}>
-                            <td><div className={styles.saleTitle}>{sale.title}</div><div className={styles.muted}>#{sale.id}</div></td>
-                            <td><AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} /></td>
+                            <td>
+                              <div className={styles.saleTitle}>{sale.title}</div>
+                              <div className={styles.muted}>#{sale.id}</div>
+                            </td>
+
+                            <td>
+                              <AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} />
+                            </td>
+
                             <td>{statusLabel(sale.status)}</td>
                             <td>{sale.lot_count ?? 0}</td>
                             <td>{sale.tickets_sold ?? 0}</td>
-                            <td>{formatMoney(sale.ticket_price, sale.ticket_currency || sale.currency || 'NGN')}</td>
+
+                            <td>
+                              {formatMoney(
+                                sale.ticket_price,
+                                sale.ticket_currency || sale.currency || 'NGN',
+                              )}
+                            </td>
+
                             <td>{settlementLabel(sale)}</td>
+
                             <td>
                               <div className={styles.actions}>
-                                <Link className={`${styles.linkButton} ${styles.primaryLink}`} to={`/sales/${sale.id}`}>Ticket page</Link>
-                                <Link className={styles.linkButton} to={`/sales/${sale.id}/control`}>Focus</Link>
+                                <Link
+                                  className={`${styles.linkButton} ${styles.primaryLink}`}
+                                  to={`/sales/${sale.id}`}
+                                >
+                                  Ticket page
+                                </Link>
+
+                                <Link
+                                  className={styles.linkButton}
+                                  to={`/sales/${sale.id}/control`}
+                                >
+                                  Focus
+                                </Link>
                               </div>
                             </td>
                           </tr>
@@ -224,45 +334,52 @@ export function ControlRoomPage() {
               </div>
             </>
           ) : tab === 'sales' ? (
-            <SalesTab sales={sales} loading={loading} error={error} viewer={viewer} reload={reload} />
+            <SalesTab
+              sales={sales}
+              loading={loading}
+              error={error}
+              viewer={viewer}
+              reload={reload}
+            />
           ) : tab === 'catalogue' ? (
             <CatalogueTab
               sales={sales}
-              selectedSaleId={id ? Number(id) : null}
+              selectedSaleId={selectedSaleId}
               viewer={viewer}
               reload={reload}
             />
           ) : tab === 'entry' ? (
             <EntryTab
               sales={sales}
-              selectedSaleId={id ? Number(id) : null}
+              selectedSaleId={selectedSaleId}
               viewer={viewer}
               reload={reload}
             />
           ) : tab === 'rostrum' ? (
             <RostrumTab
               sales={sales}
-              selectedSaleId={id ? Number(id) : null}
+              selectedSaleId={selectedSaleId}
               viewer={viewer}
               reload={reload}
             />
           ) : tab === 'settlement' ? (
             <SettlementTab
               sales={sales}
-              selectedSaleId={id ? Number(id) : null}
+              selectedSaleId={selectedSaleId}
               viewer={viewer}
               reload={reload}
             />
           ) : tab === 'payout' ? (
             <PayoutTab
               sales={sales}
-              selectedSaleId={id ? Number(id) : null}
+              selectedSaleId={selectedSaleId}
               viewer={viewer}
               reload={reload}
             />
           ) : (
             <div className={styles.placeholder}>
               <h2 className={styles.panelTitle}>{TABS.find(t => t.key === tab)?.label}</h2>
+
               <p className={styles.muted}>
                 Core control-room sections are complete: Sales, Catalogue, Entry, Rostrum,
                 Settlement, and Payout / Settings.
