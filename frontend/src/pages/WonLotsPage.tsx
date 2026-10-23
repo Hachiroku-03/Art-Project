@@ -5,6 +5,7 @@ import {
   Clock,
   CreditCard,
   Gavel,
+  RefreshCw,
   XCircle,
 } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
@@ -53,42 +54,81 @@ export function WonLotsPage() {
   const [lots, setLots] = useState<WonLot[]>([])
   const [summary, setSummary] = useState<WonLotsSummary | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  const alive = useRef(true)
+  const mountedRef = useRef(false)
+  const loadSeq = useRef(0)
+  const inFlight = useRef(false)
+  const queuedMode = useRef<'initial' | 'background' | null>(null)
 
   useEffect(() => {
+    mountedRef.current = true
+
     return () => {
-      alive.current = false
+      mountedRef.current = false
     }
   }, [])
 
-  const load = useCallback(async () => {
-    if (!viewer) return
+  const load = useCallback(
+    async (mode: 'initial' | 'background' = 'initial') => {
+      if (!viewer) return
 
-    try {
-      const d = await fetchWonLots(viewer)
+      if (inFlight.current) {
+        if (mode === 'initial' || queuedMode.current === null) {
+          queuedMode.current = mode
+        }
 
-      if (!alive.current) return
+        return
+      }
 
-      if (d.error) {
-        setError(d.error)
+      inFlight.current = true
+
+      const seq = ++loadSeq.current
+
+      if (mode === 'initial') {
+        setLoading(true)
       } else {
-        setLots(d.lots || [])
-        setSummary(d.summary || null)
-        setError('')
+        setRefreshing(true)
       }
-    } catch {
-      if (alive.current) {
-        setError('Could not load your won lots.')
+
+      setError('')
+
+      try {
+        const d = await fetchWonLots(viewer)
+
+        if (!mountedRef.current || seq !== loadSeq.current) return
+
+        if (d.error) {
+          setError(d.error)
+        } else {
+          setLots(d.lots || [])
+          setSummary(d.summary || null)
+          setError('')
+        }
+      } catch {
+        if (mountedRef.current && seq === loadSeq.current) {
+          setError('Could not load your won lots.')
+        }
+      } finally {
+        inFlight.current = false
+
+        if (mountedRef.current && seq === loadSeq.current) {
+          setLoading(false)
+          setRefreshing(false)
+        }
+
+        const next = queuedMode.current
+        queuedMode.current = null
+
+        if (next) {
+          void load(next)
+        }
       }
-    } finally {
-      if (alive.current) {
-        setLoading(false)
-      }
-    }
-  }, [viewer])
+    },
+    [viewer],
+  )
 
   // Auth guard + initial load.
   useEffect(() => {
@@ -98,7 +138,7 @@ export function WonLotsPage() {
       return
     }
 
-    void load()
+    void load('initial')
   }, [viewer, navigate, load])
 
   // Scroll to focused lot from notification deep link.
@@ -119,10 +159,10 @@ export function WonLotsPage() {
   useEffect(() => {
     if (!viewer) return
 
-    const onFocus = () => void load()
+    const onFocus = () => void load('background')
 
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') void load()
+      if (document.visibilityState === 'visible') void load('background')
     }
 
     window.addEventListener('focus', onFocus)
@@ -139,7 +179,7 @@ export function WonLotsPage() {
     if (searchParams.get('payment') !== 'completed') return
 
     setNotice('Payment return detected. Refreshing your won lots…')
-    void load()
+    void load('initial')
 
     const next = new URLSearchParams(searchParams)
     next.delete('payment')
@@ -168,12 +208,71 @@ export function WonLotsPage() {
             </p>
           </div>
 
-          <button className={styles.browseBtn} onClick={() => navigate('/auctions')}>
-            Browse the floor
-          </button>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              justifyContent: 'flex-end',
+            }}
+          >
+            {refreshing ? (
+              <span
+                style={{
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: 'var(--ink-faint, #888)',
+                  background: 'rgba(20, 18, 15, 0.04)',
+                  border: '1px solid var(--line, #e4dfd7)',
+                  borderRadius: 999,
+                  padding: '0.3rem 0.6rem',
+                }}
+              >
+                updating…
+              </span>
+            ) : null}
+
+            <button
+              className={styles.secondaryBtn}
+              onClick={() => void load('initial')}
+              disabled={refreshing}
+            >
+              <RefreshCw size={14} />
+              Refresh
+            </button>
+
+            <button className={styles.browseBtn} onClick={() => navigate('/auctions')}>
+              Browse the floor
+            </button>
+          </div>
         </header>
 
-        {error ? <div className={styles.error}>{error}</div> : null}
+        {error ? (
+          <div className={styles.error}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <span>{error}</span>
+
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => void load('initial')}
+                disabled={refreshing}
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {notice ? (
           <div
@@ -238,10 +337,31 @@ export function WonLotsPage() {
         {lots.length === 0 ? (
           <div className={styles.empty}>
             <Gavel size={30} />
-            <p>You have not won any lots yet.</p>
-            <button className={styles.primaryBtn} onClick={() => navigate('/auctions')}>
-              Browse live and upcoming rooms
-            </button>
+
+            {error ? (
+              <>
+                <p>Your won lots could not be loaded.</p>
+
+                <button
+                  className={styles.primaryBtn}
+                  onClick={() => void load('initial')}
+                  disabled={refreshing}
+                >
+                  Retry
+                </button>
+              </>
+            ) : (
+              <>
+                <p>You have not won any lots yet.</p>
+
+                <button
+                  className={styles.primaryBtn}
+                  onClick={() => navigate('/auctions')}
+                >
+                  Browse live and upcoming rooms
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <div className={styles.list}>
@@ -249,9 +369,9 @@ export function WonLotsPage() {
               const status = String(lot.payment_status || 'unpaid').toLowerCase()
               const isPaid = status === 'paid'
 
-              // Buyer can request/open payment only after the sale is settled.
               const collectionReady =
-                lot.sale_status === 'ended' && !!lot.settled_at
+                Boolean((lot as any).collection_ready) ||
+                (lot.sale_status === 'ended' && !!lot.settled_at)
 
               return (
                 <article
@@ -266,6 +386,7 @@ export function WonLotsPage() {
                       <img
                         src={lot.lot_image_url}
                         alt={lot.lot_title || `Lot ${lot.position}`}
+                        loading="lazy"
                       />
                     ) : (
                       <div className={styles.mediaBlank}>
@@ -278,9 +399,11 @@ export function WonLotsPage() {
                     <div className={styles.top}>
                       <div className={styles.identity}>
                         <p className={styles.sale}>{lot.sale_title}</p>
+
                         <h2 className={styles.lotTitle}>
                           Lot {lot.position} · {lot.lot_title || 'Untitled'}
                         </h2>
+
                         <p className={styles.host}>Hosted by @{lot.host_username}</p>
                       </div>
 
@@ -325,7 +448,7 @@ export function WonLotsPage() {
                         <WonLotPayButton
                           lot={lot}
                           viewer={viewer}
-                          onOpened={() => void load()}
+                          onOpened={() => void load('background')}
                         />
                       ) : (
                         <span className={styles.waitNote}>
