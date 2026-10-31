@@ -12,6 +12,7 @@ import { Navbar } from '../components/Navbar'
 import {
   fetchWonLots,
   formatMoney,
+  verifyWonLotPayment,
   type WonLot,
   type WonLotsSummary,
 } from '../lib/sales'
@@ -40,6 +41,13 @@ function paymentClass(status: string) {
   return styles.unpaid
 }
 
+function isPendingWithReference(lot: WonLot) {
+  return (
+    String(lot.payment_status || '').toLowerCase() === 'pending' &&
+    !!lot.payment_reference
+  )
+}
+
 export function WonLotsPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -55,6 +63,7 @@ export function WonLotsPage() {
   const [summary, setSummary] = useState<WonLotsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [verifying, setVerifying] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -175,16 +184,103 @@ export function WonLotsPage() {
   }, [viewer, load])
 
   // Handle Paystack callback: /wins?payment=completed
+  //
+  // IMPORTANT:
+  // Do not only refresh. The webhook may be delayed or lost.
+  // Ask backend to verify the charge directly with Paystack, server-to-server.
   useEffect(() => {
     if (searchParams.get('payment') !== 'completed') return
+    if (!viewer) return
 
-    setNotice('Payment return detected. Refreshing your won lots…')
-    void load('initial')
+    let cancelled = false
 
-    const next = new URLSearchParams(searchParams)
-    next.delete('payment')
-    setSearchParams(next, { replace: true })
-  }, [searchParams, setSearchParams, load])
+    setVerifying(true)
+    setNotice('Payment return detected. Verifying with Paystack…')
+
+    ;(async () => {
+      try {
+        const first = await fetchWonLots(viewer)
+
+        if (cancelled || !mountedRef.current) return
+
+        if (first.error) {
+          setError(first.error)
+          setNotice('Payment return detected, but won lots could not be loaded.')
+          return
+        }
+
+        setLots(first.lots || [])
+        setSummary(first.summary || null)
+        setError('')
+
+        const pending = (first.lots || []).filter(isPendingWithReference)
+
+        // Reconcile each pending lot through your backend.
+        for (const lot of pending.slice(0, 5)) {
+          if (cancelled || !mountedRef.current) return
+
+          const res = await verifyWonLotPayment(lot.lot_id, viewer)
+
+          if (res?.error) {
+            console.warn('[wins] verify failed', lot.lot_id, res.error)
+          }
+        }
+
+        if (cancelled || !mountedRef.current) return
+
+        let stillPending = pending.length > 0
+
+        // Short poll in case the webhook is still landing behind the scenes.
+        if (stillPending) {
+          for (let i = 0; i < 8; i++) {
+            const d = await fetchWonLots(viewer)
+
+            if (cancelled || !mountedRef.current) return
+
+            if (!d.error) {
+              setLots(d.lots || [])
+              setSummary(d.summary || null)
+              setError('')
+            }
+
+            stillPending = (d.lots || []).some(isPendingWithReference)
+
+            if (!stillPending) break
+
+            await new Promise(resolve => setTimeout(resolve, 2500))
+          }
+        }
+
+        if (cancelled || !mountedRef.current) return
+
+        if (stillPending) {
+          setNotice(
+            'Paystack returned, but your payment is still processing. Refresh in a few seconds.',
+          )
+        } else {
+          setNotice('')
+        }
+      } catch (e) {
+        if (mountedRef.current && !cancelled) {
+          setNotice(
+            'Payment return detected, but verification failed. Refresh your won lots.',
+          )
+        }
+      } finally {
+        if (mountedRef.current && !cancelled) {
+          setVerifying(false)
+
+          const next = new URLSearchParams(searchParams)
+          next.delete('payment')
+          setSearchParams(next, { replace: true })
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [searchParams, setSearchParams, viewer])
 
   if (loading) {
     return (
@@ -217,7 +313,7 @@ export function WonLotsPage() {
               justifyContent: 'flex-end',
             }}
           >
-            {refreshing ? (
+            {refreshing || verifying ? (
               <span
                 style={{
                   fontSize: '0.72rem',
@@ -231,14 +327,14 @@ export function WonLotsPage() {
                   padding: '0.3rem 0.6rem',
                 }}
               >
-                updating…
+                {verifying ? 'verifying…' : 'updating…'}
               </span>
             ) : null}
 
             <button
               className={styles.secondaryBtn}
               onClick={() => void load('initial')}
-              disabled={refreshing}
+              disabled={refreshing || verifying}
             >
               <RefreshCw size={14} />
               Refresh
@@ -266,7 +362,7 @@ export function WonLotsPage() {
               <button
                 className={styles.secondaryBtn}
                 onClick={() => void load('initial')}
-                disabled={refreshing}
+                disabled={refreshing || verifying}
               >
                 Try again
               </button>
@@ -345,7 +441,7 @@ export function WonLotsPage() {
                 <button
                   className={styles.primaryBtn}
                   onClick={() => void load('initial')}
-                  disabled={refreshing}
+                  disabled={refreshing || verifying}
                 >
                   Retry
                 </button>

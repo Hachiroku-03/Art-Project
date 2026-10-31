@@ -1,18 +1,56 @@
+"""
+Auction / settlement / buyer-payment router.
+
+This router owns:
+- public auction floor
+- house sales
+- sale CRUD
+- lot CRUD
+- paddles / tickets / invites
+- rostrum actions: live, reveal, bid, hammer, pass, end
+- reopen passed lot
+- revert sold lot to passed before settlement
+- settlement
+- buyer won-lot payment link creation
+- offline collection marking
+- house payout marking
+- settlement view
+- buyer won-lots view
+
+IMPORTANT PAYSTACK BOUNDARY:
+The browser must NEVER call https://api.paystack.co directly.
+That host is server-to-server and Cloudflare-protected.
+If the frontend calls it, you get:
+"Why have I been blocked?"
+
+Correct flow:
+frontend -> your backend
+backend -> paystack.py -> Paystack
+backend stores checkout_url + payment_reference
+buyer opens backend-returned checkout_url
+Paystack -> backend webhook
+backend verifies signature
+backend marks lot paid
+frontend reads payment_status from backend
+
+Canonical webhook:
+POST /webhooks/paystack
+in backend/routers/webhooks.py
+
+This file intentionally does NOT define /paystack/webhook anymore.
+"""
+
 import os
-import json
-import hmac
-import hashlib
 import secrets
 from decimal import Decimal, ROUND_HALF_UP
-from urllib import request as urlreq, error as urlerr
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter
 
 from db import get_db
 from helpers import auction_access
 from ledger import spend
 from notification_service import create_notification
+import paystack
 
 
 router = APIRouter()
@@ -36,8 +74,6 @@ router = APIRouter()
 #   buyer opens backend-returned checkout_url
 #   Paystack -> backend webhook
 #   backend marks lot paid
-#
-# The browser must NEVER call https://api.paystack.co directly.
 # ---------------------------------------------------------------------------
 
 BUYER_PREMIUM_RATE = Decimal(os.getenv("BUYER_PREMIUM_RATE", "0.15"))
@@ -48,8 +84,10 @@ ACCESS_ALIASES = {
     "open": "open",
     "vip": "vip",
     "vip_only": "vip",
+    "vip-only": "vip",
     "invite": "invite",
     "invite_only": "invite",
+    "invite-only": "invite",
 }
 
 DEFAULT_CCY = "NGN"
@@ -58,7 +96,6 @@ DEFAULT_CURRENCY = DEFAULT_CCY
 # How long an ended sale remains visible on the public auction floor.
 ENDED_FLOOR_RETENTION_HOURS = int(os.getenv("ENDED_FLOOR_RETENTION_HOURS", "72"))
 
-PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 PAYSTACK_CALLBACK_URL = os.getenv(
     "PAYSTACK_CALLBACK_URL",
@@ -89,9 +126,14 @@ def _money_str(value) -> str:
     return str(_money(value))
 
 
-def _minor_amount(amount: Decimal) -> int:
-    return int((amount * 100).to_integral_value(rounding=ROUND_HALF_UP))
+def _normalize_access_mode(raw) -> str:
+    """
+    Normalize legacy/alias access modes to canonical open/vip/invite.
 
+    Accepts None, str, or anything that can be stringified safely.
+    """
+    key = str(raw or "open").strip().lower()
+    return ACCESS_ALIASES.get(key, "open")
 
 def _resolve_username(cursor, raw: str):
     raw = str(raw or "").strip()
@@ -103,7 +145,10 @@ def _resolve_username(cursor, raw: str):
     if row:
         return row["username"]
 
-    cursor.execute("SELECT username FROM users WHERE lower(username) = lower(%s)", (raw,))
+    cursor.execute(
+        "SELECT username FROM users WHERE lower(username) = lower(%s)",
+        (raw,),
+    )
     row = cursor.fetchone()
     return row["username"] if row else None
 
@@ -115,6 +160,12 @@ def _sale_id_of(cursor, lot_id: int) -> int:
 
 
 def _buyer_email_for(cursor, username: str):
+    """
+    Return a real buyer email if available.
+
+    Paystack requires an email. For local/testing settlement without a real
+    buyer email, use offline collection marking instead of forcing a fake email.
+    """
     try:
         cursor.execute(
             "SELECT email FROM users WHERE username = %s",
@@ -127,58 +178,6 @@ def _buyer_email_for(cursor, username: str):
 
     email = str(email or "").strip()
     return email or None
-
-
-# ---------------------------------------------------------------------------
-# Paystack server-side initialize
-#
-# This is backend-to-backend. The browser must never call api.paystack.co.
-# ---------------------------------------------------------------------------
-
-def _paystack_initialize(
-    email: str,
-    amount_minor: int,
-    currency: str,
-    reference: str,
-    metadata: dict,
-):
-    if not PAYSTACK_SECRET_KEY:
-        raise RuntimeError("PAYSTACK_SECRET_KEY is not configured")
-
-    payload = {
-        "email": email,
-        "amount": amount_minor,
-        "currency": currency,
-        "reference": reference,
-        "callback_url": PAYSTACK_CALLBACK_URL,
-        "metadata": metadata,
-    }
-
-    data = json.dumps(payload).encode("utf-8")
-
-    req = urlreq.Request(
-        "https://api.paystack.co/transaction/initialize",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urlreq.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urlerr.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        try:
-            return json.loads(body)
-        except Exception:
-            return {
-                "status": False,
-                "message": f"Paystack HTTP {e.code}: {body[:300]}",
-            }
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +263,120 @@ def _refresh_payout_status(cursor, sale_id: int) -> str:
 #   - buyer pay endpoint
 #
 # It does not move money. It creates/returns a Paystack checkout URL and marks
-# the lot pending. The webhook marks it paid.
+# the lot pending. The canonical webhook marks it paid.
 # ---------------------------------------------------------------------------
+
+
+@router.post("/my/won-lots/{lot_id}/verify")
+def verify_won_lot_payment(lot_id: int, data: dict):
+    """
+    Pull-path reconciliation.
+
+    Called by frontend when buyer returns from Paystack:
+        /wins?payment=completed
+
+    Backend asks Paystack, server-to-server:
+        GET https://api.paystack.co/transaction/verify/{reference}
+
+    If Paystack says success, backend marks the lot paid idempotently.
+
+    This is the safety net for delayed/lost/broken webhooks.
+
+    Browser must NEVER call api.paystack.co directly.
+    """
+    conn = None
+
+    try:
+        viewer = str(data.get("viewer") or "").strip()
+        if not viewer:
+            return {"error": "viewer required"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        canonical = _resolve_username(cursor, viewer)
+        if not canonical:
+            return {"error": "unknown user"}
+
+        cursor.execute(
+            """
+            SELECT
+                winner_username,
+                COALESCE(payment_status, 'unpaid') AS payment_status,
+                payment_reference
+            FROM lots
+            WHERE id = %s
+            """,
+            (lot_id,),
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {"error": "lot not found"}
+
+        if row["winner_username"] != canonical:
+            return {"error": "this lot was not won by you"}
+
+        if str(row["payment_status"]).lower() == "paid":
+            return {
+                "status": "paid",
+                "message": "already paid",
+            }
+
+        reference = str(row.get("payment_reference") or "").strip()
+
+        if not reference:
+            return {
+                "status": "unpaid",
+                "message": "no payment link was created for this lot yet",
+            }
+
+        resp = paystack.verify_charge(reference)
+
+        if resp.get("error"):
+            return {"error": resp["error"]}
+
+        if not resp.get("status"):
+            return {
+                "status": "pending",
+                "message": resp.get("message") or "not verified yet",
+            }
+
+        d = resp.get("data") or {}
+
+        if str(d.get("status") or "").lower() != "success":
+            return {
+                "status": "pending",
+                "message": f"Paystack status: {d.get('status')}",
+            }
+
+        from routers.webhooks import apply_charge_success
+
+        res = apply_charge_success(
+            cursor,
+            lot_id=lot_id,
+            reference=reference,
+            amount_minor=d.get("amount"),
+            currency=d.get("currency") or "NGN",
+        )
+
+        conn.commit()
+
+        if res.get("error"):
+            return {"error": res["error"]}
+
+        return res
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return {"error": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
 
 def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
     cursor.execute(
@@ -337,6 +448,9 @@ def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
     reference = f"lot_{lot_id}_{secrets.token_hex(6)}"
 
     metadata = {
+        # Canonical webhook accepts either kind or purpose.
+        # kind = settle_charge keeps compatibility with older settlement code.
+        "kind": "settle_charge",
         "purpose": "won_lot_payment",
         "lot_id": int(row["id"]),
         "sale_id": int(row["sale_id"]),
@@ -358,16 +472,19 @@ def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
         ],
     }
 
-    try:
-        resp = _paystack_initialize(
-            email=email,
-            amount_minor=_minor_amount(collected),
-            currency=currency,
-            reference=reference,
-            metadata=metadata,
-        )
-    except Exception as e:
-        return {"error": f"Paystack initialize failed: {e}"}
+    # This is backend-to-backend Paystack initialization.
+    # The browser must never call https://api.paystack.co directly.
+    resp = paystack.initialize_charge(
+        email=email,
+        amount=float(collected),
+        currency=currency,
+        reference=reference,
+        metadata=metadata,
+        callback_url=PAYSTACK_CALLBACK_URL,
+    )
+
+    if resp.get("error"):
+        return {"error": resp["error"]}
 
     if not resp.get("status"):
         return {
@@ -504,13 +621,20 @@ def list_sales(viewer: str = ""):
         out = []
 
         for s in rows:
-            acc = auction_access(cursor, s, viewer) or {}
+            d = dict(s)
+            tier_canonical = _normalize_access_mode(d.get("tier"))
+
+            acc = auction_access(
+                cursor,
+                {**d, "tier": tier_canonical},
+                viewer,
+            ) or {}
 
             out.append(
                 {
-                    **s,
-                    "access_mode": s.get("tier"),
+                    **d,
                     **acc,
+                    "access_mode": tier_canonical,
                     "visible": acc.get("visible", True),
                 }
             )
@@ -518,6 +642,162 @@ def list_sales(viewer: str = ""):
         return {"sales": out}
 
     except Exception as e:
+        return {"error": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@router.post("/sales")
+def create_sale(data: dict):
+    """
+    House creates a new sale.
+
+    Expected payload:
+    {
+      "viewer": "emma",
+      "title": "The Velvet Collection",
+      "description": "VIP members only.",
+      "image_url": "...",
+      "tier": "vip",             // open | vip | invite, aliases accepted
+      "starts_at": "2026-09-20 20:47:31",
+      "ends_at": "2026-09-21 21:17:31",
+      "ticket_price": 0,
+      "ticket_currency": "NGN",
+      "currency": "NGN",
+      "ticket_capacity": null
+    }
+    """
+    conn = None
+
+    try:
+        host = str(data.get("viewer") or "").strip()
+        title = str(data.get("title") or "").strip()
+
+        if not host:
+            return {"error": "viewer required"}
+
+        if not title:
+            return {"error": "title required"}
+
+        tier_raw = str(data.get("tier") or "open").strip().lower()
+        tier = ACCESS_ALIASES.get(tier_raw)
+
+        if tier not in ACCESS_MODES:
+            return {"error": "invalid access mode"}
+
+        description = str(data.get("description") or "")
+        image_url = data.get("image_url") or None
+
+        starts_at = data.get("starts_at") or None
+        ends_at = data.get("ends_at") or None
+
+        if starts_at == "":
+            starts_at = None
+
+        if ends_at == "":
+            ends_at = None
+
+        try:
+            ticket_price = round(float(data.get("ticket_price") or 0), 2)
+        except (TypeError, ValueError):
+            return {"error": "invalid ticket_price"}
+
+        if ticket_price < 0:
+            return {"error": "ticket_price cannot be negative"}
+
+        ticket_currency = _ccy(data.get("ticket_currency"))
+        currency = _ccy(data.get("currency"))
+
+        cap_raw = data.get("ticket_capacity")
+
+        if cap_raw in (None, ""):
+            ticket_capacity = None
+        else:
+            try:
+                ticket_capacity = int(cap_raw)
+            except (TypeError, ValueError):
+                return {"error": "invalid ticket_capacity"}
+
+            if ticket_capacity <= 0:
+                return {"error": "ticket_capacity must be positive"}
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO auctions (
+                host_username,
+                title,
+                description,
+                image_url,
+                tier,
+                status,
+                starts_at,
+                ends_at,
+                ticket_price,
+                ticket_currency,
+                currency,
+                ticket_capacity
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'upcoming',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+            RETURNING
+                id,
+                host_username,
+                title,
+                description,
+                image_url,
+                tier,
+                status,
+                starts_at::text AS starts_at,
+                ends_at::text AS ends_at,
+                ticket_price::text AS ticket_price,
+                ticket_currency,
+                currency,
+                ticket_capacity
+            """,
+            (
+                host,
+                title,
+                description,
+                image_url,
+                tier,
+                starts_at,
+                ends_at,
+                ticket_price,
+                ticket_currency,
+                currency,
+                ticket_capacity,
+            ),
+        )
+
+        sale = cursor.fetchone()
+        conn.commit()
+
+        return {
+            "message": "sale created",
+            "sale": dict(sale) if sale else None,
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
         return {"error": str(e)}
 
     finally:
@@ -553,6 +833,7 @@ def my_sales(viewer: str = ""):
                 a.ended_at::text AS ended_at,
                 a.settled_at::text AS settled_at,
                 a.payout_status,
+                a.payout_reference,
                 (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count,
                 (SELECT COUNT(*) FROM tickets t WHERE t.auction_id = a.id) AS tickets_sold,
                 CASE
@@ -570,7 +851,11 @@ def my_sales(viewer: str = ""):
             (viewer,),
         )
 
-        rows = cursor.fetchall()
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        for r in rows:
+            r["access_mode"] = _normalize_access_mode(r.get("tier"))
+
         return {"sales": rows}
 
     except Exception as e:
@@ -1069,14 +1354,23 @@ def issue_paddle(sale_id: int, data: dict):
         if not row:
             return {"error": "sale not found"}
 
+        row = dict(row)
+
         if row["status"] == "ended":
             return {"error": "sale has ended"}
 
         if viewer == row["host_username"]:
             return {"error": "houses cannot hold a paddle in their own room"}
 
-        acc = auction_access(cursor, row, viewer)
-        if not acc["can_buy_ticket"]:
+        tier_canonical = _normalize_access_mode(row.get("tier"))
+
+        acc = auction_access(
+            cursor,
+            {**row, "tier": tier_canonical},
+            viewer,
+        ) or {}
+
+        if not acc.get("can_buy_ticket"):
             return {"error": "you are not permitted to claim a paddle for this sale"}
 
         cursor.execute(
@@ -1863,6 +2157,7 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
                 a.currency,
                 a.ticket_capacity,
                 a.payout_status,
+                a.payout_reference,
                 a.settled_at::text AS settled_at,
                 a.stream_type,
                 a.stream_url,
@@ -1891,8 +2186,16 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
         if not sale:
             return {"error": "sale not found"}
 
-        acc = auction_access(cursor, sale, viewer)
-        if not acc["visible"]:
+        sale = dict(sale)
+        tier_canonical = _normalize_access_mode(sale.get("tier"))
+
+        acc = auction_access(
+            cursor,
+            {**sale, "tier": tier_canonical},
+            viewer,
+        ) or {}
+
+        if not acc.get("visible", False):
             return {"error": "this sale is private"}
 
         is_host = bool(viewer) and viewer == sale["host_username"]
@@ -1917,8 +2220,8 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
 
         meta = {
             **sale,
-            "access_mode": sale.get("tier"),
             **acc,
+            "access_mode": tier_canonical,
             "is_host": is_host,
             "has_ticket": has_ticket,
             "locked": not allowed,
@@ -2411,23 +2714,27 @@ def bid_on_lot(lot_id: int, data: dict):
         if not row:
             return {"error": "lot not found"}
 
+        row = dict(row)
+
         if row["lot_status"] != "on_block":
             return {"error": "this lot is not on the block"}
 
         if row["sale_status"] != "live":
             return {"error": "the sale is not live"}
 
+        tier_canonical = _normalize_access_mode(row.get("tier"))
+
         acc = auction_access(
             cursor,
             {
                 "id": row["sale_id"],
-                "tier": row["tier"],
+                "tier": tier_canonical,
                 "host_username": row["host_username"],
             },
             viewer,
-        )
+        ) or {}
 
-        if not acc["can_bid"]:
+        if not acc.get("can_bid"):
             return {"error": "you do not have bidding rights here"}
 
         cursor.execute(
@@ -3175,223 +3482,6 @@ def pay_won_lot(lot_id: int, data: dict):
         if conn:
             conn.rollback()
         return {"error": str(e)}
-
-    finally:
-        if conn:
-            conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Paystack webhook
-# ---------------------------------------------------------------------------
-
-@router.post("/paystack/webhook")
-async def paystack_webhook(request: Request):
-    """
-    Paystack webhook receiver.
-
-    This is the only sanctioned way a won lot becomes paid automatically.
-    The browser never calls Paystack directly; Paystack calls this backend route.
-    """
-    if not PAYSTACK_SECRET_KEY:
-        return JSONResponse(
-            {"error": "webhook not configured"},
-            status_code=400,
-        )
-
-    body = await request.body()
-    signature = request.headers.get("x-paystack-signature") or ""
-
-    hashed = hmac.new(
-        PAYSTACK_SECRET_KEY.encode("utf-8"),
-        body,
-        hashlib.sha512,
-    ).hexdigest()
-
-    if not hmac.compare_digest(hashed, signature):
-        return JSONResponse(
-            {"error": "invalid signature"},
-            status_code=400,
-        )
-
-    try:
-        event = json.loads(body.decode("utf-8"))
-    except Exception:
-        return JSONResponse(
-            {"error": "invalid json"},
-            status_code=400,
-        )
-
-    event_name = event.get("event")
-    data = event.get("data") or {}
-    metadata = data.get("metadata") or {}
-
-    reference = data.get("reference") or metadata.get("reference")
-    lot_id = metadata.get("lot_id")
-
-    if event_name not in ("charge.success", "charge.failed"):
-        return {"status": True}
-
-    conn = None
-
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-
-        conditions = []
-        params = []
-
-        try:
-            if lot_id is not None:
-                conditions.append("l.id = %s")
-                params.append(int(lot_id))
-        except Exception:
-            pass
-
-        if reference:
-            conditions.append("l.payment_reference = %s")
-            params.append(reference)
-
-        if not conditions:
-            return {"status": True}
-
-        where = " OR ".join(conditions)
-
-        cursor.execute(
-            f"""
-            SELECT
-                l.id,
-                l.position,
-                l.status,
-                l.winner_username,
-                COALESCE(l.payment_status, 'unpaid') AS payment_status,
-                l.payment_reference,
-                a.id AS sale_id,
-                a.title AS sale_title,
-                a.host_username
-            FROM lots l
-            JOIN auctions a ON a.id = l.sale_id
-            WHERE ({where})
-            FOR UPDATE OF l
-            """,
-            tuple(params),
-        )
-
-        lot = cursor.fetchone()
-
-        if not lot:
-            return {"status": True}
-
-        if event_name == "charge.success":
-            if str(lot["payment_status"]).lower() == "paid":
-                conn.commit()
-                return {"status": True}
-
-            cursor.execute(
-                """
-                UPDATE lots
-                SET
-                    payment_status = 'paid',
-                    payment_reference = COALESCE(
-                        NULLIF(payment_reference, ''),
-                        NULLIF(%s, ''),
-                        payment_reference
-                    ),
-                    payment_updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-                """,
-                (reference or "", lot["id"]),
-            )
-
-            create_notification(
-                user_name=lot["winner_username"],
-                category="wallet",
-                type="payment_confirmed",
-                title=f"Payment confirmed · Lot {lot['position']} · {lot['sale_title']}",
-                body="Your payment was confirmed. The house can now release/payout according to its terms.",
-                actor=lot["host_username"],
-                source_type="sale",
-                source_id=lot["sale_id"],
-                secondary_id=lot["id"],
-                data={
-                    "sale_id": lot["sale_id"],
-                    "lot_id": lot["id"],
-                    "reference": reference,
-                },
-                cursor=cursor,
-            )
-
-            create_notification(
-                user_name=lot["host_username"],
-                category="wallet",
-                type="lot_payment_received",
-                title=f"Payment received · Lot {lot['position']} · {lot['sale_title']}",
-                body=f"{lot['winner_username']} paid for Lot {lot['position']}.",
-                actor=lot["winner_username"],
-                source_type="sale",
-                source_id=lot["sale_id"],
-                secondary_id=lot["id"],
-                data={
-                    "sale_id": lot["sale_id"],
-                    "lot_id": lot["id"],
-                    "winner_username": lot["winner_username"],
-                    "reference": reference,
-                },
-                cursor=cursor,
-            )
-
-            _refresh_payout_status(cursor, lot["sale_id"])
-            conn.commit()
-
-            return {"status": True}
-
-        if event_name == "charge.failed":
-            if str(lot["payment_status"]).lower() == "paid":
-                conn.commit()
-                return {"status": True}
-
-            cursor.execute(
-                """
-                UPDATE lots
-                SET
-                    payment_status = 'failed',
-                    payment_updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-                """,
-                (lot["id"],),
-            )
-
-            create_notification(
-                user_name=lot["winner_username"],
-                category="wallet",
-                type="payment_failed",
-                title=f"Payment failed · Lot {lot['position']} · {lot['sale_title']}",
-                body="Your payment attempt failed. Try again from your Won lots page.",
-                actor=lot["host_username"],
-                source_type="sale",
-                source_id=lot["sale_id"],
-                secondary_id=lot["id"],
-                data={
-                    "sale_id": lot["sale_id"],
-                    "lot_id": lot["id"],
-                    "reference": reference,
-                },
-                cursor=cursor,
-            )
-
-            _refresh_payout_status(cursor, lot["sale_id"])
-            conn.commit()
-
-            return {"status": True}
-
-    except Exception:
-        if conn:
-            conn.rollback()
-
-        return JSONResponse(
-            {"error": "webhook processing failed"},
-            status_code=500,
-        )
 
     finally:
         if conn:
