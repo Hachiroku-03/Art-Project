@@ -525,3 +525,37 @@ def init_db():
     ''')
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_house_payout_status ON house_payout_profiles (status)")
+
+def ensure_money_precision(conn):
+    """Idempotently widen every backend money column to NUMERIC(18,2).
+    Mirrors what the auth service already does for ledger_entries.amount.
+    Call from init_db() AFTER the CREATE TABLE statements. Safe to re-run."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DO $$
+        DECLARE
+          pair text; tbl text; col text;
+          pairs text[] := ARRAY[
+            'auctions.ticket_price','lots.starting_price','lots.reserve',
+            'lots.estimate_low','lots.estimate_high','lots.sold_price',
+            'lot_bids.amount','ledger_entries.amount'
+          ];
+        BEGIN
+          FOREACH pair IN ARRAY pairs LOOP
+            tbl := split_part(pair, '.', 1);
+            col := split_part(pair, '.', 2);
+            IF EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public' AND table_name=tbl AND column_name=col
+                AND data_type='numeric'
+                AND (numeric_precision IS DISTINCT FROM 18 OR numeric_scale IS DISTINCT FROM 2)
+            ) THEN
+              EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE NUMERIC(18,2)', tbl, col);
+            END IF;
+          END LOOP;
+        END $$;
+        """
+    )
+    conn.commit()
+    cur.close()

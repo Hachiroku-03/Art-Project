@@ -9,7 +9,19 @@ def auction_access(cursor, auction, viewer):
     The previous version broke this: open/vip granted can_bid WITHOUT a paddle
     (no ticket revenue, and anonymous visitors could bid on open rooms) and
     forbade buying a paddle there; invite told invited users to BUY a free
-    paddle. All fixed below. Returned keys are unchanged so no caller breaks.
+    paddle. All fixed below. Returned keys are unchanged so no caller breaks
+    (one additive key, is_host, is introduced for the owner short-circuit).
+
+    OWNER SHORT-CIRCUIT (added): a house is deliberately forbidden from holding
+    a paddle in her own room (issue_paddle), so the honest ticket/invitation
+    lookups below return False for the owner of an invite/vip room, which made
+    visible=False -> the owner was locked out of her OWN sale (get_sale returned
+    "this sale is private"; the floor card rendered her room locked). We now
+    force owner-visibility AFTER computing the honest facts, overriding only the
+    DERIVED access flags (visible / can_watch / needs_ticket / can_buy_ticket)
+    and adding is_host. We never fake has_ticket / is_invited / is_vip / can_bid,
+    so the host still cannot bid on her own lots and non-owners are gated
+    exactly as before.
     """
     # Canonicalize the tier spellings that have drifted across the codebase
     # (db / auctions.ts use 'vip_only' / 'invite_only'; the verbal model and
@@ -72,6 +84,27 @@ def auction_access(cursor, auction, viewer):
     else:  # invite
         can_buy_ticket = False
 
+    # ----------------------------------------------------------------------
+    # OWNER SHORT-CIRCUIT. Compute host identity from the honest facts above,
+    # then override ONLY the derived access flags. A host always sees and can
+    # enter her own sale (control room / add lots / room), but she must NOT be
+    # able to bid (can_bid stays = has_ticket = False) and must NOT be offered
+    # a "buy paddle" CTA in her own room (can_buy_ticket forced False), and she
+    # does not "need" a paddle (needs_ticket forced False). is_invited /
+    # has_ticket / is_vip are left as the truthful lookups so nothing else
+    # (e.g. the invited-user free-claim CTA, the VIP pill) is corrupted.
+    # ----------------------------------------------------------------------
+    host = str((auction or {}).get("host_username") or "").strip()
+    v = str(viewer or "").strip()
+    is_host = bool(v) and v == host
+
+    if is_host:
+        visible = True
+        can_watch = True
+        needs_ticket = False
+        can_buy_ticket = False
+        # can_bid intentionally NOT touched: a host must not bid on her own lots.
+
     return {
         "visible": visible,
         "is_vip": is_vip,
@@ -80,5 +113,6 @@ def auction_access(cursor, auction, viewer):
         "can_bid": can_bid,
         "needs_ticket": needs_ticket,
         "can_buy_ticket": can_buy_ticket,
-        "can_watch": visible,
+        "can_watch": visible if not is_host else True,
+        "is_host": is_host,
     }

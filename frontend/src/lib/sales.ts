@@ -1071,3 +1071,66 @@ export async function requestWonLotPayment(
   // The browser must never call https://api.paystack.co directly.
   return jpost(`/my/won-lots/${lid}/pay`, { viewer }, 20000)
 }
+
+// ---- Verify lot payment / pull-path reconciliation ----
+
+export type VerifyLotPaymentResult = {
+  status?: string
+  message?: string
+  already?: boolean
+  error?: string
+}
+
+export async function verifyWonLotPayment(
+  lotId: number | string,
+  viewer: string,
+): Promise<VerifyLotPaymentResult> {
+  const lid = Number(lotId)
+
+  if (!Number.isFinite(lid) || lid <= 0) {
+    return { error: 'missing or invalid lot id' }
+  }
+
+  if (!String(viewer || '').trim()) {
+    return { error: 'no signed-in buyer detected' }
+  }
+
+  // This calls YOUR backend.
+  // Your backend calls Paystack verify server-to-server.
+  // The browser must never call https://api.paystack.co directly.
+  return jpost(`/my/won-lots/${lid}/verify`, { viewer }, 20000)
+}
+
+export function normalizeImageUrl(raw: unknown): string {
+  let s = String(raw ?? "").trim()
+  if (!s) return ""
+  s = s.replace(/^["'<]+|["'>]+$/g, "").trim()   // strip wrapping quotes / angle brackets
+  s = s.replace(/\s+/g, " ")                      // collapse inner whitespace/newlines
+  // percent-encode spaces and parens that are legal in URLs but break raw <img src>
+  s = s.replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29")
+  if (!/^https?:\/\//i.test(s)) {
+    // looks like host/path without a scheme -> assume https
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(s)) s = "https://" + s
+  }
+  return s
+}
+
+export function normalizeYouTubeEmbed(raw: unknown): string {
+  const s = String(raw ?? "").trim()
+  if (!s) return ""
+  // already a proper embed URL -> keep (prefer nocookie for privacy)
+  const m = s.match(/(?:youtube-nocookie\.com|youtube\.com)\/embed\/([\w-]{6,})/)
+  if (m) return `https://www.youtube-nocookie.com/embed/${m[1]}`
+  // watch?v=ID
+  const w = s.match(/[?&]v=([\w-]{6,})/)
+  if (w) return `https://www.youtube-nocookie.com/embed/${w[1]}`
+  // youtu.be/ID
+  const y = s.match(/youtu\.be\/([\w-]{6,})/)
+  if (y) return `https://www.youtube-nocookie.com/embed/${y[1]}`
+  // /live/ID  /shorts/ID
+  const l = s.match(/youtube\.com\/(?:live|shorts)\/([\w-]{6,})/)
+  if (l) return `https://www.youtube-nocookie.com/embed/${l[1]}`
+  // /channel/... or unrecognized -> do NOT iframe it; return "" so the UI shows
+  // "invalid stream URL" instead of a silently broken frame.
+  return ""
+}

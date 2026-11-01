@@ -13,7 +13,8 @@ This router owns:
 - settlement
 - buyer won-lot payment link creation
 - offline collection marking
-- house payout marking
+- house payout processing (mock/test ledger split, or live Paystack transfer
+  pending transfer.success webhook confirmation)
 - settlement view
 - buyer won-lots view
 
@@ -48,7 +49,7 @@ from fastapi import APIRouter
 
 from db import get_db
 from helpers import auction_access
-from ledger import spend
+from ledger import spend, credit, ESCROW, PLATFORM_REVENUE
 from notification_service import create_notification
 import paystack
 
@@ -102,6 +103,57 @@ PAYSTACK_CALLBACK_URL = os.getenv(
     f"{FRONTEND_URL}/wins?payment=completed",
 )
 
+# Per-currency ceiling for a SINGLE online card charge. Paystack (and the card
+# networks beneath it) refuse very large one-shot authorizations; sending a
+# 20-billion-naira charge to the rail just returns an opaque rejection. We fail
+# fast with a clear message and route high-value lots to OFFLINE collection
+# (the house "Mark collection paid" endpoint), which already exists.
+#
+# IMPORTANT: this guard is for UX/routing, NOT for enabling huge charges. Even
+# if you raise it, Paystack/the networks cap the amount on their side, so a
+# 23-billion charge still fails. The real fix for a green test is a sane amount.
+# Tune to your Paystack account's approved card ceiling; 10,000,000 NGN is a
+# conservative default. Set to 0 to disable the guard (not recommended).
+PAYSTACK_MAX_CHARGE_NGN = Decimal(os.getenv("PAYSTACK_MAX_CHARGE_NGN", "10000000"))
+PAYSTACK_MAX_CHARGE = {DEFAULT_CCY: PAYSTACK_MAX_CHARGE_NGN}
+
+# Hard input ceiling so a fat-fingered bid (e.g. 2e10) is rejected at the door
+# and never reaches storage or the rail. 1e12 NGN is far above any real lot;
+# raise it only if you genuinely list nine-figure-plus works and settle offline.
+MAX_AUCTION_AMOUNT = Decimal(os.getenv("MAX_AUCTION_AMOUNT", "1000000000000"))
+
+
+def _max_charge_for(currency: str) -> Decimal:
+    # Unknown currencies fall back to the NGN card default; to_minor already
+    # assumes 2-decimal for every supported currency, so this is consistent.
+    return PAYSTACK_MAX_CHARGE.get(currency, PAYSTACK_MAX_CHARGE_NGN)
+
+# ---------------------------------------------------------------------------
+# Payout rail toggle.
+#
+#   false (DEFAULT, test mode):
+#       No real Paystack transfer is attempted. A test account has no
+#       withdrawable balance, so a live transfer here returns
+#       "insufficient funds". Instead we record the internal ledger split
+#       (ESCROW -> net_to_house, PLATFORM_REVENUE -> commission) derived from
+#       the ACTUAL escrow inflows for the sale, then mark payout_status='paid'
+#       with a mock reference. This completes the full state lifecycle without
+#       moving real money.
+#
+#   true (live, funded + KYC-approved account):
+#       A real transfer is initiated server-to-server via paystack.initiate_transfer.
+#       payout_status stays 'pending' until the transfer.success webhook
+#       (POST /webhooks/paystack, metadata.kind='payout_transfer') flips it to
+#       'paid'. The ledger split for live transfers should be recorded by that
+#       webhook using _record_payout_ledger_split() below (or reversed via
+#       append-only entries on transfer.failed, matching the ledger's
+#       "never DELETE, always reverse" rule).
+# ---------------------------------------------------------------------------
+PAYSTACK_TRANSFERS_ENABLED = (
+    os.getenv("PAYSTACK_TRANSFERS_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -134,6 +186,7 @@ def _normalize_access_mode(raw) -> str:
     """
     key = str(raw or "open").strip().lower()
     return ACCESS_ALIASES.get(key, "open")
+
 
 def _resolve_username(cursor, raw: str):
     raw = str(raw or "").strip()
@@ -255,6 +308,104 @@ def _refresh_payout_status(cursor, sale_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Payout ledger split (shared by mock path here and, later, the live
+# transfer.success webhook).
+#
+# Records the Flow A split from the ACTUAL escrow inflows parked for this
+# sale's lots (kind='settle_in'), grouped by currency:
+#
+#     for each currency bucket C:
+#         commission       = C * PLATFORM_COMMISSION_RATE
+#         net_to_house     = C - commission
+#         ESCROW           -= net_to_house        (house share leaves custody)
+#         PLATFORM_REVENUE += commission          (platform keeps its cut)
+#
+# Derived from real escrow inflows (NOT the display settlement math) so:
+#     - a pure Paystack sale records the full split
+#     - a pure offline sale records nothing (no platform money ever moved)
+#     - a mixed sale records only the Paystack-collected portion
+#
+# spend() on ESCROW enforces, per currency, that total payouts can never
+# exceed total collections (advisory-locked). The caller owns the transaction;
+# a failure raises so the whole payout step rolls back atomically.
+#
+# Returns a list of {currency, collected, commission, net_to_house} dicts.
+# ---------------------------------------------------------------------------
+
+def _record_payout_ledger_split(cursor, sale_id: int, sale_currency: str) -> list:
+    cursor.execute(
+        """
+        SELECT currency, COALESCE(SUM(amount), 0)::text AS collected
+        FROM ledger_entries
+        WHERE user_name = %s
+          AND kind = 'settle_in'
+          AND ref_table = 'lots'
+          AND ref_id IN (
+              SELECT id FROM lots WHERE sale_id = %s
+          )
+        GROUP BY currency
+        """,
+        (ESCROW, sale_id),
+    )
+    rows = cursor.fetchall() or []
+
+    out = []
+    ref = f"payout_{sale_id}"
+
+    for er in rows:
+        cur = _ccy(er.get("currency") or sale_currency)
+        collected = _money(er.get("collected"))
+
+        if collected <= 0:
+            continue
+
+        commission = (collected * PLATFORM_COMMISSION_RATE).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        net = collected - commission
+
+        if net > 0:
+            ok, err, _ = spend(
+                cursor,
+                ESCROW,
+                float(net),
+                kind="payout_net_to_house",
+                reference=ref,
+                ref_table="auctions",
+                ref_id=sale_id,
+                currency=cur,
+            )
+            if not ok:
+                raise RuntimeError(f"escrow debit failed ({cur}): {err}")
+
+        if commission > 0:
+            ok, err, _ = credit(
+                cursor,
+                PLATFORM_REVENUE,
+                float(commission),
+                kind="platform_commission",
+                reference=ref,
+                ref_table="auctions",
+                ref_id=sale_id,
+                currency=cur,
+            )
+            if not ok:
+                raise RuntimeError(f"platform revenue credit failed ({cur}): {err}")
+
+        out.append(
+            {
+                "currency": cur,
+                "collected": str(collected),
+                "commission": str(commission),
+                "net_to_house": str(net),
+            }
+        )
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # One won-lot checkout initializer.
 #
 # Used by:
@@ -265,6 +416,226 @@ def _refresh_payout_status(cursor, sale_id: int) -> str:
 # It does not move money. It creates/returns a Paystack checkout URL and marks
 # the lot pending. The canonical webhook marks it paid.
 # ---------------------------------------------------------------------------
+
+def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
+    cursor.execute(
+        """
+        SELECT
+            l.id,
+            l.position,
+            l.status,
+            l.winner_username,
+            l.sold_price::text AS sold_price,
+            COALESCE(l.payment_status, 'unpaid') AS payment_status,
+            l.payment_reference,
+            l.checkout_url,
+            l.currency,
+            a.id AS sale_id,
+            a.title AS sale_title,
+            a.host_username,
+            a.currency AS sale_currency,
+            a.settled_at
+        FROM lots l
+        JOIN auctions a ON a.id = l.sale_id
+        WHERE l.id = %s
+        FOR UPDATE OF l
+        """,
+        (lot_id,),
+    )
+
+    row = cursor.fetchone()
+
+    if not row:
+        return {"error": "lot not found"}
+
+    if row["status"] != "sold" or not row["winner_username"]:
+        return {"error": "lot is not won"}
+
+    if str(row["payment_status"]).lower() == "paid":
+        return {
+            "status": "paid",
+            "message": "this lot is already paid",
+        }
+
+    if not row["settled_at"]:
+        return {"error": "sale is not settled yet"}
+
+    # ------------------------------------------------------------------
+    # A pending lot that already carries a checkout_url may be holding a
+    # reference Paystack has ALREADY completed (webhook lost/delayed) or
+    # that is dead (abandoned). NEVER hand a completed/dead link back to
+    # the buyer as a "pay" link -- that is what produces the hosted
+    # checkout modal "We could not start this transaction ... already
+    # completed". Reconcile the existing reference server-to-server first:
+    #   success  -> apply it (idempotent) and return paid. No new link.
+    #   error    -> surface it; do NOT guess / do NOT overwrite.
+    #   not done -> abandoned/pending/failed on Paystack, so no money is
+    #               at risk; fall through and mint a FRESH reference.
+    # ------------------------------------------------------------------
+    if row["payment_status"] == "pending" and row["checkout_url"]:
+        old_ref = str(row.get("payment_reference") or "").strip()
+
+        if old_ref:
+            vresp = paystack.verify_charge(old_ref)
+
+            if vresp.get("error"):
+                return {"error": vresp["error"]}
+
+            vdata = (vresp.get("data") or {}) if vresp.get("status") else {}
+            vstat = str(vdata.get("status") or "").lower()
+
+            if vstat == "success":
+                from routers.webhooks import apply_charge_success  # deferred, no cycle
+
+                res = apply_charge_success(
+                    cursor,
+                    lot_id=int(row["id"]),
+                    reference=old_ref,
+                    amount_minor=vdata.get("amount"),
+                    currency=vdata.get("currency") or _ccy(row["currency"] or row["sale_currency"]),
+                )
+                if res.get("error"):
+                    return {"error": res["error"]}
+                return {
+                    "status": "paid",
+                    "message": "existing payment reconciled",
+                    "already": bool(res.get("already")),
+                }
+
+            # Not completed (pending / abandoned / failed). A dead reference
+            # carries no collectable money, so overwriting it below is safe.
+            # Fall through to mint a fresh one.
+        # No old_ref at all -> fall through and mint one.
+
+    email = _buyer_email_for(cursor, row["winner_username"])
+    if not email:
+        return {
+            "error": (
+                "winner has no email on file. Configure a valid buyer email for Paystack, "
+                "or use offline collection marking for local/testing settlement."
+            )
+        }
+
+    sold_price = _money(row["sold_price"])
+    premium = (sold_price * BUYER_PREMIUM_RATE).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+    collected = sold_price + premium
+    currency = _ccy(row["currency"] or row["sale_currency"])
+    reference = f"lot_{lot_id}_{secrets.token_hex(6)}"
+
+    metadata = {
+        # Canonical webhook accepts either kind or purpose.
+        # kind = settle_charge keeps compatibility with older settlement code.
+        "kind": "settle_charge",
+        "purpose": "won_lot_payment",
+        "lot_id": int(row["id"]),
+        "sale_id": int(row["sale_id"]),
+        "winner_username": row["winner_username"],
+        "reference": reference,
+        "custom_fields": [
+            {
+                "variable_name": "lot_id",
+                "value": str(row["id"]),
+                "display_value": f"Lot {row['position']}",
+                "show_on_checkout": True,
+            },
+            {
+                "variable_name": "sale_id",
+                "value": str(row["sale_id"]),
+                "display_value": row["sale_title"],
+                "show_on_checkout": True,
+            },
+        ],
+    }
+
+        # Fail fast on amounts the online rail will refuse anyway, with OUR message,
+    # and route the house to offline collection instead of a confusing Paystack
+    # error. This also retro-protects already-stuck giant rows: the next click
+    # hits this guard and returns a clean message WITHOUT calling Paystack.
+    limit = _max_charge_for(currency)
+    if limit > 0 and collected > limit:
+        return {
+            "error": (
+                f"Amount {collected:,.2f} {currency} exceeds the online payment "
+                f"limit ({limit:,.2f} {currency}). Very high-value lots cannot be "
+                "charged on a card rail. Settle this lot OFFLINE (bank transfer / "
+                "cash) using the house 'Mark collection paid' action, or split the "
+                "payment across multiple charges. The platform will not send this "
+                "amount to Paystack."
+            ),
+            "code": "amount_over_limit",
+            "limit": str(limit),
+            "collected": str(collected),
+            "currency": currency,
+        }
+
+    # This is backend-to-backend Paystack initialization.
+    # The browser must never call https://api.paystack.co directly.
+    resp = paystack.initialize_charge(
+        email=email,
+        amount=float(collected),
+        currency=currency,
+        reference=reference,
+        metadata=metadata,
+        callback_url=PAYSTACK_CALLBACK_URL,
+    )
+
+    if resp.get("error"):
+        return {"error": resp["error"]}
+
+    if not resp.get("status"):
+        return {
+            "error": resp.get("message") or "Paystack initialize failed",
+        }
+
+    checkout_url = (resp.get("data") or {}).get("authorization_url")
+
+    if not checkout_url:
+        return {"error": "Paystack did not return an authorization URL"}
+
+    cursor.execute(
+        """
+        UPDATE lots
+        SET
+            payment_status = 'pending',
+            payment_reference = %s,
+            checkout_url = %s,
+            payment_updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (reference, checkout_url, lot_id),
+    )
+
+    create_notification(
+        user_name=row["winner_username"],
+        category="wallet",
+        type="lot_payment_required",
+        title=f"Payment required · Lot {row['position']} · {row['sale_title']}",
+        body="Open your Won lots page to pay for this lot securely.",
+        actor=row["host_username"],
+        source_type="sale",
+        source_id=row["sale_id"],
+        secondary_id=row["id"],
+        data={
+            "sale_id": row["sale_id"],
+            "lot_id": row["id"],
+            "reference": reference,
+            "amount": str(collected),
+            "currency": currency,
+        },
+        cursor=cursor,
+    )
+
+    return {
+        "status": "pending",
+        "message": "payment link ready",
+        "checkout_url": checkout_url,
+        "reference": reference,
+        "amount": str(collected),
+        "currency": currency,
+    }
 
 
 @router.post("/my/won-lots/{lot_id}/verify")
@@ -377,166 +748,6 @@ def verify_won_lot_payment(lot_id: int, data: dict):
     finally:
         if conn:
             conn.close()
-
-def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
-    cursor.execute(
-        """
-        SELECT
-            l.id,
-            l.position,
-            l.status,
-            l.winner_username,
-            l.sold_price::text AS sold_price,
-            COALESCE(l.payment_status, 'unpaid') AS payment_status,
-            l.payment_reference,
-            l.checkout_url,
-            l.currency,
-            a.id AS sale_id,
-            a.title AS sale_title,
-            a.host_username,
-            a.currency AS sale_currency,
-            a.settled_at
-        FROM lots l
-        JOIN auctions a ON a.id = l.sale_id
-        WHERE l.id = %s
-        FOR UPDATE OF l
-        """,
-        (lot_id,),
-    )
-
-    row = cursor.fetchone()
-
-    if not row:
-        return {"error": "lot not found"}
-
-    if row["status"] != "sold" or not row["winner_username"]:
-        return {"error": "lot is not won"}
-
-    if str(row["payment_status"]).lower() == "paid":
-        return {
-            "status": "paid",
-            "message": "this lot is already paid",
-        }
-
-    if not row["settled_at"]:
-        return {"error": "sale is not settled yet"}
-
-    if row["payment_status"] == "pending" and row["checkout_url"]:
-        return {
-            "status": "pending",
-            "message": "payment link already available",
-            "checkout_url": row["checkout_url"],
-            "reference": row["payment_reference"],
-        }
-
-    email = _buyer_email_for(cursor, row["winner_username"])
-    if not email:
-        return {
-            "error": (
-                "winner has no email on file. Configure a valid buyer email for Paystack, "
-                "or use offline collection marking for local/testing settlement."
-            )
-        }
-
-    sold_price = _money(row["sold_price"])
-    premium = (sold_price * BUYER_PREMIUM_RATE).quantize(
-        Decimal("0.01"),
-        rounding=ROUND_HALF_UP,
-    )
-    collected = sold_price + premium
-    currency = _ccy(row["currency"] or row["sale_currency"])
-    reference = f"lot_{lot_id}_{secrets.token_hex(6)}"
-
-    metadata = {
-        # Canonical webhook accepts either kind or purpose.
-        # kind = settle_charge keeps compatibility with older settlement code.
-        "kind": "settle_charge",
-        "purpose": "won_lot_payment",
-        "lot_id": int(row["id"]),
-        "sale_id": int(row["sale_id"]),
-        "winner_username": row["winner_username"],
-        "reference": reference,
-        "custom_fields": [
-            {
-                "variable_name": "lot_id",
-                "value": str(row["id"]),
-                "display_value": f"Lot {row['position']}",
-                "show_on_checkout": True,
-            },
-            {
-                "variable_name": "sale_id",
-                "value": str(row["sale_id"]),
-                "display_value": row["sale_title"],
-                "show_on_checkout": True,
-            },
-        ],
-    }
-
-    # This is backend-to-backend Paystack initialization.
-    # The browser must never call https://api.paystack.co directly.
-    resp = paystack.initialize_charge(
-        email=email,
-        amount=float(collected),
-        currency=currency,
-        reference=reference,
-        metadata=metadata,
-        callback_url=PAYSTACK_CALLBACK_URL,
-    )
-
-    if resp.get("error"):
-        return {"error": resp["error"]}
-
-    if not resp.get("status"):
-        return {
-            "error": resp.get("message") or "Paystack initialize failed",
-        }
-
-    checkout_url = (resp.get("data") or {}).get("authorization_url")
-
-    if not checkout_url:
-        return {"error": "Paystack did not return an authorization URL"}
-
-    cursor.execute(
-        """
-        UPDATE lots
-        SET
-            payment_status = 'pending',
-            payment_reference = %s,
-            checkout_url = %s,
-            payment_updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
-        """,
-        (reference, checkout_url, lot_id),
-    )
-
-    create_notification(
-        user_name=row["winner_username"],
-        category="wallet",
-        type="lot_payment_required",
-        title=f"Payment required · Lot {row['position']} · {row['sale_title']}",
-        body="Open your Won lots page to pay for this lot securely.",
-        actor=row["host_username"],
-        source_type="sale",
-        source_id=row["sale_id"],
-        secondary_id=row["id"],
-        data={
-            "sale_id": row["sale_id"],
-            "lot_id": row["id"],
-            "reference": reference,
-            "amount": str(collected),
-            "currency": currency,
-        },
-        cursor=cursor,
-    )
-
-    return {
-        "status": "pending",
-        "message": "payment link ready",
-        "checkout_url": checkout_url,
-        "reference": reference,
-        "amount": str(collected),
-        "currency": currency,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -2189,16 +2400,30 @@ def get_sale(sale_id: int, viewer: str = "", code: str = ""):
         sale = dict(sale)
         tier_canonical = _normalize_access_mode(sale.get("tier"))
 
+        # ------------------------------------------------------------------
+        # Compute host identity BEFORE the visibility gate. A house must
+        # ALWAYS be able to open its own sale (add lots, run the control
+        # room, view the room), regardless of tier. auction_access gates
+        # invite/vip rooms by ticket/invitation, and a host is deliberately
+        # forbidden from holding a paddle in their own room (issue_paddle),
+        # so without this short-circuit the owner of an invite-only /
+        # vip-only sale is locked out and this route returns
+        # "this sale is private". Non-owners are still gated below exactly
+        # as before, so locked rooms stay hidden from the public.
+        # ------------------------------------------------------------------
+        is_host = bool(viewer) and viewer == sale["host_username"]
+
         acc = auction_access(
             cursor,
             {**sale, "tier": tier_canonical},
             viewer,
         ) or {}
 
+        if is_host:
+            acc = {**acc, "visible": True, "is_host": True, "locked": False}
+
         if not acc.get("visible", False):
             return {"error": "this sale is private"}
-
-        is_host = bool(viewer) and viewer == sale["host_username"]
 
         cursor.execute(
             "SELECT 1 FROM tickets WHERE auction_id = %s AND user_name = %s",
@@ -2688,7 +2913,14 @@ def bid_on_lot(lot_id: int, data: dict):
 
         if amount <= 0:
             return {"error": "bid must be positive"}
-
+        
+        if Decimal(str(amount)) > MAX_AUCTION_AMOUNT:
+            return {
+                "error": (
+                    "bid is unrealistically large; high-value lots are settled "
+                    "offline by the house, not on the card rail"
+                )
+            }
         conn = get_db()
         cursor = conn.cursor()
 
@@ -3273,6 +3505,10 @@ def mark_collection_paid(sale_id: int, data: dict):
     for example bank transfer, cash, or local testing without a live rail.
 
     This does not move money. It records that collection is complete.
+
+    NOTE: offline-marked lots never credited ESCROW (no platform rail was
+    used), so they contribute nothing to the payout ledger split later. That
+    is correct: the platform never held that money.
     """
     conn = None
 
@@ -3396,7 +3632,7 @@ def mark_collection_paid(sale_id: int, data: dict):
             title=f"Collection marked paid · {sale['title']}",
             body=(
                 f"{marked} won lot(s) were manually marked as collected. "
-                "You can now mark the house payout as paid if the transfer to the house is complete."
+                "You can now process the house payout if the transfer to the house is complete."
             ),
             actor=None,
             source_type="sale",
@@ -4024,6 +4260,7 @@ def sale_payout_view(sale_id: int, viewer: str = ""):
         row = cursor.fetchone()
 
         base["payout_profile"] = dict(row) if row else None
+        base["transfers_enabled"] = PAYSTACK_TRANSFERS_ENABLED
         return base
 
     except Exception as e:
@@ -4037,12 +4274,47 @@ def sale_payout_view(sale_id: int, viewer: str = ""):
 @router.post("/sales/{sale_id}/payout/mark_paid")
 def mark_payout_paid(sale_id: int, data: dict):
     """
-    Host-only manual payout marker.
+    Host-only payout PROCESSOR — the final step of the money lifecycle.
 
-    This is for offline/local settlement. It only marks the sale payout as paid
-    after the sale is settled and every won lot has been collected/paid.
+        buyer pays platform  ->  lot.payment_status = paid  ->  ESCROW credited
+        platform pays house  ->  auctions.payout_status = paid  ->  ESCROW debited,
+                                                                 PLATFORM_REVENUE credited
 
-    It does not call Paystack and does not move money.
+    Behaviour is gated by PAYSTACK_TRANSFERS_ENABLED (see config block):
+
+      false (DEFAULT, test mode):
+        - No real Paystack transfer is attempted (a test account has no
+          withdrawable balance; a live transfer returns "insufficient funds").
+        - The internal ledger split is recorded from the ACTUAL escrow inflows
+          for this sale's lots via _record_payout_ledger_split(), so:
+              * pure Paystack sale  -> full commission/net split recorded
+              * pure offline sale   -> no escrow inflow -> no ledger movement
+              * mixed sale          -> only the Paystack-collected portion splits
+        - payout_status is then set to 'paid' with a mock reference.
+
+      true (live, funded + KYC-approved account):
+        - Requires a house payout profile carrying a Paystack recipient code
+          (BT_...). A real transfer is initiated server-to-server via
+          paystack.initiate_transfer. payout_status stays 'pending' until the
+          transfer.success webhook (POST /webhooks/paystack, metadata.kind
+          'payout_transfer') flips it to 'paid'. The ledger split for live
+          transfers is recorded by that webhook using the same helper (or
+          reversed via append-only entries on transfer.failed, matching the
+          ledger's "never DELETE, always reverse" rule).
+
+    SAFETY:
+      - only the owning house
+      - sale must be ended + settled
+      - every won lot must already be collected (payment_status = paid)
+      - once payout_status = 'paid', this is a no-op (idempotent)
+      - an in-flight live transfer is not re-initiated (idempotent)
+      - the mock ledger split runs in the SAME transaction as the paid flag,
+        so a crash rolls back both; it can never half-apply
+      - escrow is debited via spend(), which enforces per-currency that total
+        payouts can never exceed total collections
+
+    The browser must never call api.paystack.co directly. Transfers, when
+    enabled, are initiated backend-to-backend only.
     """
     conn = None
 
@@ -4062,6 +4334,7 @@ def mark_payout_paid(sale_id: int, data: dict):
                 host_username,
                 status,
                 settled_at,
+                currency,
                 payout_status,
                 payout_reference
             FROM auctions
@@ -4090,8 +4363,22 @@ def mark_payout_paid(sale_id: int, data: dict):
                 "message": "payout already marked paid",
                 "payout_status": "paid",
                 "payout_reference": sale.get("payout_reference"),
+                "idempotent": True,
             }
 
+        # An in-flight live transfer must not be re-initiated / re-split.
+        if (
+            sale["payout_status"] == "pending"
+            and str(sale.get("payout_reference") or "").startswith("payout_transfer_")
+        ):
+            return {
+                "message": "transfer already initiated; awaiting confirmation",
+                "payout_status": "pending",
+                "payout_reference": sale.get("payout_reference"),
+                "idempotent": True,
+            }
+
+        # Every won lot must be collected before the house can be paid.
         cursor.execute(
             """
             SELECT COUNT(*)::int AS c
@@ -4109,31 +4396,234 @@ def mark_payout_paid(sale_id: int, data: dict):
         if unpaid > 0:
             return {
                 "error": (
-                    f"{unpaid} won lot(s) are still unpaid/failed. "
-                    "Payout cannot be marked paid until collection is complete."
+                    f"{unpaid} won lot(s) are still unpaid/pending/failed. "
+                    "Payout cannot be processed until collection is complete."
                 )
             }
 
+        sale_currency = _ccy(sale.get("currency"))
+
+        # Display totals (settlement math over all paid lots) for the notice and
+        # the response, so the message matches the control-room numbers even when
+        # some lots were collected offline and contributed nothing to escrow.
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(sold_price), 0)::text AS hammer_total
+            FROM lots
+            WHERE sale_id = %s
+              AND status = 'sold'
+              AND winner_username IS NOT NULL
+            """,
+            (sale_id,),
+        )
+        agg = cursor.fetchone() or {}
+        hammer_total = _money(agg.get("hammer_total"))
+        premium_total = (hammer_total * BUYER_PREMIUM_RATE).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP,
+        )
+        collected_display = hammer_total + premium_total
+        commission_display = (collected_display * PLATFORM_COMMISSION_RATE).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP,
+        )
+        net_display = collected_display - commission_display
+
+        # -----------------------------------------------------------------
+        # LIVE PATH: real Paystack transfer (only when explicitly enabled).
+        # -----------------------------------------------------------------
+        if PAYSTACK_TRANSFERS_ENABLED:
+            cursor.execute(
+                """
+                SELECT paystack_recipient_code, currency
+                FROM house_payout_profiles
+                WHERE user_name = %s
+                """,
+                (host,),
+            )
+            profile = cursor.fetchone()
+
+            recipient = str((profile or {}).get("paystack_recipient_code") or "").strip() or None
+
+            if not recipient:
+                conn.rollback()
+                return {
+                    "error": (
+                        "PAYSTACK_TRANSFERS_ENABLED=true but this house has no "
+                        "Paystack recipient code (BT_...) on file. Save a payout "
+                        "profile with a recipient code, or set "
+                        "PAYSTACK_TRANSFERS_ENABLED=false to use the mock/test "
+                        "payout processor."
+                    )
+                }
+
+            if net_display <= 0:
+                if not reference:
+                    reference = f"payout_zero_{sale_id}_{secrets.token_hex(4)}"
+                cursor.execute(
+                    """
+                    UPDATE auctions
+                    SET payout_status = 'paid', payout_reference = %s
+                    WHERE id = %s
+                    """,
+                    (reference, sale_id),
+                )
+                conn.commit()
+                return {
+                    "message": "payout closed (zero net)",
+                    "payout_status": "paid",
+                    "payout_reference": reference,
+                    "mode": "live",
+                }
+
+            xfer_ref = reference or f"payout_transfer_{sale_id}_{secrets.token_hex(6)}"
+
+            resp = paystack.initiate_transfer(
+                destination=recipient,
+                amount=float(net_display),
+                currency=sale_currency,
+                reference=xfer_ref,
+                metadata={
+                    "kind": "payout_transfer",
+                    "purpose": "house_payout",
+                    "sale_id": int(sale_id),
+                    "host_username": host,
+                    "net_to_house": str(net_display),
+                    "commission": str(commission_display),
+                    "collected": str(collected_display),
+                },
+            )
+
+            if resp.get("error"):
+                conn.rollback()
+                return {"error": resp["error"]}
+
+            if not resp.get("status"):
+                conn.rollback()
+                return {
+                    "error": resp.get("message") or "Paystack transfer initiate failed",
+                }
+
+            tdata = resp.get("data") or {}
+            stored_ref = tdata.get("reference") or xfer_ref
+
+            # Keep pending until transfer.success webhook confirms; that webhook
+            # should call _record_payout_ledger_split() to book the split (or a
+            # transfer.failed handler should reverse it with append-only entries).
+            cursor.execute(
+                """
+                UPDATE auctions
+                SET payout_status = 'pending', payout_reference = %s
+                WHERE id = %s
+                """,
+                (stored_ref, sale_id),
+            )
+
+            create_notification(
+                user_name=host,
+                category="wallet",
+                type="payout_initiated",
+                title=f"House payout initiated · {sale_currency} {net_display:,.2f}",
+                body=(
+                    "A Paystack transfer to your registered account was initiated. "
+                    "It will be confirmed automatically once the bank processes it."
+                ),
+                actor=None,
+                source_type="sale",
+                source_id=sale_id,
+                data={
+                    "sale_id": sale_id,
+                    "reference": stored_ref,
+                    "net_to_house": str(net_display),
+                    "commission": str(commission_display),
+                    "collected": str(collected_display),
+                    "currency": sale_currency,
+                    "mode": "live_transfer",
+                },
+                cursor=cursor,
+            )
+
+            conn.commit()
+
+            return {
+                "message": "transfer initiated; awaiting confirmation",
+                "payout_status": "pending",
+                "payout_reference": stored_ref,
+                "mode": "live",
+                "ledger_recorded": False,
+                "ledger_note": (
+                    "In live mode the ESCROW->PLATFORM_REVENUE split is booked by "
+                    "the transfer.success webhook (call _record_payout_ledger_split "
+                    "there), and reversed on transfer.failed."
+                ),
+                "net_to_house": str(net_display),
+                "commission": str(commission_display),
+                "collected": str(collected_display),
+                "currency": sale_currency,
+            }
+
+        # -----------------------------------------------------------------
+        # MOCK / TEST PATH (default). No real money moves.
+        # Record the ledger split from ACTUAL escrow inflows, then mark paid.
+        # -----------------------------------------------------------------
+        ledger_summary = _record_payout_ledger_split(cursor, sale_id, sale_currency)
+        any_recorded = bool(ledger_summary)
+
         if not reference:
-            reference = f"manual_payout_{sale_id}_{secrets.token_hex(4)}"
+            reference = f"mock_payout_{sale_id}_{secrets.token_hex(4)}"
 
         cursor.execute(
             """
             UPDATE auctions
-            SET
-                payout_status = 'paid',
-                payout_reference = %s
+            SET payout_status = 'paid', payout_reference = %s
             WHERE id = %s
             """,
             (reference, sale_id),
         )
 
+        create_notification(
+            user_name=host,
+            category="wallet",
+            type="payout_paid",
+            title=f"House payout processed · {sale_currency} {net_display:,.2f}",
+            body=(
+                "The platform payout for this sale was processed in mock/test mode. "
+                "No real bank transfer was sent. The internal ledger split "
+                "(escrow -> house, platform revenue) was recorded from actual "
+                "collections."
+            ),
+            actor=None,
+            source_type="sale",
+            source_id=sale_id,
+            data={
+                "sale_id": sale_id,
+                "reference": reference,
+                "net_to_house": str(net_display),
+                "commission": str(commission_display),
+                "collected": str(collected_display),
+                "currency": sale_currency,
+                "mode": "mock",
+                "ledger_recorded": any_recorded,
+                "ledger": ledger_summary,
+            },
+            cursor=cursor,
+        )
+
         conn.commit()
 
         return {
-            "message": "payout marked paid",
+            "message": "payout processed",
             "payout_status": "paid",
             "payout_reference": reference,
+            "mode": "mock",
+            "ledger_recorded": any_recorded,
+            "ledger": ledger_summary,
+            "totals": {
+                "hammer": str(hammer_total),
+                "premium": str(premium_total),
+                "collected": str(collected_display),
+                "commission": str(commission_display),
+                "net_to_house": str(net_display),
+                "currency": sale_currency,
+            },
         }
 
     except Exception as e:
