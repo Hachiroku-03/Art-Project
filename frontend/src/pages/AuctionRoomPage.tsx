@@ -130,15 +130,16 @@ function toEmbedUrl(raw?: string | null): string {
   const host = normalizeHost(u.hostname)
   const path = stripTrailingSlash(u.pathname)
   const nocookie = host === 'youtube-nocookie.com'
+  const isYouTubeHost = host === 'youtube.com' || host === 'youtu.be' || nocookie
 
-  // https://youtu.be/VIDEO_ID
+  // https://youtu.be/VIDEO_ID  -> real player embed (never iframe the raw
+  // youtu.be page; per YouTube that is the about/share shell, not a player).
   if (host === 'youtu.be') {
     const id = path.slice(1).split('/')[0]
     if (id) return buildYouTubeEmbed(id, nocookie)
     return ''
   }
 
-  // https://youtube.com / https://www.youtube.com / https://youtube-nocookie.com
   if (host === 'youtube.com' || nocookie) {
     // https://youtube.com/watch?v=VIDEO_ID
     if (path === '/watch') {
@@ -146,9 +147,7 @@ function toEmbedUrl(raw?: string | null): string {
       if (id) return buildYouTubeEmbed(id, nocookie)
     }
 
-    // https://youtube.com/embed/VIDEO_ID
-    // https://youtube.com/shorts/VIDEO_ID
-    // https://youtube.com/live/VIDEO_ID
+    // https://youtube.com/embed/VIDEO_ID | /shorts/ID | /live/ID
     const idMatch = path.match(/^\/(?:embed|shorts|live)\/([\w-]+)/)
     if (idMatch?.[1]) {
       return buildYouTubeEmbed(idMatch[1], nocookie)
@@ -159,9 +158,24 @@ function toEmbedUrl(raw?: string | null): string {
       const channel = u.searchParams.get('channel')
       if (channel) return buildYouTubeChannelLiveEmbed(channel, nocookie)
     }
+
+    // FIX: a bare channel URL carries a real channel id -> map it to the
+    // channel live-stream embed so "go live on my channel" actually plays
+    // instead of iframing YouTube's cookie/language shell.
+    const ch = path.match(/^\/channel\/([\w-]+)/)
+    if (ch?.[1]) return buildYouTubeChannelLiveEmbed(ch[1], nocookie)
+
+    // FIX: @handle / /c/... / /user/... cannot be resolved to a channel id
+    // client-side, and as raw pages they render shells inside an iframe.
+    // Refuse to embed; the external "Open stream externally" link still works.
+    if (/^\/(?:@|c\/|user\/)/.test(path)) return ''
   }
 
-  // Twitch / Zoom / other external embeds: return as-is if it looks valid.
+  // FIX safety net: NEVER iframe an unrecognized youtube.com page (search,
+  // feed, playlist, /watch without v, etc.) — those are shells, not players.
+  // Only NON-YouTube external embeds (Twitch player, Zoom, other) pass through.
+  if (isYouTubeHost) return ''
+
   if (/^https?:\/\//.test(value)) return value
 
   return ''

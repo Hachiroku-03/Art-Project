@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { addLot, getSaleView, updateLot, type Lot } from '../../lib/sales'
 import { ImageUploadField } from './ImageUploadField'
 import styles from './control.module.css'
@@ -53,6 +53,63 @@ function parseOpt(key: string, raw: string): { value: number | null; error: stri
   return { value: Math.round(n * 100) / 100, error: '' }
 }
 
+// identical local draft hook as SaleForm (inlined on purpose: no shared export)
+function useLocalDraft<T>(key: string) {
+  const [restored, setRestored] = useState<T | null>(null)
+  const [hasDraft, setHasDraft] = useState(false)
+  const timer = useRef<number | null>(null)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(key)
+      if (raw) {
+        setRestored(JSON.parse(raw) as T)
+        setHasDraft(true)
+      }
+    } catch {
+      /* corrupt draft -> ignore */
+    }
+  }, [key])
+
+  const save = useCallback(
+    (value: T) => {
+      if (timer.current) window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => {
+        try {
+          localStorage.setItem(key, JSON.stringify(value))
+        } catch {
+          /* best effort */
+        }
+      }, 350)
+    },
+    [key],
+  )
+
+  const clear = useCallback(() => {
+    if (timer.current) window.clearTimeout(timer.current)
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      /* ignore */
+    }
+    setHasDraft(false)
+    setRestored(null)
+  }, [key])
+
+  const dismiss = useCallback(() => {
+    setHasDraft(false)
+    setRestored(null)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) window.clearTimeout(timer.current)
+    }
+  }, [])
+
+  return { restored, hasDraft, save, clear, dismiss }
+}
+
 export function LotForm({
   mode,
   saleId,
@@ -66,14 +123,10 @@ export function LotForm({
   saleId: number | string
   viewer: string
   initial: Lot | null
-  /** Authoritative id for edit mode. If `initial` is stale/missing, the form
-   *  fetches the real lot by this id instead of dead-ending on "Nothing to edit." */
   lotId?: number | null
   onClose: () => void
   onSaved: () => void
 }) {
-  // Resolved lot = the source of truth for edit. Start from `initial` fast-path,
-  // then self-heal by fetching if `initial` had no usable id.
   const [resolved, setResolved] = useState<Lot | null>(
     mode === 'edit' && initial && Number.isFinite(Number(initial.id)) ? initial : null,
   )
@@ -83,8 +136,17 @@ export function LotForm({
   const [form, setForm] = useState<LotFormState>(() => fromLot(resolved))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [dirty, setDirty] = useState(false)
 
-  // Edit mode: if we don't already have a valid lot, fetch it from the sale.
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [restoredNotice, setRestoredNotice] = useState(false)
+  const [resumeChoice, setResumeChoice] = useState<null | 'resume' | 'discard'>(null)
+
+  const draftKey =
+    mode === 'create' ? 'lot:new' : `lot:${(resolved?.id ?? lotId ?? (initial as any)?.id) ?? 'unk'}`
+  const draft = useLocalDraft<LotFormState>(draftKey)
+
+  // Edit mode: self-heal by fetching the real lot if `initial` was stale/missing.
   useEffect(() => {
     if (mode !== 'edit') return
     if (resolved && Number.isFinite(Number(resolved.id))) return
@@ -115,6 +177,7 @@ export function LotForm({
       }
       setResolved(found)
       setForm(fromLot(found))
+      setDirty(false)
       setResolving(false)
     })
 
@@ -123,8 +186,24 @@ export function LotForm({
     }
   }, [mode, saleId, viewer, lotId, resolved, (initial as any)?.id])
 
-  const set = <K extends keyof LotFormState>(key: K, value: LotFormState[K]) =>
-    setForm(prev => ({ ...prev, [key]: value }))
+  // Create mode: auto-restore an abandoned lot draft.
+  useEffect(() => {
+    if (mode !== 'create') return
+    if (!draft.hasDraft || !draft.restored) return
+    setForm(draft.restored)
+    setDirty(true)
+    setRestoredNotice(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, draftKey])
+
+  const set = <K extends keyof LotFormState>(key: K, value: LotFormState[K]) => {
+    setForm(prev => {
+      const next = { ...prev, [key]: value }
+      draft.save(next)
+      return next
+    })
+    setDirty(true)
+  }
 
   const locked = resolved?.status === 'sold' || resolved?.status === 'passed'
   const onBlock = resolved?.status === 'on_block'
@@ -171,6 +250,40 @@ export function LotForm({
     return body
   }
 
+  const attemptClose = useCallback(() => {
+    if (busy) return
+    if (dirty) {
+      setConfirmDiscard(true)
+      return
+    }
+    draft.clear()
+    onClose()
+  }, [busy, dirty, draft, onClose])
+
+  const closeRef = useRef(attemptClose)
+  closeRef.current = attemptClose
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const doDiscard = () => {
+    draft.clear()
+    setDirty(false)
+    setConfirmDiscard(false)
+    onClose()
+  }
+
+  const startFresh = () => {
+    draft.clear()
+    setForm({ ...BLANK })
+    setDirty(false)
+    setRestoredNotice(false)
+  }
+
   const submit = async () => {
     if (!viewer) {
       setError('No signed-in house detected.')
@@ -193,12 +306,12 @@ export function LotForm({
         setError(r.error)
         return
       }
+      draft.clear()
       onSaved()
       onClose()
       return
     }
 
-    // EDIT: require a verified id. No more silent "Nothing to edit."
     const editId = Number(resolved?.id)
     if (!Number.isFinite(editId) || editId <= 0) {
       setBusy(false)
@@ -212,14 +325,18 @@ export function LotForm({
       setError(r.error)
       return
     }
+    draft.clear()
     onSaved()
     onClose()
   }
 
   const readOnly = busy || locked || resolving
 
+  const showResumeBanner =
+    mode === 'edit' && draft.hasDraft && !!draft.restored && resumeChoice === null && !resolving
+
   return (
-    <div className={styles.formOverlay} onMouseDown={onClose}>
+    <div className={styles.formOverlay} onMouseDown={attemptClose}>
       <div className={styles.formCard} onMouseDown={e => e.stopPropagation()}>
         <div className={styles.formHead}>
           <div>
@@ -232,24 +349,93 @@ export function LotForm({
               <div className={styles.hint}>{resolving ? 'Loading lot…' : 'Lot unavailable'}</div>
             ) : null}
           </div>
-          <button className={styles.iconBtn} onClick={onClose} aria-label="Close">
+          <button className={styles.iconBtn} onClick={attemptClose} aria-label="Close">
             ×
           </button>
         </div>
 
         {resolveError ? <div className={styles.error}>{resolveError}</div> : null}
-
         {locked ? (
           <div className={styles.error}>This lot is finalized (sold/passed) and cannot be edited.</div>
         ) : null}
-
         {onBlock && !locked ? (
           <div className={styles.hint}>
             On the block: title, description and image can still change, but price / reserve / currency are locked.
           </div>
         ) : null}
-
         {error ? <div className={styles.error}>{error}</div> : null}
+
+        {restoredNotice && mode === 'create' ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0 0 0.75rem',
+              padding: '0.55rem 0.7rem',
+              borderRadius: 12,
+              fontSize: '0.8rem',
+              color: '#14532d',
+              background: 'rgba(20, 83, 45, 0.08)',
+              border: '1px solid rgba(20, 83, 45, 0.16)',
+            }}
+          >
+            <span>Restored your unsaved lot draft.</span>
+            <button type="button" className={styles.linkButton} onClick={startFresh} disabled={busy}>
+              Start fresh
+            </button>
+          </div>
+        ) : null}
+
+        {showResumeBanner ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0 0 0.75rem',
+              padding: '0.55rem 0.7rem',
+              borderRadius: 12,
+              fontSize: '0.8rem',
+              color: '#92400e',
+              background: 'rgba(146, 64, 14, 0.08)',
+              border: '1px solid rgba(146, 64, 14, 0.16)',
+            }}
+          >
+            <span>You have unsaved edits for this lot from a previous session.</span>
+            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className={`${styles.linkButton} ${styles.primaryLink}`}
+                onClick={() => {
+                  if (draft.restored) {
+                    setForm(draft.restored)
+                    setDirty(true)
+                  }
+                  setResumeChoice('resume')
+                }}
+                disabled={busy}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => {
+                  draft.clear()
+                  setResumeChoice('discard')
+                }}
+                disabled={busy}
+              >
+                Discard
+              </button>
+            </span>
+          </div>
+        ) : null}
 
         <div className={styles.formGrid}>
           <label className={`${styles.field} ${styles.fieldFull}`}>
@@ -350,6 +536,45 @@ export function LotForm({
           </div>
         </fieldset>
 
+        {confirmDiscard ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0.75rem 0 0',
+              padding: '0.6rem 0.75rem',
+              borderRadius: 12,
+              fontSize: '0.82rem',
+              color: '#8b1f2f',
+              background: 'rgba(139, 31, 47, 0.07)',
+              border: '1px solid rgba(139, 31, 47, 0.18)',
+            }}
+          >
+            <span>Discard your unsaved changes?</span>
+            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => setConfirmDiscard(false)}
+                disabled={busy}
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                className={`${styles.linkButton} ${styles.primaryLink}`}
+                onClick={doDiscard}
+                disabled={busy}
+              >
+                Discard
+              </button>
+            </span>
+          </div>
+        ) : null}
+
         <div className={styles.formActions}>
           <button
             className={`${styles.linkButton} ${styles.primaryLink}`}
@@ -358,7 +583,7 @@ export function LotForm({
           >
             {busy ? 'Saving…' : mode === 'create' ? 'Add lot' : 'Save lot'}
           </button>
-          <button className={styles.linkButton} onClick={onClose} disabled={busy}>
+          <button className={styles.linkButton} onClick={attemptClose} disabled={busy}>
             Cancel
           </button>
         </div>

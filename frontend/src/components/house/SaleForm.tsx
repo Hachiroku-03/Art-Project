@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   createSale,
+  getSaleView,
   normalizeAccessMode,
+  normalizeYouTubeEmbed,
   setStream,
   updateSale,
   type AccessMode,
@@ -66,6 +68,87 @@ function fromSale(sale: Sale | null): FormState {
   }
 }
 
+// A sale coming from /my_sales or /sales is THIN: those SELECTs omit
+// stream_url / image_url / description, so fromSale() would seed empty boxes
+// and the YouTube/image would "vanish on edit". Detect that so we can self-heal
+// by fetching the full sale (exactly the pattern LotForm already uses for lots).
+function isThinSale(s: Sale | null | undefined): boolean {
+  return !!s && (s.stream_url === undefined || s.image_url === undefined || s.description === undefined)
+}
+
+// Upgrade a recognizable YouTube link to a playable /embed/<id>; pass through
+// any non-YouTube external URL (Twitch/Zoom/other) untouched so we never
+// destroy a valid link. normalizeYouTubeEmbed returns '' for anything it can't
+// map to a video id, so `|| raw` keeps those as-is (the room's render guard is
+// the safety net for un-embeddable forms).
+function prepareStreamUrl(raw: string): string {
+  const t = (raw || '').trim()
+  if (!t) return ''
+  return normalizeYouTubeEmbed(t) || t
+}
+
+// ---------------------------------------------------------------------------
+// Local, dependency-free draft hook. Autosaves the in-progress form to
+// localStorage so an accidental X / backdrop click / tab crash can never erase
+// a half-filled sale. Inlined (not a shared export) on purpose: zero
+// missing-export risk, and the two forms use different state shapes anyway.
+// ---------------------------------------------------------------------------
+function useLocalDraft<T>(key: string) {
+  const [restored, setRestored] = useState<T | null>(null)
+  const [hasDraft, setHasDraft] = useState(false)
+  const timer = useRef<number | null>(null)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(key)
+      if (raw) {
+        setRestored(JSON.parse(raw) as T)
+        setHasDraft(true)
+      }
+    } catch {
+      /* corrupt draft -> ignore */
+    }
+  }, [key])
+
+  const save = useCallback(
+    (value: T) => {
+      if (timer.current) window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => {
+        try {
+          localStorage.setItem(key, JSON.stringify(value))
+        } catch {
+          /* quota / private mode -> best effort */
+        }
+      }, 350)
+    },
+    [key],
+  )
+
+  const clear = useCallback(() => {
+    if (timer.current) window.clearTimeout(timer.current)
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      /* ignore */
+    }
+    setHasDraft(false)
+    setRestored(null)
+  }, [key])
+
+  const dismiss = useCallback(() => {
+    setHasDraft(false)
+    setRestored(null)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) window.clearTimeout(timer.current)
+    }
+  }, [])
+
+  return { restored, hasDraft, save, clear, dismiss }
+}
+
 export function SaleForm({
   mode,
   initial,
@@ -79,12 +162,80 @@ export function SaleForm({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [form, setForm] = useState<FormState>(() => fromSale(initial))
+  // Fast-path seed from whatever the parent handed us, then self-heal if thin.
+  const [resolvedSale, setResolvedSale] = useState<Sale | null>(
+    mode === 'edit' && initial && !isThinSale(initial) ? initial : null,
+  )
+  const [resolving, setResolving] = useState(mode === 'edit' && (!initial || isThinSale(initial)))
+  const [resolveError, setResolveError] = useState('')
+
+  const [form, setForm] = useState<FormState>(() =>
+    fromSale(mode === 'edit' ? resolvedSale : null),
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [dirty, setDirty] = useState(false)
 
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm(prev => ({ ...prev, [key]: value }))
+  // draft / discard / resume UI
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [restoredNotice, setRestoredNotice] = useState(false)
+  const [resumeChoice, setResumeChoice] = useState<null | 'resume' | 'discard'>(null)
+
+  const draftKey =
+    mode === 'create' ? 'sale:new' : `sale:${(resolvedSale?.id ?? initial?.id) ?? 'unk'}`
+  const draft = useLocalDraft<FormState>(draftKey)
+
+  // Edit + thin/missing source -> fetch the full sale and re-seed (fixes the
+  // "YouTube/image vanishes on edit" data gap without touching the backend).
+  useEffect(() => {
+    if (mode !== 'edit') return
+    if (resolvedSale) return
+    const id = Number(initial?.id)
+    if (!Number.isFinite(id) || id <= 0) {
+      setResolving(false)
+      setResolveError('No sale id was provided to edit.')
+      return
+    }
+    let alive = true
+    setResolving(true)
+    setResolveError('')
+    getSaleView(id, viewer).then(d => {
+      if (!alive) return
+      if (d.error || !d.sale) {
+        setResolveError(d.error || 'Sale unavailable.')
+        setResolving(false)
+        return
+      }
+      setResolvedSale(d.sale)
+      setForm(fromSale(d.sale))
+      setDirty(false) // server seed is the baseline, not a user edit
+      setResolving(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [mode, viewer, initial?.id, resolvedSale])
+
+  // Create mode: auto-restore an abandoned draft so reopening "New sale" brings
+  // back what was typed (the literal "start from the beginning" pain).
+  useEffect(() => {
+    if (mode !== 'create') return
+    if (!draft.hasDraft || !draft.restored) return
+    setForm(draft.restored)
+    setDirty(true)
+    setRestoredNotice(true)
+    // run once per mount/key
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, draftKey])
+
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    setForm(prev => {
+      const next = { ...prev, [key]: value }
+      draft.save(next)
+      return next
+    })
+    setDirty(true)
+  }
 
   const validate = (): string => {
     if (!form.title.trim()) return 'Title is required.'
@@ -102,13 +253,8 @@ export function SaleForm({
     const ccy = form.currency.trim().toUpperCase()
     const tccy = form.ticket_currency.trim().toUpperCase()
 
-    if (ccy && !/^[A-Z]{3}$/.test(ccy)) {
-      return 'Sale currency must be a 3-letter code (e.g. NGN).'
-    }
-
-    if (tccy && !/^[A-Z]{3}$/.test(tccy)) {
-      return 'Paddle currency must be a 3-letter code (or blank to match sale).'
-    }
+    if (ccy && !/^[A-Z]{3}$/.test(ccy)) return 'Sale currency must be a 3-letter code (e.g. NGN).'
+    if (tccy && !/^[A-Z]{3}$/.test(tccy)) return 'Paddle currency must be a 3-letter code (or blank to match sale).'
 
     return ''
   }
@@ -128,10 +274,46 @@ export function SaleForm({
 
   const streamPayload = (): Record<string, unknown> => ({
     stream_type: form.stream_type || 'external',
-    stream_url: form.stream_url,
+    stream_url: prepareStreamUrl(form.stream_url),
     // preserve the existing peer id so set_stream doesn't blank it
-    stream_peer_id: initial?.stream_peer_id ?? '',
+    stream_peer_id: (resolvedSale ?? initial)?.stream_peer_id ?? '',
   })
+
+  // Guarded close: never discard a dirty form on a stray click/Esc/X.
+  const attemptClose = useCallback(() => {
+    if (busy) return
+    if (dirty) {
+      setConfirmDiscard(true)
+      return
+    }
+    draft.clear()
+    onClose()
+  }, [busy, dirty, draft, onClose])
+
+  // keep latest attemptClose for the once-bound Esc listener
+  const closeRef = useRef(attemptClose)
+  closeRef.current = attemptClose
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const doDiscard = () => {
+    draft.clear()
+    setDirty(false)
+    setConfirmDiscard(false)
+    onClose()
+  }
+
+  const startFresh = () => {
+    draft.clear()
+    setForm({ ...BLANK })
+    setDirty(false)
+    setRestoredNotice(false)
+  }
 
   const submit = async () => {
     if (!viewer) {
@@ -142,7 +324,6 @@ export function SaleForm({
     }
 
     const v = validate()
-
     if (v) {
       setError(v)
       return
@@ -152,83 +333,169 @@ export function SaleForm({
     setError('')
 
     if (mode === 'create') {
-      // poster + stream are accepted in the create body (after the backend fix)
+      // create_sale's INSERT does NOT persist stream_*, so we send the body
+      // (harmless if a future backend accepts it) AND, crucially, follow up with
+      // setStream on the new id so the broadcast actually sticks. Without the
+      // setStream call the YouTube link is lost on create -> the "vanishes on
+      // edit" symptom's first half.
       const r = await createSale(viewer, {
         ...corePayload(),
         stream_type: form.stream_type || 'external',
-        stream_url: form.stream_url,
+        stream_url: prepareStreamUrl(form.stream_url),
       })
 
-      setBusy(false)
-
       if (r.error) {
+        setBusy(false)
         setError(r.error)
         return
       }
 
+      const newId = (r as any)?.sale?.id ?? (r as any)?.id
+      if (newId) {
+        const st = await setStream(newId, viewer, streamPayload())
+        if (st.error) {
+          // core saved but stream failed -> keep modal open, show why, DON'T clear draft
+          setBusy(false)
+          setError(`Sale created, but the broadcast link failed to save: ${st.error}`)
+          return
+        }
+      }
+
+      setBusy(false)
+      draft.clear()
       onSaved()
       onClose()
       return
     }
 
-    // edit: PATCH core, then set_stream (PATCH ignores stream fields)
-    if (!initial) {
+    // edit: need a resolved id (self-heal above guarantees it for thin sources)
+    const editId = Number((resolvedSale ?? initial)?.id)
+    if (!Number.isFinite(editId) || editId <= 0) {
       setBusy(false)
-      setError('Nothing to edit.')
+      setError(resolveError || 'Could not resolve the sale to edit. Reload and try again.')
       return
     }
 
-    const up = await updateSale(initial.id, viewer, corePayload())
-
+    const up = await updateSale(editId, viewer, corePayload())
     if (up.error) {
       setBusy(false)
       setError(up.error)
       return
     }
 
-    const st = await setStream(initial.id, viewer, streamPayload())
-
+    const st = await setStream(editId, viewer, streamPayload())
     setBusy(false)
-    onSaved() // core change is persisted regardless; refresh the list
+    onSaved() // core change persisted regardless; refresh the list
 
     if (st.error) {
-      // stream failed but core saved — keep the modal open so the house sees why
-      setError(st.error)
+      setError(st.error) // stream failed but core saved -> keep open so house sees why
       return
     }
 
+    draft.clear()
     onClose()
   }
 
-  const ended = initial?.status === 'ended'
-  const readOnly = busy || ended
+  const ended = (resolvedSale ?? initial)?.status === 'ended'
+  const readOnly = busy || ended || resolving
+
+  const showResumeBanner =
+    mode === 'edit' && draft.hasDraft && !!draft.restored && resumeChoice === null && !resolving
 
   return (
-    <div className={styles.formOverlay} onMouseDown={onClose}>
+    <div className={styles.formOverlay} onMouseDown={attemptClose}>
       <div className={styles.formCard} onMouseDown={e => e.stopPropagation()}>
         <div className={styles.formHead}>
           <div>
-            <h2 className={styles.formTitle}>
-              {mode === 'create' ? 'New sale' : 'Edit sale'}
-            </h2>
-
-            {initial ? (
+            <h2 className={styles.formTitle}>{mode === 'create' ? 'New sale' : 'Edit sale'}</h2>
+            {resolving ? (
+              <div className={styles.hint}>Loading sale details…</div>
+            ) : resolvedSale || initial ? (
               <div className={styles.hint}>
-                Sale #{initial.id} · {initial.status}
+                Sale #{(resolvedSale ?? initial)!.id} · {(resolvedSale ?? initial)!.status}
               </div>
             ) : null}
           </div>
-
-          <button className={styles.iconBtn} onClick={onClose} aria-label="Close">
+          <button className={styles.iconBtn} onClick={attemptClose} aria-label="Close">
             ×
           </button>
         </div>
 
-        {ended ? (
-          <div className={styles.error}>This sale has ended and is read-only.</div>
+        {resolveError ? <div className={styles.error}>{resolveError}</div> : null}
+        {ended ? <div className={styles.error}>This sale has ended and is read-only.</div> : null}
+        {error ? <div className={styles.error}>{error}</div> : null}
+
+        {restoredNotice && mode === 'create' ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0 0 0.75rem',
+              padding: '0.55rem 0.7rem',
+              borderRadius: 12,
+              fontSize: '0.8rem',
+              color: '#14532d',
+              background: 'rgba(20, 83, 45, 0.08)',
+              border: '1px solid rgba(20, 83, 45, 0.16)',
+            }}
+          >
+            <span>Restored your unsaved draft.</span>
+            <button type="button" className={styles.linkButton} onClick={startFresh} disabled={busy}>
+              Start fresh
+            </button>
+          </div>
         ) : null}
 
-        {error ? <div className={styles.error}>{error}</div> : null}
+        {showResumeBanner ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0 0 0.75rem',
+              padding: '0.55rem 0.7rem',
+              borderRadius: 12,
+              fontSize: '0.8rem',
+              color: '#92400e',
+              background: 'rgba(146, 64, 14, 0.08)',
+              border: '1px solid rgba(146, 64, 14, 0.16)',
+            }}
+          >
+            <span>You have unsaved edits for this sale from a previous session.</span>
+            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className={`${styles.linkButton} ${styles.primaryLink}`}
+                onClick={() => {
+                  if (draft.restored) {
+                    setForm(draft.restored)
+                    setDirty(true)
+                  }
+                  setResumeChoice('resume')
+                }}
+                disabled={busy}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => {
+                  draft.clear()
+                  setResumeChoice('discard')
+                }}
+                disabled={busy}
+              >
+                Discard
+              </button>
+            </span>
+          </div>
+        ) : null}
 
         <div className={styles.formGrid}>
           <label className={`${styles.field} ${styles.fieldFull}`}>
@@ -267,7 +534,6 @@ export function SaleForm({
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Access &amp; pricing</legend>
-
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Access mode</span>
@@ -317,9 +583,7 @@ export function SaleForm({
                 maxLength={3}
                 disabled={readOnly}
               />
-              <span className={styles.hint}>
-                Blank = charge the paddle fee in the sale currency.
-              </span>
+              <span className={styles.hint}>Blank = charge the paddle fee in the sale currency.</span>
             </label>
 
             <label className={styles.field}>
@@ -339,7 +603,6 @@ export function SaleForm({
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Schedule</legend>
-
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Starts at</span>
@@ -351,7 +614,6 @@ export function SaleForm({
                 disabled={readOnly}
               />
             </label>
-
             <label className={styles.field}>
               <span className={styles.label}>Ends at</span>
               <input
@@ -368,7 +630,6 @@ export function SaleForm({
 
         <fieldset className={styles.fieldset}>
           <legend className={styles.legend}>Broadcast</legend>
-
           <div className={styles.formGrid}>
             <label className={styles.field}>
               <span className={styles.label}>Stream type</span>
@@ -389,23 +650,64 @@ export function SaleForm({
                 className={styles.input}
                 value={form.stream_url}
                 onChange={e => set('stream_url', e.target.value)}
-                placeholder="https://youtu.be/…"
+                placeholder="https://youtu.be/… or https://www.youtube.com/watch?v=…"
                 disabled={readOnly}
               />
+              <span className={styles.hint}>
+                YouTube links are auto-converted to a playable embed on save. Twitch/Zoom links are kept as-is.
+              </span>
             </label>
           </div>
         </fieldset>
+
+        {confirmDiscard ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.6rem',
+              flexWrap: 'wrap',
+              margin: '0.75rem 0 0',
+              padding: '0.6rem 0.75rem',
+              borderRadius: 12,
+              fontSize: '0.82rem',
+              color: '#8b1f2f',
+              background: 'rgba(139, 31, 47, 0.07)',
+              border: '1px solid rgba(139, 31, 47, 0.18)',
+            }}
+          >
+            <span>Discard your unsaved changes?</span>
+            <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => setConfirmDiscard(false)}
+                disabled={busy}
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                className={`${styles.linkButton} ${styles.primaryLink}`}
+                onClick={doDiscard}
+                disabled={busy}
+              >
+                Discard
+              </button>
+            </span>
+          </div>
+        ) : null}
 
         <div className={styles.formActions}>
           <button
             className={`${styles.linkButton} ${styles.primaryLink}`}
             onClick={() => void submit()}
-            disabled={readOnly}
+            disabled={readOnly || (mode === 'edit' && !resolvedSale)}
           >
             {busy ? 'Saving…' : mode === 'create' ? 'Create sale' : 'Save changes'}
           </button>
-
-          <button className={styles.linkButton} onClick={onClose} disabled={busy}>
+          <button className={styles.linkButton} onClick={attemptClose} disabled={busy}>
             Cancel
           </button>
         </div>

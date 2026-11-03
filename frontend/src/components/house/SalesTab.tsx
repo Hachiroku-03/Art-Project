@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   formatMoney,
@@ -33,26 +33,47 @@ export function SalesTab({
 }) {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Sale | null>(null) // null = create
-  const [prefillBusy, setPrefillBusy] = useState(false)
+
+  // BUG 2 FIX: key the prefill spinner by sale id, not one shared boolean, so
+  // loading ONE row can never make every other row's Edit button spin.
+  const [prefillBusyId, setPrefillBusyId] = useState<number | null>(null)
   const [prefillErr, setPrefillErr] = useState('')
 
+  // Guards the async prefill against races: a slow Edit-A resolving after the
+  // user opened New sale (or clicked Edit-B) must not yank the open form.
+  const pendingEditRef = useRef<number | null>(null)
+
   const openCreate = () => {
+    pendingEditRef.current = null // cancel any in-flight edit prefill
     setPrefillErr('')
     setEditing(null)
     setFormOpen(true)
   }
 
   const openEdit = async (saleId: number) => {
+    if (prefillBusyId === saleId) return // already loading this exact row
     setPrefillErr('')
-    setPrefillBusy(true)
-    const d = await getSaleView(saleId, viewer)
-    setPrefillBusy(false)
-    if (d.error || !d.sale) {
-      setPrefillErr(d.error || 'Could not load this sale for editing.')
-      return
+    setPrefillBusyId(saleId)
+    pendingEditRef.current = saleId
+
+    try {
+      const d = await getSaleView(saleId, viewer)
+
+      // Superseded by a newer open/create while we were fetching -> drop it.
+      if (pendingEditRef.current !== saleId) return
+
+      if (d.error || !d.sale) {
+        setPrefillErr(d.error || 'Could not load this sale for editing.')
+        return
+      }
+
+      setEditing(d.sale)
+      setFormOpen(true)
+    } finally {
+      // Functional clear: only this row's spinner, never a sibling's.
+      setPrefillBusyId(cur => (cur === saleId ? null : cur))
+      if (pendingEditRef.current === saleId) pendingEditRef.current = null
     }
-    setEditing(d.sale)
-    setFormOpen(true)
   }
 
   return (
@@ -90,6 +111,7 @@ export function SalesTab({
             <tbody>
               {sales.map(sale => {
                 const ended = sale.status === 'ended'
+                const rowBusy = prefillBusyId === sale.id
                 return (
                   <tr key={sale.id}>
                     <td>
@@ -106,10 +128,10 @@ export function SalesTab({
                         <button
                           className={styles.linkButton}
                           onClick={() => void openEdit(sale.id)}
-                          disabled={ended || prefillBusy}
+                          disabled={ended || rowBusy}
                           title={ended ? 'Ended sales are read-only' : 'Edit sale'}
                         >
-                          {prefillBusy ? 'Loading…' : 'Edit'}
+                          {rowBusy ? 'Loading…' : 'Edit'}
                         </button>
                         <Link className={styles.linkButton} to={`/sales/${sale.id}`}>Ticket page</Link>
                         <Link className={styles.linkButton} to={`/sales/${sale.id}/control`}>Focus</Link>

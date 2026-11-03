@@ -5,10 +5,9 @@ import styles from './ImageUploadField.module.css'
 
 // ---------------------------------------------------------------------------
 // Self-contained URL normalizer. Deliberately NOT imported from sales.ts so a
-// missing export can never break this field again. Repairs the common paste
-// damage (wrapping quotes/angle brackets, stray newlines/tabs, literal spaces,
-// a missing scheme, protocol-relative links) WITHOUT fighting the user mid-type
-// (we only mutate whitespace/scheme, never re-encode an already-valid URL).
+// missing export can never break this field again. Mirrors sales.ts's
+// normalizeImageUrl (incl. paren/bracket encoding) so the value the field
+// commits is byte-identical to what the lib would produce.
 // ---------------------------------------------------------------------------
 function normalizeImageUrl(raw: unknown): string {
   let s = String(raw ?? '').trim()
@@ -18,8 +17,13 @@ function normalizeImageUrl(raw: unknown): string {
   s = s.replace(/^["'<]+/, '').replace(/["'>]+$/, '').trim()
   if (!s) return ''
 
-  // kill paste line-wraps and tabs; percent-encode any remaining literal spaces
-  s = s.replace(/[\r\n\t]+/g, '').replace(/ /g, '%20')
+  // kill paste line-wraps and tabs
+  s = s.replace(/[\r\n\t]+/g, '')
+
+  // percent-encode spaces + parens/brackets that are legal in URLs but break
+  // a raw <img src> in some browsers/CDNs
+  s = s.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29')
+  s = s.replace(/\[/g, '%5B').replace(/\]/g, '%5D')
 
   // protocol-relative -> https
   if (/^\/\//.test(s)) return 'https:' + s
@@ -54,28 +58,25 @@ export function ImageUploadField({
   hint?: string
   disabled?: boolean
   aspect?: string
-  // optional override; defaults to the auction backend's /upload
   uploadEndpoint?: string
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  // Local draft so typing isn't mangled by normalization; re-syncs from the
-  // `value` prop whenever the parent loads/prefills a lot or sale (this is what
-  // stops the "URL vanishes on re-edit" from this side).
+  // Local draft so typing isn't mangled; re-syncs from the `value` prop whenever
+  // the parent loads/prefills a lot or sale (stops the "URL vanishes on re-edit"
+  // from this side).
   const [draft, setDraft] = useState(value ?? '')
   const [focused, setFocused] = useState(false)
   const [loadState, setLoadState] = useState<LoadState>('idle')
 
   useEffect(() => {
-    // external change (upload result, edit prefill, parent reset) -> adopt it
     setDraft(value ?? '')
   }, [value])
 
   const normalized = useMemo(() => normalizeImageUrl(draft), [draft])
 
-  // reset the load probe whenever the resolved src changes
   useEffect(() => {
     setLoadState('idle')
   }, [normalized])
@@ -85,6 +86,14 @@ export function ImageUploadField({
   const isHttp = /^http:\/\//i.test(normalized)
   const pageIsHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
   const mixedContent = hasImage && !isRelative && isHttp && pageIsHttps
+
+  // Push the NORMALIZED value to the parent on EVERY change (not just blur).
+  // This kills the "paste a URL then click Save before blurring" race where the
+  // parent still held the old/empty image_url. Idempotent with commit().
+  const push = (nextDraft: string) => {
+    setDraft(nextDraft)
+    onChange(normalizeImageUrl(nextDraft))
+  }
 
   const commit = () => {
     const next = normalizeImageUrl(draft)
@@ -147,10 +156,13 @@ export function ImageUploadField({
       <div className={styles.preview} style={{ aspectRatio: aspect, position: 'relative' }}>
         {hasImage ? (
           <img
-            key={normalized}            // force a fresh load-probe when src changes
+            key={normalized}
             src={normalized}
             alt=""
             className={styles.previewImg}
+            // Many CDNs 403 a foreign Referer but serve the image when none is
+            // sent; this recovers a chunk of "online pic won't load" cases.
+            referrerPolicy="no-referrer"
             onLoad={() => setLoadState('ok')}
             onError={() => setLoadState('error')}
           />
@@ -168,8 +180,6 @@ export function ImageUploadField({
           </div>
         ) : null}
 
-        {/* Load-test failure overlay — suppressed while typing so an incomplete
-            URL mid-entry doesn't scream. Appears after blur/Enter. */}
         {!busy && !focused && hasImage && loadState === 'error' ? (
           <div
             style={{
@@ -261,7 +271,7 @@ export function ImageUploadField({
         <input
           className={styles.urlInput}
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={e => push(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => {
             setFocused(false)
@@ -276,7 +286,6 @@ export function ImageUploadField({
         />
       </label>
 
-      {/* live status line under the input */}
       {hasImage && !focused ? (
         <p
           style={{
