@@ -22,3 +22,23 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# secrets / local env — NEVER commit; the Render clone reads from this repo
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# node
+node_modules/
+dist/
+.vite/
+
+# runtime upload artifacts (ephemeral on Render — see persistent-disk note below)
+backend/uploads/
+uploads/
