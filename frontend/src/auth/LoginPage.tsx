@@ -4,6 +4,7 @@ import { Eye, EyeOff, ScanFace, ArrowRight } from 'lucide-react'
 import styles from './LoginPage.module.css'
 import { setSession } from '../lib/session'
 import { ThreeBackground } from './ThreeBackground'
+import { useGoogleAuth } from '../lib/useGoogleAuth'
 
 const API = 'http://localhost:8000'
 
@@ -69,6 +70,32 @@ export function LoginPage() {
     }
   }, [])
 
+  // Shared success path for BOTH password and Google login (one redirect, no drift).
+  function finishLogin(data: LoginResponse) {
+    if (!data.token || !data.username) return
+    setSession({
+      token: data.token,
+      username: data.username,
+      role: data.role ?? 'artist',
+      tier: data.tier ?? 'standard',
+    })
+    setToast({ kind: 'ok', message: `Welcome back, ${data.username}.` })
+    redirectTimer.current = window.setTimeout(() => {
+      navigate('/feed')
+    }, 900)
+  }
+
+  const google = useGoogleAuth({
+    apiBase: API,
+    onResult: (data, err) => {
+      if (!err && data.token && data.username) {
+        finishLogin(data as LoginResponse)
+      } else {
+        setToast({ kind: 'err', message: err || 'Google sign-in failed.' })
+      }
+    },
+  })
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
 
@@ -112,22 +139,7 @@ export function LoginPage() {
       }
 
       if (response.ok && data.token && data.username) {
-        setSession({
-          token: data.token,
-          username: data.username,
-          role: data.role ?? 'artist',
-          tier: data.tier ?? 'standard',
-        })
-
-        setToast({
-          kind: 'ok',
-          message: `Welcome back, ${data.username}.`,
-        })
-
-        redirectTimer.current = window.setTimeout(() => {
-          navigate('/feed')
-        }, 900)
-
+        finishLogin(data)
         return
       }
 
@@ -231,19 +243,28 @@ export function LoginPage() {
           <span>or</span>
         </div>
 
-        <button
-          className={styles.googleBtn}
-          type="button"
-          onClick={() =>
-            setToast({
-              kind: 'note',
-              message: 'Google sign-in arrives after OAuth setup.',
-            })
-          }
-        >
-          <GoogleIcon />
-          Continue with Google
-        </button>
+        {/* Configured -> Google's official button (reliable). Unconfigured ->
+            your custom button as a clear "set me up" fallback. */}
+        {google.configured ? (
+          <div ref={google.btnRef} className={styles.gsiSlot} aria-label="Sign in with Google" />
+        ) : (
+          <button
+            className={styles.googleBtn}
+            type="button"
+            onClick={() =>
+              setToast({
+                kind: 'note',
+                message:
+                  'Google sign-in needs VITE_GOOGLE_CLIENT_ID (frontend) and GOOGLE_CLIENT_ID (server).',
+              })
+            }
+          >
+            <GoogleIcon />
+            Continue with Google
+          </button>
+        )}
+
+        {google.error ? <p className={styles.googleNote}>{google.error}</p> : null}
 
         <button
           className={styles.faceBtn}

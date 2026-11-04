@@ -1,6 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { LoginPage } from './auth/LoginPage'
 import { SignupPage } from './auth/SignupPage'
+// LandingPage lives in src/pages/ (with its src/pages/landing/ tree), NOT src/auth/ —
+// the auth pages above are the only things in auth/. Easy one to mis-path.
+import { LandingPage } from './pages/LandingPage'
 import { FeedPage } from './pages/FeedPage'
 import { PostRoomPage } from './pages/PostRoomPage'
 import { AuctionsPage } from './pages/AuctionsPage'
@@ -28,10 +31,23 @@ function Gate() {
   return <Navigate to={token ? '/feed' : '/login'} replace />
 }
 
+// Root gate: logged-in users keep today's behavior (-> /feed); logged-out users now get
+// the public landing page instead of being bounced straight to /login with no context.
+// Same localStorage-read idiom as Gate above, so it's consistent with the existing file.
+function LandingGate() {
+  const token = localStorage.getItem('space_token')
+  return token ? <Navigate to="/feed" replace /> : <LandingPage />
+}
+
 function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* public front door. Explicit static path wins over the "*" catch-all below,
+            so adding this does NOT change what "*" matches. Boundary'd because a
+            white-screened homepage is the worst failure mode in the app. */}
+        <Route path="/" element={<ErrorBoundary><LandingGate /></ErrorBoundary>} />
+
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/feed" element={<FeedPage />} />

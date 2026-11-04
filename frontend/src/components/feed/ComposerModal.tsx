@@ -274,7 +274,7 @@ function ImageEditorModal({
           </div>
 
           <label className={styles.sliderLabel}>
-            Brightness {edits.brightness}%
+            <span>Brightness <b>{edits.brightness}%</b></span>
             <input
               className={styles.slider}
               type="range"
@@ -286,7 +286,7 @@ function ImageEditorModal({
           </label>
 
           <label className={styles.sliderLabel}>
-            Contrast {edits.contrast}%
+            <span>Contrast <b>{edits.contrast}%</b></span>
             <input
               className={styles.slider}
               type="range"
@@ -298,7 +298,7 @@ function ImageEditorModal({
           </label>
 
           <label className={styles.sliderLabel}>
-            Saturation {edits.saturation}%
+            <span>Saturation <b>{edits.saturation}%</b></span>
             <input
               className={styles.slider}
               type="range"
@@ -348,6 +348,12 @@ export function ComposerModal({
 }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  // wall-label fields
+  const [year, setYear] = useState('')
+  const [medium, setMedium] = useState('')
+  const [dimensions, setDimensions] = useState('')
+  const [location, setLocation] = useState('')
+
   const [statusText, setStatusText] = useState('')
   const [images, setImages] = useState<DraftImage[]>([])
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
@@ -447,25 +453,6 @@ export function ComposerModal({
     setEditingIndex(null)
   }
 
-  function resetEdit(index: number) {
-    setImages(prev =>
-      prev.map((img, i) => {
-        if (i !== index) return img
-
-        if (img.previewUrl !== img.originalUrl) {
-          URL.revokeObjectURL(img.previewUrl)
-        }
-
-        return {
-          ...img,
-          editedBlob: undefined,
-          previewUrl: img.originalUrl,
-          edits: DEFAULT_EDITS,
-        }
-      }),
-    )
-  }
-
   async function submit(e: FormEvent) {
     e.preventDefault()
     setErr('')
@@ -512,6 +499,10 @@ export function ComposerModal({
             title: title.trim(),
             description: description.trim(),
             images: uploadedUrls,
+            year: year.trim(),
+            medium: medium.trim(),
+            dimensions: dimensions.trim(),
+            location: location.trim(),
           }),
         })
           .then(r => r.json())
@@ -687,21 +678,74 @@ export function ComposerModal({
 
           {isWork ? (
             <>
-              <label className={styles.label}>Title</label>
+              <label className={styles.label} htmlFor="cm-title">Title</label>
               <input
-                className={styles.input}
+                id="cm-title"
+                className={`${styles.input} ${styles.titleInput}`}
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder="Untitled work"
+                placeholder="Untitled"
+                maxLength={120}
               />
 
-              <label className={styles.label}>Notes</label>
+              {/* Wall label — all optional */}
+              <p className={styles.sectionLabel}>Wall label <span>optional</span></p>
+
+              <div className={styles.labelGrid}>
+                <label className={styles.field}>
+                  <span className={styles.label}>Year</span>
+                  <input
+                    className={styles.input}
+                    value={year}
+                    onChange={e => setYear(e.target.value)}
+                    placeholder="2025"
+                    inputMode="numeric"
+                    maxLength={12}
+                  />
+                </label>
+
+                <label className={`${styles.field} ${styles.wide}`}>
+                  <span className={styles.label}>Medium</span>
+                  <input
+                    className={styles.input}
+                    value={medium}
+                    onChange={e => setMedium(e.target.value)}
+                    placeholder="Oil on linen"
+                    maxLength={80}
+                  />
+                </label>
+
+                <label className={styles.field}>
+                  <span className={styles.label}>Dimensions</span>
+                  <input
+                    className={styles.input}
+                    value={dimensions}
+                    onChange={e => setDimensions(e.target.value)}
+                    placeholder="120 × 90 cm"
+                    maxLength={60}
+                  />
+                </label>
+
+                <label className={styles.field}>
+                  <span className={styles.label}>Location</span>
+                  <input
+                    className={styles.input}
+                    value={location}
+                    onChange={e => setLocation(e.target.value)}
+                    placeholder="Port Harcourt"
+                    maxLength={60}
+                  />
+                </label>
+              </div>
+
+              <label className={styles.label} htmlFor="cm-notes">Notes</label>
               <textarea
+                id="cm-notes"
                 className={styles.area}
                 rows={3}
                 value={description}
                 onChange={e => setDescription(e.target.value)}
-                placeholder="Medium, dimensions, the story behind it…"
+                placeholder="The story behind it…"
               />
             </>
           ) : (
@@ -713,7 +757,7 @@ export function ComposerModal({
                       <label key={img.id} className={styles.captionItem}>
                         <span className={styles.label}>Caption for photo {i + 1}</span>
                         <input
-                          className={styles.captionInput}
+                          className={styles.input}
                           value={img.caption}
                           onChange={e => setCaption(i, e.target.value)}
                           placeholder="Optional caption for this story item"
@@ -749,15 +793,20 @@ export function ComposerModal({
 
           {err && <p className={styles.err}>{err}</p>}
 
-          <button className={styles.submit} type="submit" disabled={busy}>
-            {busy
-              ? 'Sending…'
-              : isWork
-                ? 'Hang it'
-                : hasExistingStory
-                  ? 'Add to story'
-                  : 'Share status'}
-          </button>
+          <div className={styles.footer}>
+            <button className={styles.submit} type="submit" disabled={busy}>
+              {busy
+                ? 'Sending…'
+                : isWork
+                  ? 'Hang it'
+                  : hasExistingStory
+                    ? 'Add to story'
+                    : 'Share status'}
+            </button>
+            <button type="button" className={styles.cancelBtn} onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+          </div>
         </form>
       </div>
 

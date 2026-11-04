@@ -5,6 +5,13 @@ import { API } from '../../lib/sales'
 import { fetchSuggestions, type Suggestion } from '../../lib/feed'
 import styles from './SuggestionsRail.module.css'
 
+// Defensive read: works even before you widen the Suggestion type in feed.ts,
+// so this file never fails to compile on a missing field.
+function avatarOf(s: Suggestion): string | null {
+  const v = (s as { avatar_url?: string | null }).avatar_url
+  return typeof v === 'string' && v.trim() ? v.trim() : null
+}
+
 export function SuggestionsRail({ viewer }: { viewer: string }) {
   const navigate = useNavigate()
   const [items, setItems] = useState<Suggestion[]>([])
@@ -28,10 +35,30 @@ export function SuggestionsRail({ viewer }: { viewer: string }) {
       <p className={styles.head}>Who to know</p>
       {items.map(s => {
         const on = followed[s.username] ?? false
-        const initial = (s.display_name || s.username)[0]?.toUpperCase()
+        const av = avatarOf(s)
+        const initial = (s.display_name || s.username)[0]?.toUpperCase() || '?'
         return (
           <div key={s.username} className={styles.row}>
-            <button className={styles.ava} onClick={() => navigate(`/profile/${s.username}`)}>{initial}</button>
+            <button
+              className={styles.ava}
+              onClick={() => navigate(`/profile/${s.username}`)}
+              aria-label={`View ${s.display_name || s.username}`}
+            >
+              {/* Direct image if present; fall back to the initial. Same rule as
+                  the lot/poster field: avatar_url must be a DIRECT image or an
+                  upload, never a profile PAGE url — a page won't decode and the
+                  initial is the correct graceful fallback, not a bug. */}
+              {av ? (
+                <img
+                  src={av}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                />
+              ) : (
+                initial
+              )}
+            </button>
             <button className={styles.info} onClick={() => navigate(`/profile/${s.username}`)}>
               <span className={styles.nm}>{s.display_name || s.username}</span>
               <span className={styles.sub}>@{s.username} {s.role === 'house' && <Landmark size={10} />} · {s.follower_count} followers</span>

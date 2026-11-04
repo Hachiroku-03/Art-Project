@@ -1,0 +1,23 @@
+.tiers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(1.25rem, 3vw, 2.5rem); align-items: start; }
+.tier {
+  display: flex; flex-direction: column; gap: 1.25rem;
+  padding: clamp(1.5rem, 3vw, 2.25rem);
+  background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+}
+.vip { border-color: var(--vip); border-top-width: 3px; }
+
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.name { font-family: var(--font-display); font-size: .8rem; letter-spacing: .18em; text-transform: uppercase; }
+.vip .name { color: var(--vip); }
+.price { font-family: var(--font-label); font-weight: 500; font-size: 2rem; line-height: 1; letter-spacing: -.01em; }
+.price small { font-family: var(--font-ui); font-size: .78rem; color: var(--ink-soft); letter-spacing: 0; margin-left: .2rem; }
+
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.list li { position: relative; padding: .7rem 0 .7rem 1.4rem; border-bottom: 1px solid var(--line); font-size: .92rem; line-height: 1.5; color: var(--ink-soft); }
+.list li::before { content: ""; position: absolute; left: 0; top: 1.25rem; width: .5rem; height: 1px; background: var(--ink); }
+.vip .list li::before { background: var(--vip); }
+
+.cta { align-self: flex-start; margin-top: .5rem; }
+.fine { margin: 0; font: italic .9rem var(--font-label); color: var(--ink-faint); }
+
+@media (max-width: 800px) { .tiers { grid-template-columns: 1fr; } }

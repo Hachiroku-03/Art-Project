@@ -171,3 +171,37 @@ select.input {
   color: var(--err);
 }
 .toastOk { color: var(--ok); }
+
+/* ---------- Google (credential flow) ----------
+   Mirrors LoginPage so the two auth screens read identically. */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 1.5rem 0;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 300;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.divider::before,
+.divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* GSI slot: official button renders inside this div; min-height avoids a
+   layout shift while Google's iframe paints. */
+.gsiSlot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* Non-blocking note when GSI fails to load/init (e.g. blocked script). */
+.googleNote {
+  margin-top: 0.6rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--err);
+}

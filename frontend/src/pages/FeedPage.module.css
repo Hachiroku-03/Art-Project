@@ -1,41 +1,99 @@
-.layout { min-height: 100vh; background: linear-gradient(180deg, #faf8f4 0%, var(--wall) 220px); padding-top: 72px; }
-.shell { max-width: 1280px; margin: 0 auto; padding: 1.4rem 1.5rem 4rem; }
+/* FeedPage — flat studio. Wall background, hairlines, soft 4px corners.
+   Class names unchanged from the original. */
 
-/* compact search + hang, one soft row */
-.topRow { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.6rem; }
-.searchWrap { position: relative; display: flex; align-items: center; width: 280px; max-width: 45%; }
-.sIcon { position: absolute; left: 0.8rem; color: var(--ink-faint); pointer-events: none; }
-.sInput { width: 100%; background: var(--paper); border: 1px solid rgba(14,14,14,0.06); border-radius: 999px; padding: 0.6rem 2rem 0.6rem 2.2rem; font-family: var(--font-ui); font-size: 0.88rem; color: var(--ink); outline: none; box-shadow: 0 1px 2px rgba(20,18,15,0.04); transition: box-shadow .18s, border-color .18s; }
-.sInput:focus { border-color: rgba(14,14,14,0.12); box-shadow: 0 4px 16px rgba(20,18,15,0.08); }
-.sInput::placeholder { color: var(--ink-faint); font-style: italic; font-family: var(--font-label); }
-.sClear { position: absolute; right: 0.7rem; background: none; border: none; color: var(--ink-faint); font-size: 1.15rem; line-height: 1; cursor: pointer; }
+.layout { --r: 4px; min-height: 100vh; background: var(--wall); padding-top: 72px; }
+.shell { max-width: 1280px; margin: 0 auto; padding: 1.5rem 1.5rem 5rem; }
+
+/* ---------- top row: search + hang ---------- */
+.topRow { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+
+.searchWrap { position: relative; display: flex; align-items: center; width: 300px; max-width: 45%; }
+.sIcon { position: absolute; left: .75rem; color: var(--ink-faint); pointer-events: none; }
+.sInput {
+  width: 100%; min-height: 40px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r);
+  padding: .5rem 2rem .5rem 2.2rem;
+  font-family: var(--font-ui); font-size: .9rem; color: var(--ink); outline: none;
+  transition: border-color .15s;
+}
+.sInput:hover { border-color: var(--line-strong); }
+.sInput:focus { border-color: var(--ink); }
+.sInput::placeholder { color: var(--ink-faint); font: italic .95rem var(--font-label); }
+.sClear { position: absolute; right: .6rem; background: none; border: 0; color: var(--ink-faint); font-size: 1.15rem; line-height: 1; cursor: pointer; padding: .2rem; }
 .sClear:hover { color: var(--err); }
-.hangBtn { margin-left: auto; display: inline-flex; align-items: center; gap: 0.45rem; background: var(--ink); color: var(--wall); border: none; border-radius: 999px; padding: 0.6rem 1.2rem; font-family: var(--font-ui); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; box-shadow: 0 6px 18px rgba(20,18,15,0.16); transition: transform .15s, box-shadow .15s; }
-.hangBtn:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(20,18,15,0.22); }
 
-/* mobile rail disclosure — hidden on desktop */
-.mobileToggles { display: none; gap: 0.6rem; margin: 0.4rem 0 1rem; }
-.mToggle { display: inline-flex; align-items: center; gap: 0.4rem; background: var(--paper); border: 1px solid rgba(14,14,14,0.07); border-radius: 999px; padding: 0.5rem 1rem; font-family: var(--font-ui); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); cursor: pointer; box-shadow: 0 1px 2px rgba(20,18,15,0.04); }
-.mOn { background: var(--ink); border-color: var(--ink); color: var(--wall); }
+.hangBtn {
+  margin-left: auto; display: inline-flex; align-items: center; gap: .45rem; min-height: 40px;
+  background: var(--ink); color: var(--paper); border: 1px solid var(--ink); border-radius: var(--r);
+  padding: 0 1.1rem;
+  font-family: var(--font-ui); font-size: .68rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.hangBtn:hover { background: var(--vip); border-color: var(--vip); }
 
-/* three zones */
-.cols { display: grid; grid-template-columns: 230px minmax(0, 1fr) 300px; gap: 1.8rem; align-items: start; }
-.left, .right { position: sticky; top: calc(72px + 1.2rem); display: flex; flex-direction: column; gap: 1.2rem; }
-.center { min-width: 0; display: flex; flex-direction: column; gap: 1.3rem; }
-.list { display: flex; flex-direction: column; gap: 1.3rem; }
+/* ---------- mobile rail toggles ---------- */
+.mobileToggles { display: none; gap: .5rem; margin: 0 0 1rem; }
+.mToggle {
+  display: inline-flex; align-items: center; gap: .4rem; min-height: 40px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 0 .9rem;
+  font-family: var(--font-ui); font-size: .66rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-soft); cursor: pointer;
+}
+.mOn { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 
-.err, .empty, .rest { font-family: var(--font-label); font-style: italic; font-size: 1.02rem; color: var(--ink-soft); text-align: center; margin: 3rem 0; }
+/* ---------- three zones ---------- */
+.cols { display: grid; grid-template-columns: 230px minmax(0, 1fr) 300px; gap: 2.5rem; align-items: start; }
+.left, .right { position: sticky; top: calc(72px + 1.5rem); display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
+.center { min-width: 0; max-width: 680px; width: 100%; justify-self: center; display: flex; flex-direction: column; gap: 1.5rem; }
+
+/* posts hang with a generous gap; each card ends on its own hairline */
+.list { display: flex; flex-direction: column; gap: 3rem; }
+
+.err, .empty, .rest { font: italic 1.05rem var(--font-label); color: var(--ink-soft); text-align: center; margin: 4rem 0; }
 .err { color: var(--err); }
 
+/* ---------- desktop sticky rails ----------
+   The base .left/.right are position:sticky with a fixed top but no height cap,
+   so a rail taller than the viewport (right rail = ProgrammeRail + PaddleCard on
+   a short laptop) pins its tail off-screen and becomes unreachable. Cap the
+   sticky box to the visible band and let it scroll internally. Scoped to
+   min-width:1081px so it only applies where sticky is active — at <=1080 the
+   rails become display:none / .open and must grow naturally with the page. */
+@media (min-width: 1081px) {
+  .left, .right {
+    max-height: calc(100vh - 72px - 3rem);
+    overflow-y: auto;
+    scrollbar-width: thin;                 /* Firefox */
+  }
+  .left::-webkit-scrollbar, .right::-webkit-scrollbar { width: 6px; }
+  .left::-webkit-scrollbar-thumb, .right::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: 999px;
+  }
+}
+
+/* ---------- tablet ---------- */
 @media (max-width: 1080px) {
   .cols { grid-template-columns: 1fr; gap: 0; }
+  .center { max-width: 680px; margin: 0 auto; }
   .mobileToggles { display: flex; }
-  .left, .right { position: static; display: none; gap: 1rem; padding: 0.3rem 0 1rem; }
+  .left, .right { position: static; display: none; gap: 1rem; padding: 0 0 1.5rem; max-width: 680px; margin: 0 auto; width: 100%; }
   .left.open, .right.open { display: flex; }
 }
+
+/* ---------- phone ---------- */
 @media (max-width: 560px) {
   .shell { padding: 1rem 1rem 3rem; }
+  .topRow { gap: .5rem; }
   .searchWrap { max-width: none; flex: 1; }
+  /* Icon-only Hang button. Self-sufficient: works whether the label is a <span>
+     (hidden by the display:none rule) OR a bare text node (collapsed by
+     font-size:0; gap:0 removes the stray flex gap an empty text box would leave).
+     The <svg> carries explicit width/height so it is unaffected by font-size:0.
+     No JSX change required. */
+  .hangBtn { font-size: 0; gap: 0; padding: 0 .8rem; }
   .hangBtn span { display: none; }
-  .hangBtn { padding: 0.6rem 0.8rem; }
+  .hangBtn svg { font-size: initial; }
+  .list { gap: 2.5rem; }
 }

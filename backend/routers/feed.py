@@ -1,3 +1,20 @@
+"""
+feed.py — the social/feed router (your own origin; no Paystack, no YouTube, no tunnel).
+
+Consolidated. Every original route is preserved; the additions/fixes folded in are:
+  - /upload returns PUBLIC_BASE_URL (was hardcoded http://localhost:8001 -> mixed content on https)
+  - _ensure_post_schema creates posts.deleted_at AND comments.deleted_at AND post_reports,
+    once per process, committed before any query reads those columns
+  - /feed and GET /posts/{id} filter deleted_at IS NULL (soft-delete aware)
+  - GET /posts/{id}/comments joins users->profiles for avatar_url and returns the `deleted` flag
+  - POST /posts/{id}/comments returns avatar_url + deleted:False so a fresh comment renders right
+  - DELETE /posts/{id}        author-only soft delete (viewer via query OR body)
+  - POST /posts/{id}/report   non-author report -> post_reports (self-report rejected)
+  - DELETE /comments/{id}     comment-author-only soft delete (idempotent)
+  - POST /comments/{id}/like  rejects liking a removed comment
+  - GET /suggestions          now selects p.avatar_url (was the thin column that hid rail avatars)
+"""
+
 from fastapi import APIRouter, UploadFile, File
 import os
 import secrets
@@ -10,23 +27,61 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "upl
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp3", ".wav", ".ogg", ".webm", ".m4a"}
 
+# Uploaded assets must be served from the SAME scheme/host the browser is on, or an
+# https page blocks an http image (mixed content). Override with PUBLIC_BASE_URL on
+# deploy (e.g. https://yourdomain.com). Default keeps local dev working.
+UPLOAD_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8001").rstrip("/")
+
+# ---------------------------------------------------------------------------
+# Soft-delete + reports schema, created once per process and COMMITTED before
+# any query references posts.deleted_at / comments.deleted_at. Without the
+# commit-first ordering, adding "AND deleted_at IS NULL" to /feed would error
+# on a DB that does not yet have the column, taking the whole feed down.
+# ---------------------------------------------------------------------------
+_post_schema_ready = False
+
+
+def _ensure_post_schema(cursor):
+    global _post_schema_ready
+    if _post_schema_ready:
+        return
+    cursor.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+    cursor.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS post_reports (
+            id          SERIAL PRIMARY KEY,
+            post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+            reporter    TEXT    NOT NULL,
+            reason      TEXT    NOT NULL,
+            note        TEXT,
+            status      TEXT    NOT NULL DEFAULT 'open',
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_post_reports_post ON post_reports(post_id)")
+    _post_schema_ready = True
+
+
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXT: return {"error": "file type not allowed"}
     name = f"{secrets.token_hex(8)}{ext}"
     with open(os.path.join(UPLOAD_DIR, name), "wb") as f: f.write(await file.read())
-    return {"url": f"http://localhost:8001/uploads/{name}"}
+    return {"url": f"{UPLOAD_BASE_URL}/uploads/{name}"}
 
 @router.get("/feed")
 def get_feed(viewer: str = ""):
     conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
     cursor.execute('''
         SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
                posts.created_at::text AS created_at, users.username, users.role, users.tier,
                profiles.display_name, profiles.avatar_url,
                (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
-               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) AS comment_count,
+               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
                (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
                EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
                EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
@@ -36,6 +91,7 @@ def get_feed(viewer: str = ""):
         FROM posts
         JOIN users ON posts.author_id = users.id
         LEFT JOIN profiles ON profiles.user_id = users.id
+        WHERE posts.deleted_at IS NULL
         ORDER BY posts.created_at DESC LIMIT 20
     ''', (viewer, viewer, viewer))
     feed_items = cursor.fetchall(); conn.close()
@@ -52,6 +108,7 @@ def create_post(data: dict):
     cover = images[0] if images else (data.get("image_url", "") or "").strip()
     if not viewer or not title: return {"error": "viewer and title required"}
     conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
     cursor.execute("SELECT id FROM users WHERE username = %s", (viewer,))
     author = cursor.fetchone()
     if not author: conn.close(); return {"error": "unknown author"}
@@ -64,12 +121,13 @@ def create_post(data: dict):
 @router.get("/posts/{post_id}")
 def get_post(post_id: int, viewer: str = ""):
     conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
     cursor.execute('''
         SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
                posts.created_at::text AS created_at, users.username, users.role, users.tier,
                profiles.display_name, profiles.avatar_url,
                (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
-               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) AS comment_count,
+               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
                (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
                EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
                EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
@@ -78,11 +136,80 @@ def get_post(post_id: int, viewer: str = ""):
         FROM posts
         JOIN users ON posts.author_id = users.id
         LEFT JOIN profiles ON profiles.user_id = users.id
-        WHERE posts.id = %s
+        WHERE posts.id = %s AND posts.deleted_at IS NULL
     ''', (viewer, viewer, viewer, post_id))
     post = cursor.fetchone(); conn.close()
     if not post: return {"error": "post not found"}
     return {"post": post}
+
+# ---------------------------------------------------------------------------
+# NEW: author deletes own post (soft). viewer from query OR body (DELETE bodies
+# are stripped by some proxies). Ownership via posts.author_id -> users.username.
+# ---------------------------------------------------------------------------
+@router.delete("/posts/{post_id}")
+def delete_post(post_id: int, viewer: str = "", data: dict = {}):
+    v = (str(viewer or "").strip() or str((data or {}).get("viewer") or "").strip())
+    if not v: return {"error": "viewer required"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute(
+            """
+            SELECT p.id, u.username
+            FROM posts p JOIN users u ON u.id = p.author_id
+            WHERE p.id = %s AND p.deleted_at IS NULL
+            """,
+            (post_id,),
+        )
+        row = cursor.fetchone()
+        if not row: return {"error": "post not found"}
+        if str(row["username"]).strip().lower() != v.strip().lower():
+            return {"error": "not your post"}
+        cursor.execute("UPDATE posts SET deleted_at = CURRENT_TIMESTAMP WHERE id = %s", (post_id,))
+        conn.commit()
+        return {"message": "post deleted", "id": post_id}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------------------------
+# NEW: any authenticated non-author reports a post. Self-reports rejected.
+# Rows accumulate in post_reports (status='open') for moderation.
+# ---------------------------------------------------------------------------
+@router.post("/posts/{post_id}/report")
+def report_post(post_id: int, data: dict):
+    v = str(data.get("viewer") or "").strip()
+    reason = str(data.get("reason") or "").strip() or "Other"
+    note = str(data.get("note") or "").strip() or None
+    if not v: return {"error": "viewer required"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute(
+            """
+            SELECT u.username FROM posts p JOIN users u ON u.id = p.author_id
+            WHERE p.id = %s AND p.deleted_at IS NULL
+            """,
+            (post_id,),
+        )
+        row = cursor.fetchone()
+        if not row: return {"error": "post not found"}
+        if str(row["username"]).strip().lower() == v.strip().lower():
+            return {"error": "you cannot report your own post"}
+        cursor.execute(
+            "INSERT INTO post_reports (post_id, reporter, reason, note) VALUES (%s,%s,%s,%s) RETURNING id",
+            (post_id, v, reason[:200], note[:2000] if note else None),
+        )
+        rid = cursor.fetchone()["id"]
+        conn.commit()
+        return {"message": "report submitted", "id": rid}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
 
 @router.post("/posts/{post_id}/like")
 def toggle_like(post_id: int, data: dict):
@@ -95,13 +222,23 @@ def toggle_like(post_id: int, data: dict):
 
 @router.get("/posts/{post_id}/comments")
 def get_comments(post_id: int, viewer: str = ""):
+    """Join users->profiles so each comment carries avatar_url, and return the
+    `deleted` flag so the frontend can render [removed] instead of hiding the row
+    (which would orphan its replies)."""
     conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
     cursor.execute('''
-        SELECT comments.id, comments.user_name, comments.body, comments.kind, comments.parent_id,
-               comments.created_at::text AS created_at,
-               (SELECT COUNT(*) FROM comment_likes WHERE comment_likes.comment_id = comments.id) AS like_count,
-               EXISTS(SELECT 1 FROM comment_likes WHERE comment_likes.comment_id = comments.id AND comment_likes.user_name = %s) AS liked_by_viewer
-        FROM comments WHERE comments.post_id = %s ORDER BY comments.created_at ASC
+        SELECT c.id, c.user_name, c.body, c.kind, c.parent_id,
+               c.created_at::text AS created_at,
+               p.avatar_url,
+               (c.deleted_at IS NOT NULL) AS deleted,
+               (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = c.id) AS like_count,
+               EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = c.id AND cl.user_name = %s) AS liked_by_viewer
+        FROM comments c
+        LEFT JOIN users u ON u.username = c.user_name
+        LEFT JOIN profiles p ON p.user_id = u.id
+        WHERE c.post_id = %s
+        ORDER BY c.created_at ASC
     ''', (viewer, post_id))
     rows = cursor.fetchall(); conn.close(); return {"comments": rows}
 
@@ -109,12 +246,56 @@ def get_comments(post_id: int, viewer: str = ""):
 def add_comment(post_id: int, data: dict):
     viewer, body, kind, parent_id = data.get("viewer", ""), data.get("body", "").strip(), data.get("kind", "text"), data.get("parent_id")
     conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
     cursor.execute("INSERT INTO comments (post_id, user_name, body, kind, parent_id) VALUES (%s, %s, %s, %s, %s) RETURNING id, user_name, body, kind, parent_id, created_at::text AS created_at", (post_id, viewer, body, kind, parent_id))
-    row = cursor.fetchone(); conn.commit(); conn.close(); return {"comment": row}
+    row = dict(cursor.fetchone())
+    # RETURNING cannot join, so fetch the commenter's avatar separately -> a freshly
+    # posted comment shows its photo immediately instead of waiting for a reload.
+    cursor.execute(
+        "SELECT p.avatar_url FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.username = %s",
+        (viewer,),
+    )
+    av = cursor.fetchone()
+    row["avatar_url"] = (av or {}).get("avatar_url")
+    row["deleted"] = False
+    conn.commit(); conn.close(); return {"comment": row}
+
+# ---------------------------------------------------------------------------
+# NEW: comment-author soft-deletes own comment (idempotent). viewer via query OR
+# body. Mirrors delete_story's ownership check but case-insensitive/trimmed.
+# ---------------------------------------------------------------------------
+@router.delete("/comments/{comment_id}")
+def delete_comment(comment_id: int, viewer: str = "", data: dict = {}):
+    v = (str(viewer or "").strip() or str((data or {}).get("viewer") or "").strip())
+    if not v: return {"error": "viewer required"}
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute("SELECT user_name, deleted_at FROM comments WHERE id = %s", (comment_id,))
+        row = cursor.fetchone()
+        if not row: return {"error": "comment not found"}
+        if str(row["user_name"]).strip().lower() != v.strip().lower():
+            return {"error": "not your comment"}
+        if row["deleted_at"] is not None:
+            return {"message": "already deleted", "id": comment_id}   # idempotent no-op
+        cursor.execute("UPDATE comments SET deleted_at = CURRENT_TIMESTAMP WHERE id = %s", (comment_id,))
+        conn.commit()
+        return {"message": "comment deleted", "id": comment_id}
+    except Exception as e:
+        conn.rollback(); return {"error": str(e)}
+    finally:
+        conn.close()
 
 @router.post("/comments/{comment_id}/like")
 def toggle_comment_like(comment_id: int, data: dict):
     viewer = data.get("viewer", ""); conn = get_db(); cursor = conn.cursor()
+    _ensure_post_schema(cursor); conn.commit()
+    # reject liking a removed comment
+    cursor.execute("SELECT deleted_at FROM comments WHERE id = %s", (comment_id,))
+    crow = cursor.fetchone()
+    if not crow: conn.close(); return {"error": "comment not found"}
+    if crow["deleted_at"] is not None: conn.close(); return {"error": "this comment was removed"}
     cursor.execute("SELECT 1 FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer))
     if cursor.fetchone(): cursor.execute("DELETE FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer)); liked = False
     else: cursor.execute("INSERT INTO comment_likes (comment_id, user_name) VALUES (%s, %s)", (comment_id, viewer)); liked = True
@@ -154,10 +335,11 @@ def toggle_bookmark(post_id: int, data: dict):
 
 @router.get("/suggestions")
 def suggestions(viewer: str = ""):
-    """Left rail: popular members the viewer doesn't already follow."""
+    """Left rail: popular members the viewer doesn't already follow.
+    Now selects p.avatar_url (was the thin column that hid rail avatars)."""
     conn = get_db(); cursor = conn.cursor()
     cursor.execute('''
-        SELECT u.username, u.role, u.tier, p.display_name,
+        SELECT u.username, u.role, u.tier, p.display_name, p.avatar_url,
                (SELECT COUNT(*) FROM follows f2 WHERE f2.followee = u.username) AS follower_count
         FROM users u LEFT JOIN profiles p ON p.user_id = u.id
         WHERE u.username <> %s

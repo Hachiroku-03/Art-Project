@@ -1,0 +1,68 @@
+.hero {
+  position: relative; height: 100vh; height: 100svh; min-height: 620px;
+  background: #0a0a0a; color: #fff; overflow: hidden;
+}
+.stage { position: absolute; inset: 0; }
+.poster { position: absolute; inset: 0; display: grid; place-items: center; background: #0a0a0a; }
+.poster img { width: min(60vw, 720px); border: 12px solid #17110c; outline: 6px solid #d9d2c4; outline-offset: -18px; }
+/* soft scrim so the type never fights the painting */
+.scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(60% 70% at 18% 65%, rgba(10,10,10,.85), rgba(10,10,10,0) 70%),
+    linear-gradient(180deg, rgba(10,10,10,.5) 0%, rgba(10,10,10,0) 25%, rgba(10,10,10,0) 70%, rgba(10,10,10,.6) 100%);
+}
+
+.copy {
+  position: absolute; left: 0; right: 0; bottom: 13vh;
+  padding: 0 var(--lp-pad); max-width: 680px;
+  will-change: opacity, transform;
+}
+.eyebrow { color: rgba(255,255,255,.55); }
+.h1 {
+  margin: 0;
+  font-family: var(--font-label); font-weight: 500;
+  font-size: clamp(2.6rem, 5.4vw, 4.8rem); line-height: 1.0; letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+.h1 em { font-style: italic; position: relative; white-space: nowrap; }
+.h1 em::after { content: ""; position: absolute; left: 0; right: 0; bottom: .06em; height: .055em; background: var(--vip); }
+.lede { margin: 1.4rem 0 0; max-width: 46ch; font-size: clamp(1rem, 1.25vw, 1.12rem); line-height: 1.6; color: rgba(255,255,255,.74); }
+.ctas { margin-top: 2.2rem; }
+
+/* wall label beside the work */
+.label {
+  position: absolute; right: var(--lp-pad); bottom: 13vh;
+  display: flex; flex-direction: column; gap: .25rem;
+  padding-left: .9rem; border-left: 1px solid rgba(255,255,255,.3);
+  font-size: .78rem; color: rgba(255,255,255,.72);
+}
+.label span:first-child { font-weight: 600; color: #fff; }
+.work { font-size: .9rem; }
+.label em { font-family: var(--font-label); font-style: italic; font-size: 1.05rem; color: #fff; }
+
+.note {
+  position: absolute; left: var(--lp-pad); bottom: 7.5vh; margin: 0;
+  font: italic .9rem var(--font-label); color: rgba(255,255,255,.5);
+}
+.hint {
+  position: absolute; left: var(--lp-pad); bottom: 3vh;
+  display: flex; align-items: center; gap: .6rem;
+  font-size: .6rem; letter-spacing: .24em; text-transform: uppercase; color: rgba(255,255,255,.45);
+}
+.hint i { width: 1px; height: 36px; background: linear-gradient(#fff, transparent); transform-origin: top; animation: drop 1.6s infinite var(--lp-ease); }
+@keyframes drop { 0% { transform: scaleY(0); opacity: 0 } 30% { opacity: 1 } 100% { transform: scaleY(1); opacity: 0 } }
+
+@media (max-width: 760px) {
+  .copy { bottom: 10vh; }
+  .label { display: none; }
+  .note { display: none; }
+  .note {
+  position: absolute; left: var(--lp-pad); bottom: 7.5vh; margin: 0;
+  font: italic .9rem var(--font-label); color: rgba(255,255,255,.5);
+}
+.hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .hint i { animation: none; } }
+
+@media (min-width: 860px) { .copy, .label, .note, .hint { --lp-pad: var(--lp-pad-lg); } }

@@ -114,15 +114,19 @@ export function SalesTab({
                 const rowBusy = prefillBusyId === sale.id
                 return (
                   <tr key={sale.id}>
-                    <td>
-                      <div className={styles.saleTitle}>{sale.title}</div>
-                      <div className={styles.muted}>#{sale.id}</div>
+                    {/* data-label = the column name shown beside each cell when the
+                        table stacks into row-cards on phones (see control.module.css) */}
+                    <td data-label="Sale">
+                      <div>
+                        <div className={styles.saleTitle}>{sale.title}</div>
+                        <div className={styles.muted}>#{sale.id}</div>
+                      </div>
                     </td>
-                    <td><AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} /></td>
-                    <td>{statusLabel(sale.status)}</td>
-                    <td>{sale.lot_count ?? 0}</td>
-                    <td>{sale.tickets_sold ?? 0}</td>
-                    <td>{formatMoney(sale.ticket_price, sale.ticket_currency || sale.currency || 'NGN')}</td>
+                    <td data-label="Access"><AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} /></td>
+                    <td data-label="Status">{statusLabel(sale.status)}</td>
+                    <td data-label="Lots">{sale.lot_count ?? 0}</td>
+                    <td data-label="Paddles">{sale.tickets_sold ?? 0}</td>
+                    <td data-label="Price">{formatMoney(sale.ticket_price, sale.ticket_currency || sale.currency || 'NGN')}</td>
                     <td>
                       <div className={styles.actions}>
                         <button

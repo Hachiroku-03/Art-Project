@@ -1,0 +1,41 @@
+.motif { position: relative; height: 100vh; height: 100svh; min-height: 620px; background: #0a0a0a; color: #fff; overflow: hidden; }
+.stage { position: absolute; inset: 0; }
+.poster { position: absolute; inset: 0; display: grid; place-items: center; background: #0a0a0a; }
+.poster img { width: min(60vw, 720px); border: 12px solid #17110c; outline: 6px solid #d9d2c4; outline-offset: -18px; }
+.scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(10,10,10,.7) 0%, rgba(10,10,10,0) 30%),
+    linear-gradient(0deg, rgba(10,10,10,.75) 0%, rgba(10,10,10,0) 30%);
+}
+
+.head { position: absolute; left: var(--lp-pad); right: var(--lp-pad); top: 10vh; max-width: 620px; }
+.eyebrow { color: rgba(255,255,255,.5); }
+.h2 { margin: 0; font-family: var(--font-label); font-weight: 500; font-size: clamp(2rem, 3.8vw, 3.2rem); line-height: 1.04; letter-spacing: -.015em; text-wrap: balance; }
+.h2 em { font-style: italic; position: relative; }
+.h2 em::after { content: ""; position: absolute; left: 0; right: 0; bottom: .06em; height: .055em; background: var(--vip); }
+.lede { margin: 1rem 0 0; max-width: 46ch; font-size: .98rem; line-height: 1.6; color: rgba(255,255,255,.7); }
+
+.label {
+  position: absolute; left: var(--lp-pad); bottom: 9vh;
+  display: flex; flex-direction: column; gap: .2rem;
+  padding-left: 1rem; border-left: 1px solid rgba(255,255,255,.35);
+  animation: labelIn .5s var(--lp-ease) both;
+}
+@keyframes labelIn { from { opacity: 0; transform: translateY(8px) } }
+.idx { font-family: var(--font-display); font-size: .62rem; letter-spacing: .18em; color: rgba(255,255,255,.5); margin-bottom: .4rem; }
+.artist { font-weight: 600; font-size: .95rem; }
+.title { font-family: var(--font-label); font-style: italic; font-size: 1.5rem; line-height: 1.1; }
+.spec { font-size: .8rem; color: rgba(255,255,255,.7); margin-top: .15rem; }
+
+.rail { position: absolute; left: var(--lp-pad); right: var(--lp-pad); bottom: 4vh; height: 1px; background: rgba(255,255,255,.18); }
+.rail i { display: block; height: 100%; background: #fff; transition: width .1s linear; }
+
+@media (max-width: 760px) {
+  .head { top: 9vh; }
+  .lede { display: none; }
+  .label { bottom: 8vh; }
+}
+@media (prefers-reduced-motion: reduce) { .label { animation: none; } }
+
+@media (min-width: 860px) { .head, .label, .rail { --lp-pad: var(--lp-pad-lg); } }

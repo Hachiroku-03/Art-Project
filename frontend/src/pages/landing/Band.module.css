@@ -1,0 +1,103 @@
+/* Band.module.css — Band's own stylesheet. NOT a shared atoms file.
+   Classes Band puts on screen (band / inner / tones / head / eyebrow / title / intro)
+   plus the canonical button set exported as `bandStyles` so sections don't re-declare
+   buttons. A section's UNIQUE geometry never lives here. */
+
+/* ---------- band ---------- */
+.band {
+  position: relative;
+  padding: clamp(5rem, 11vw, 9rem) var(--lp-pad);
+  border-top: 1px solid var(--line);
+}
+@media (min-width: 860px) {
+  .band { padding-left: var(--lp-pad-lg); padding-right: var(--lp-pad-lg); }
+}
+
+.inner { width: 100%; max-width: var(--lp-maxw); margin: 0 auto; }
+.narrow .inner { max-width: 760px; }
+.center .inner { text-align: center; }
+.center .head { margin-left: auto; margin-right: auto; }
+.center .intro { margin-left: auto; margin-right: auto; }
+
+/* ---------- tones ---------- */
+.paper { background: var(--paper); color: var(--ink); }
+.wall  { background: var(--wall);  color: var(--ink); }
+.ink   { background: #0a0a0a; color: #fff; border-top-color: rgba(255,255,255,.14); }
+.ink .eyebrow { color: rgba(255,255,255,.45); }
+.ink .title   { color: #fff; }
+.ink .intro   { color: rgba(255,255,255,.72); }
+
+/* ---------- head ---------- */
+.head { max-width: 680px; margin-bottom: clamp(2.5rem, 5vw, 4rem); }
+
+.eyebrow {
+  margin: 0 0 1.25rem;
+  font-family: var(--font-display);
+  font-size: .68rem;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.eyebrow b { color: var(--vip); font-weight: 400; margin-right: .6rem; }
+
+.title {
+  margin: 0;
+  font-family: var(--font-label);
+  font-weight: 500;
+  font-size: clamp(2.1rem, 4.6vw, 3.6rem);
+  line-height: 1.04;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+}
+.title em { font-style: italic; position: relative; white-space: nowrap; }
+.title em::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: .06em; height: .055em;
+  background: var(--vip); transform: scaleX(0); transform-origin: left;
+  transition: transform .7s var(--lp-ease) .25s;
+}
+.title[data-in="1"] em::after { transform: scaleX(1); }
+
+.intro {
+  margin: 1.25rem 0 0;
+  max-width: 50ch;
+  font-size: clamp(1rem, 1.2vw, 1.12rem);
+  line-height: 1.62;
+  color: var(--ink-soft);
+}
+
+/* ---------- canonical button set (exported via bandStyles) ---------- */
+.btnPrimary, .btnGhost, .btnDark, .btnLight, .btnVip {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  min-height: 46px; padding: 0 1.4rem;
+  border: 1px solid transparent; border-radius: 4px;
+  font-family: var(--font-ui); font-size: .7rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  cursor: pointer; white-space: nowrap; text-decoration: none;
+  transition: background var(--lp-dur) var(--lp-ease), color var(--lp-dur) var(--lp-ease),
+              border-color var(--lp-dur) var(--lp-ease), transform 120ms var(--lp-ease);
+}
+.btnPrimary:active, .btnGhost:active, .btnDark:active, .btnLight:active, .btnVip:active { transform: scale(.98); }
+
+.btnPrimary, .btnDark { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btnPrimary:hover, .btnDark:hover { background: var(--vip); border-color: var(--vip); }
+.btnLight { background: #fff; color: #000; border-color: #fff; }
+.btnLight:hover { background: var(--wall); }
+.btnGhost { background: transparent; color: inherit; border-color: currentColor; opacity: .85; }
+.btnGhost:hover { opacity: 1; border-color: var(--vip); color: var(--vip); }
+.btnVip { background: var(--vip); color: #fff; border-color: var(--vip); }
+.btnVip:hover { background: var(--ink); border-color: var(--ink); }
+/* inside an .ink band the dark button flips to light-on-dark */
+.ink .btnPrimary, .ink .btnDark { background: var(--paper); color: var(--ink); border-color: var(--paper); }
+.ink .btnPrimary:hover, .ink .btnDark:hover { background: var(--vip); color: #fff; border-color: var(--vip); }
+
+.btnRow { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 2rem; }
+.center .btnRow { justify-content: center; }
+
+/* ---------- focus ring (keyboard only) ---------- */
+.btnPrimary:focus-visible, .btnGhost:focus-visible, .btnDark:focus-visible,
+.btnLight:focus-visible, .btnVip:focus-visible {
+  outline: 2px solid var(--vip); outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btnPrimary, .btnGhost, .btnDark, .btnLight, .btnVip, .title em::after { transition-duration: 0ms !important; }
+}

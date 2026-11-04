@@ -1,0 +1,56 @@
+/* =====================================================================
+   LandingPage.module.css — the orchestrator's own stylesheet. This is the
+   ONLY file that DEFINES the five --lp-* tokens; every leaf above consumes
+   them by reference. It also owns the .page shell (the no-WebGL fallback,
+   the overflow-x:clip sticky guard, the base font) and the z0 stage slot
+   (reserved empty for three/StageCanvas.tsx, pending the 6 decisions).
+
+   Nothing here is a "shared atoms file" — it's the root component's CSS,
+   and the tokens live here because the root is the one element guaranteed
+   to be present whenever any landing section paints.
+   ===================================================================== */
+
+/* ---------- the five global rhythm tokens ----------
+   Defined once, consumed by reference in Band.module.css, Hero.module.css,
+   Footer.module.css, TopBar.module.css, and every leaf geometry file.
+   --lp-maxw is NOT consumed by TopBar (full-width, no capped column).
+   --lp-pad / --lp-pad-lg are consumed by Band, Hero, Footer, TopBar.
+   --lp-ease / --lp-dur are consumed by Band (buttons) and TopBar (links/cta). */
+:root {
+  --lp-pad: 1.25rem;
+  --lp-pad-lg: 3rem;
+  --lp-maxw: 1180px;
+  --lp-ease: cubic-bezier(.2, .7, .2, 1);
+  --lp-dur: 220ms;
+}
+
+/* ---------- the page shell ----------
+   position:relative creates the stacking context for the z0 stage slot and
+   the z1 sections. background:var(--paper) is the no-WebGL fallback: if the
+   3D renderer never mounts, the page still reads as paper, not transparent.
+   overflow-x:CLIP (not hidden) — `hidden` establishes a scroll port that can
+   interfere with TopBar's position:sticky in some engines; `clip` prevents
+   horizontal overflow without creating one. min-height:100vh ensures the
+   shell fills the viewport even before all sections load. */
+.page {
+  position: relative;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  overflow-x: clip;
+}
+
+/* ---------- the z0 stage slot ----------
+   Reserved for three/StageCanvas.tsx (the singleton WebGL renderer). Empty
+   today — the 6 decisions gate its contents. position:fixed + inset:0 + z0
+   puts it behind every z1 section and above .page's own background.
+   pointer-events:none so it never intercepts clicks on the sections above.
+   When StageCanvas mounts here, it inherits these exact positioning rules
+   from this class — the component itself adds only the <canvas> inside. */
+.stageSlot {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}

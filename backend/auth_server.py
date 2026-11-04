@@ -31,6 +31,9 @@ import math
 import os
 import re
 import secrets
+import time
+import urllib.request
+import urllib.error
 
 import psycopg2
 from psycopg2 import errors as pg_errors
@@ -80,6 +83,11 @@ HOLDERS = {PLATFORM_REVENUE, ESCROW}
 
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 FACE_THRESHOLD = float(os.getenv("FACE_THRESHOLD", "0.363"))
+# Google Identity Services (credential / ID-token flow). Public id only —
+# this flow needs NO client_secret and NO redirect URI (see the endpoint note).
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+GOOGLE_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
 
 # CORS:
 # Explicit origins only. Do not use ["*"] with credentials.
@@ -344,6 +352,100 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
     return dot / (norm_a * norm_b)
 
+def _http_get_json(url: str, timeout: float = 8.0):
+    """stdlib GET -> (status, parsed_json_or_None, error_string_or_None).
+    No new dependency (no requests/PyJWT) so a missing module can't crash the
+    service the way a dropped export has before."""
+    req = urllib.request.Request(url, headers={"User-Agent": "thespace-auth/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            try:
+                return resp.status, json.loads(body), None
+            except Exception:
+                return resp.status, None, "google returned a non-JSON response"
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            err_body = {}
+        return (
+            e.code,
+            err_body,
+            err_body.get("error_description")
+            or err_body.get("error")
+            or f"google http {e.code}",
+        )
+    except Exception as e:
+        return 0, None, f"could not reach google: {e}"
+
+
+def _verify_google_id_token(credential: str):
+    """
+    Verify a GSI ID token (the `credential` the frontend posts).
+    Returns (claims, None) or (None, error).
+
+    Google's tokeninfo checks the SIGNATURE and EXPIRY server-side; we then
+    ENFORCE audience + issuer + expiry + verified-email locally. The audience
+    check is mandatory: without it a valid Google token minted for a DIFFERENT
+    app would be accepted here (cross-app replay).
+
+    No client_secret is involved (credential flow, not code flow) — which is why
+    the server needs only the public client_id and registers no redirect URI.
+
+    tokeninfo is rate-limited; at real scale swap it for local JWKS verification
+    (PyJWT + https://www.googleapis.com/oauth2/v3/certs) keeping the SAME
+    aud/iss/exp checks.
+    """
+    if not credential:
+        return None, "missing credential"
+    if not GOOGLE_CLIENT_ID:
+        return None, "Google OAuth not configured on the server"
+
+    # ID tokens are base64url + dots -> already URL-safe, no quoting needed.
+    status, claims, err = _http_get_json(f"{GOOGLE_TOKENINFO_URL}?id_token={credential}")
+    if status != 200 or not claims:
+        return None, err or "token rejected by Google"
+
+    if str(claims.get("aud") or "") != GOOGLE_CLIENT_ID:
+        return None, "token audience mismatch"
+    if str(claims.get("iss") or "") not in GOOGLE_ISSUERS:
+        return None, "token issuer mismatch"
+    try:
+        if int(claims.get("exp") or 0) <= int(time.time()):
+            return None, "token expired"
+    except (TypeError, ValueError):
+        return None, "token missing expiry"
+
+    email = str(claims.get("email") or "").strip().lower()
+    verified = str(claims.get("email_verified") or "").lower() == "true"
+    if not email or not verified:
+        return None, "email missing or unverified"
+
+    return claims, None
+
+
+def _sanitize_username_base(email: str) -> str:
+    local = (email.split("@")[0] or "").lower()
+    local = re.sub(r"[^a-z0-9_]", "_", local)
+    local = re.sub(r"_+", "_", local).strip("_")
+    if len(local) < 3:
+        local = "member"
+    return local[:24]
+
+
+def _unique_username(cursor, base: str) -> str:
+    """Google gives no username; users.username is the identity key everywhere
+    (ledger user_name, follows, posts), so synthesize a unique one from email."""
+    candidate = base
+    n = 2
+    while n <= 60:
+        cursor.execute("SELECT 1 FROM users WHERE lower(username) = lower(%s)", (candidate,))
+        if not cursor.fetchone():
+            return candidate
+        candidate = f"{base}{n}"
+        n += 1
+    return f"{base}{secrets.token_hex(2)}"
 
 # ---------------------------------------------------------------------------
 # Ledger helpers — KEEP IN SYNC WITH backend/ledger.py on port 8001
@@ -792,6 +894,130 @@ def login(data: dict):
         conn.close()
 
 
+@app.post("/auth/google")
+def auth_google(data: dict):
+    """
+    Google Identity Services credential (ID-token) sign-in / sign-up.
+
+    The frontend posts the `credential` GSI handed it. We verify it, then EITHER
+    log in an existing user matched by email OR create a password-less user
+    (random salt + independent random hash -> password login can never match) and
+    return the SAME session shape as /login, so the existing setSession() and
+    every viewer-param endpoint keep working unchanged. One endpoint = both
+    "Sign in with Google" and "Sign up with Google".
+    """
+    credential = str(data.get("credential") or "").strip()
+
+    claims, verr = _verify_google_id_token(credential)
+    if verr:
+        return JSONResponse({"error": verr}, status_code=401)
+
+    email = str(claims.get("email") or "").strip().lower()
+    name = str(claims.get("name") or "").strip()
+    picture = str(claims.get("picture") or "").strip() or None
+    locale = str(claims.get("locale") or "").strip()
+    language = (locale.split("-")[0].lower() if locale else "en") or "en"
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+
+        # 1) Link to an existing account by email (password user OR prior Google user).
+        cursor.execute(
+            "SELECT id, username, role, tier FROM users WHERE lower(email) = lower(%s)",
+            (email,),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            username = existing["username"]
+            # Backfill avatar/display ONLY when empty; never overwrite a chosen value.
+            cursor.execute(
+                """
+                UPDATE profiles
+                SET
+                    avatar_url   = COALESCE(NULLIF(avatar_url, ''), %s),
+                    display_name = COALESCE(NULLIF(display_name, ''), %s)
+                WHERE user_id = %s
+                """,
+                (picture, name or None, existing["id"]),
+            )
+            tier = _sweep_vip(cursor, username)
+            conn.commit()
+            return {
+                "message": f"Welcome back, {username}",
+                "username": username,
+                "role": existing["role"],
+                "tier": tier,
+                "token": secrets.token_hex(32),
+                "created": False,
+            }
+
+        # 2) New Google user -> create (password-less).
+        base = _sanitize_username_base(email)
+        username = _unique_username(cursor, base)
+        salt = secrets.token_hex(16)
+        pw_hash = secrets.token_hex(32)  # independent random -> no password matches
+
+        cursor.execute(
+            """
+            INSERT INTO users (username, email, password_hash, salt, role, tier)
+            VALUES (%s, %s, %s, %s, 'artist', 'standard')
+            RETURNING id
+            """,
+            (username, email, pw_hash, salt),
+        )
+        user_id = cursor.fetchone()["id"]
+
+        cursor.execute(
+            """
+            INSERT INTO profiles (user_id, display_name, bio, extra, language, avatar_url)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (user_id, name or username, "", json.dumps({}), language, picture),
+        )
+
+        tier = _sweep_vip(cursor, username)  # no sub row -> 'standard'
+        conn.commit()
+
+        return {
+            "message": f"Welcome to The Space, {name or username}!",
+            "username": username,
+            "role": "artist",
+            "tier": tier,
+            "token": secrets.token_hex(32),
+            "created": True,
+        }
+
+    except pg_errors.UniqueViolation:
+        # Raced with another request for the same email -> fall back to login.
+        # (Best-effort: if the other txn hasn't committed yet this returns 500
+        # and the user simply retries. Fine at app scale.)
+        conn.rollback()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, username, role, tier FROM users WHERE lower(email) = lower(%s)",
+            (email,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return JSONResponse({"error": "account creation failed"}, status_code=500)
+        tier = _sweep_vip(cursor, row["username"])
+        conn.commit()
+        return {
+            "message": f"Welcome back, {row['username']}",
+            "username": row["username"],
+            "role": row["role"],
+            "tier": tier,
+            "token": secrets.token_hex(32),
+            "created": False,
+        }
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        conn.close()
+        
 # ---------------------------------------------------------------------------
 # /me and /profile
 #

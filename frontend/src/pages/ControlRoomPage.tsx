@@ -15,7 +15,6 @@ import { RostrumTab } from '../components/house/RostrumTab'
 import { SettlementTab } from '../components/house/SettlementTab'
 import { PayoutTab } from '../components/house/PayoutTab'
 import styles from '../components/house/control.module.css'
-import salesStyles from '../components/sales/sales.module.css'
 
 type TabKey =
   | 'overview'
@@ -164,13 +163,14 @@ export function ControlRoomPage() {
             </div>
           </div>
 
-          <nav className={styles.nav}>
+          <nav className={styles.nav} aria-label="Control room sections">
             {TABS.map(item => (
               <button
                 key={item.key}
                 className={`${styles.navButton} ${tab === item.key ? styles.navActive : ''}`}
                 onClick={() => changeTab(item.key)}
                 title={item.note}
+                aria-current={tab === item.key ? 'page' : undefined}
               >
                 {item.label}
               </button>
@@ -178,7 +178,7 @@ export function ControlRoomPage() {
           </nav>
 
           <div className={styles.sidebarFoot}>
-            <Link className={salesStyles.back} to="/auctions">
+            <Link className={styles.backLink} to="/auctions">
               ← Back to floor
             </Link>
           </div>
@@ -286,27 +286,33 @@ export function ControlRoomPage() {
                       <tbody>
                         {sales.map(sale => (
                           <tr key={sale.id}>
-                            <td>
-                              <div className={styles.saleTitle}>{sale.title}</div>
-                              <div className={styles.muted}>#{sale.id}</div>
+                            {/* data-label = column name shown beside each cell when the
+                                table stacks into row-cards on phones (control.module.css).
+                                Multi-element cells are wrapped in ONE div so the phone grid
+                                treats them as a single value. */}
+                            <td data-label="Sale">
+                              <div>
+                                <div className={styles.saleTitle}>{sale.title}</div>
+                                <div className={styles.muted}>#{sale.id}</div>
+                              </div>
                             </td>
 
-                            <td>
+                            <td data-label="Access">
                               <AccessBadge mode={normalizeAccessMode(sale.access_mode ?? sale.tier)} />
                             </td>
 
-                            <td>{statusLabel(sale.status)}</td>
-                            <td>{sale.lot_count ?? 0}</td>
-                            <td>{sale.tickets_sold ?? 0}</td>
+                            <td data-label="Status">{statusLabel(sale.status)}</td>
+                            <td data-label="Lots">{sale.lot_count ?? 0}</td>
+                            <td data-label="Paddles">{sale.tickets_sold ?? 0}</td>
 
-                            <td>
+                            <td data-label="Paddle price">
                               {formatMoney(
                                 sale.ticket_price,
                                 sale.ticket_currency || sale.currency || 'NGN',
                               )}
                             </td>
 
-                            <td>{settlementLabel(sale)}</td>
+                            <td data-label="Settlement">{settlementLabel(sale)}</td>
 
                             <td>
                               <div className={styles.actions}>

@@ -5,6 +5,7 @@ export type Suggestion = {
   role: string
   tier: string
   display_name: string | null
+  avatar_url?: string | null        // <-- ADD: /suggestions now returns it
   follower_count: number
 }
 

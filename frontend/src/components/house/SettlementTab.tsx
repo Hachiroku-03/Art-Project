@@ -547,26 +547,27 @@ export function SettlementTab({
 
                       return (
                         <tr key={lot.id}>
-                          <td className={styles.nowrap}>
+                          {/* data-label feeds the stacked phone layout */}
+                          <td data-label="Lot" className={styles.nowrap}>
                             #{lot.position}
                             {lot.title ? ` · ${lot.title}` : ''}
                           </td>
 
-                          <td>{lot.winner_username || '—'}</td>
+                          <td data-label="Winner">{lot.winner_username || '—'}</td>
 
-                          <td className={styles.nowrap}>
+                          <td data-label="Hammer" className={styles.nowrap}>
                             {formatMoney(lot.hammer || lot.sold_price, lotCurrency)}
                           </td>
 
-                          <td className={styles.nowrap}>
+                          <td data-label="Premium" className={styles.nowrap}>
                             {formatMoney(lot.premium, lotCurrency)}
                           </td>
 
-                          <td className={styles.nowrap}>
+                          <td data-label="Total payable" className={styles.nowrap}>
                             {formatMoney(lot.collected, lotCurrency)}
                           </td>
 
-                          <td>
+                          <td data-label="Status">
                             <span
                               className={`${styles.payPill} ${payPillClass(
                                 lot.payment_status,
@@ -576,9 +577,9 @@ export function SettlementTab({
                             </span>
                           </td>
 
-                          <td className={styles.codeText}>{reference}</td>
+                          <td data-label="Reference" className={styles.codeText}>{reference}</td>
 
-                          <td className={styles.nowrap}>{updated}</td>
+                          <td data-label="Updated" className={styles.nowrap}>{updated}</td>
                         </tr>
                       )
                     })}

@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useGoogleAuth } from '../lib/useGoogleAuth'
+import { setSession } from '../lib/session'
 import styles from './SignupPage.module.css'
 import { ThreeBackground } from './ThreeBackground'
 
@@ -18,6 +20,29 @@ export function SignupPage() {
 
   const [toast, setToast] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Google on signup AUTO-LOGS-IN (setSession + /feed), unlike the password form
+  // which sends you to /login. Reason: /auth/google creates a password-LESS account
+  // (random salt + independent random hash), so a Google user can never complete a
+  // password login. Bouncing them to /login after Google would strand them on a
+  // screen that cannot authenticate the account we just made. We hold a token here,
+  // so we use it. This divergence is intentional — do not "align" it to the form.
+  const google = useGoogleAuth({
+    apiBase: API,
+    onResult: (data, err) => {
+      if (!err && data.token && data.username) {
+        setSession({
+          token: data.token,
+          username: data.username,
+          role: data.role ?? 'artist',
+          tier: data.tier ?? 'standard',
+        })
+        navigate('/feed')
+      } else {
+        setToast(err || 'Google sign-up failed.')
+      }
+    },
+  })
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -119,6 +144,24 @@ export function SignupPage() {
             {loading ? 'Creating Account...' : 'Create Account'}
           </button>
         </form>
+
+        {/* Google block renders ONLY when configured. Unlike login, signup has no
+            unconfigured fallback button: the form's "Create Account" is already the
+            primary CTA, so Google is optional sugar — when there's no client id we
+            hide the whole block (and its "or" divider) rather than show a dead
+            button or copy login's GoogleIcon/.googleBtn into this file. That keeps
+            the two pages from drifting into duplicated markup. */}
+        {google.configured && (
+          <>
+            <div className={styles.divider}>
+              <span>or</span>
+            </div>
+
+            <div ref={google.btnRef} className={styles.gsiSlot} aria-label="Sign up with Google" />
+
+            {google.error ? <p className={styles.googleNote}>{google.error}</p> : null}
+          </>
+        )}
 
         <p className={styles.footerLine}>
           Already have an account?{' '}

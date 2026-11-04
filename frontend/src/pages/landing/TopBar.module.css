@@ -1,0 +1,75 @@
+.bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60; height: 64px;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 0 var(--lp-pad);
+  color: #fff;
+  border-bottom: 1px solid transparent;
+  transition: background 0.35s var(--lp-ease), color 0.35s var(--lp-ease), border-color 0.35s;
+}
+.paper {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.wordmark {
+  justify-self: start;
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.22em;
+  text-decoration: none;
+  color: inherit;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.paper .wordmark { text-shadow: none; }
+
+.links { display: flex; gap: 1.8rem; }
+.links a {
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  color: inherit; opacity: 0.78; text-decoration: none;
+  transition: opacity 0.15s;
+}
+.links a:hover { opacity: 1; text-decoration: underline; text-underline-offset: 6px; }
+
+.actions { justify-self: end; display: flex; align-items: center; gap: 1.2rem; }
+.signin {
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  color: inherit; opacity: 0.78; text-decoration: none;
+}
+.signin:hover { opacity: 1; }
+.cta {
+  display: inline-flex; align-items: center; min-height: 38px; padding: 0 1.1rem;
+  background: #fff; color: #000; border: 1px solid #fff; border-radius: 4px; text-decoration: none;
+  font-size: .66rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  transition: background var(--lp-dur) var(--lp-ease), color var(--lp-dur) var(--lp-ease), border-color var(--lp-dur) var(--lp-ease);
+}
+.cta:hover { background: var(--vip); color: #fff; border-color: var(--vip); }
+.paper .cta { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.paper .cta:hover { background: var(--vip); border-color: var(--vip); }
+.cta:focus-visible, .signin:focus-visible, .wordmark:focus-visible, .links a:focus-visible { outline: 2px solid var(--vip); outline-offset: 3px; }
+
+.burger {
+  display: none; width: 40px; height: 40px; border: 0; background: none; cursor: pointer; color: inherit;
+  flex-direction: column; justify-content: center; align-items: center; gap: 6px;
+}
+.burger i { width: 20px; height: 1.5px; background: currentColor; transition: transform 0.25s var(--lp-ease); }
+.open .burger i:first-child { transform: translateY(3.75px) rotate(45deg); }
+.open .burger i:last-child  { transform: translateY(-3.75px) rotate(-45deg); }
+
+@media (max-width: 860px) {
+  .bar { grid-template-columns: 1fr auto; }
+  .links {
+    position: fixed; top: 64px; left: 0; right: 0;
+    flex-direction: column; gap: 0;
+    background: var(--paper); color: var(--ink);
+    border-bottom: 1px solid var(--line);
+    transform: translateY(-8px); opacity: 0; pointer-events: none;
+    transition: opacity 0.2s, transform 0.25s var(--lp-ease);
+  }
+  .links a { padding: 1rem var(--lp-pad); border-top: 1px solid var(--line); opacity: 1; }
+  .open .links { transform: none; opacity: 1; pointer-events: auto; }
+  .signin { display: none; }
+  .burger { display: flex; }
+}
+
+@media (min-width: 860px) { .bar { --lp-pad: var(--lp-pad-lg); } }

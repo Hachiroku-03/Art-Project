@@ -1,39 +1,351 @@
-.layout { min-height: 100vh; background: var(--wall); padding: calc(72px + 2rem) 1.5rem 4rem; }
-.wrap { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.2rem; }
-.heading { font-family: var(--font-display); font-size: 1.8rem; }
-.statusLine { font-size: 0.8rem; color: var(--ink-soft); }
-.msg { font-size: 0.82rem; color: var(--vip); font-weight: 600; }
-.muted { font-family: var(--font-label); font-style: italic; color: var(--ink-faint); font-size: 0.95rem; }
+/* =====================================================================
+   Control Room (single-column page) — flat studio
+   Same language as components/house/control.module.css:
+   2px corners, hairline rules, Archivo Black for headings/numbers,
+   EB Garamond italic for labels, purple only for the active state.
+   All original class names kept.
+   ===================================================================== */
 
-.backBtn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: none; color: var(--ink-soft); font-size: 0.8rem; cursor: pointer; align-self: flex-start; }
+.layout {
+  --nav-h: 72px;
+  --r: var(--radius, 2px);
+  --r-lg: 4px;
+  --tint: rgba(14, 14, 14, 0.035);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  min-height: 100vh;
+  background: var(--wall);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  padding: calc(var(--nav-h) + 2rem) 1.5rem 4rem;
+  -webkit-font-smoothing: antialiased;
+}
+
+.layout *,
+.layout *::before,
+.layout *::after { box-sizing: border-box; }
+
+.layout :where(button, input, select, textarea) { font: inherit; color: inherit; }
+
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* ---------- heading block ---------- */
+.heading {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--ink);
+}
+
+.statusLine {
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 1rem;
+  color: var(--ink-soft);
+  margin-top: -0.75rem;             /* tucks under the heading rule */
+}
+
+.msg {
+  margin: 0;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgba(91, 58, 142, 0.3);
+  border-left: 3px solid var(--vip);
+  border-radius: var(--r);
+  background: rgba(91, 58, 142, 0.05);
+  color: var(--vip);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.muted {
+  font-family: var(--font-label);
+  font-style: italic;
+  color: var(--ink-faint);
+  font-size: 0.98rem;
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
+}
 .backBtn:hover { color: var(--ink); }
 
-.card { background: var(--paper); border: 1px solid rgba(14,14,14,0.06); border-radius: 16px; padding: 1.3rem 1.4rem; display: flex; flex-direction: column; gap: 0.7rem; box-shadow: 0 2px 8px rgba(14,14,14,0.04); }
-.cardTitle { display: flex; align-items: center; gap: 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+/* ---------- card ---------- */
+.card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 1.25rem 1.4rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
 
-.row { display: flex; gap: 0.6rem; }
-.input { width: 100%; background: #f1f0ed; border: 1px solid transparent; border-radius: 10px; padding: 0.65rem 0.9rem; font-family: var(--font-ui); font-size: 0.88rem; outline: none; }
-.input:focus { background: var(--paper); border-color: var(--line); }
+.cardTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--ink);
+}
+
+/* ---------- inputs ---------- */
+.row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+.row > .input { flex: 1 1 220px; width: auto; }
+
+.input {
+  width: 100%;
+  min-height: 38px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  padding: 0.5rem 0.7rem;
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.input:focus { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(91, 58, 142, 0.15); }
+.input::placeholder { color: var(--ink-faint); }
+.input:disabled { background: var(--wall); color: var(--ink-faint); cursor: not-allowed; }
 .hiddenInput { display: none; }
 
-.primaryBtn { display: inline-flex; align-items: center; gap: 0.5rem; align-self: flex-start; background: var(--ink); color: var(--wall); border: none; border-radius: 999px; padding: 0.65rem 1.2rem; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
-.primaryBtn:hover { opacity: 0.88; }
+/* ---------- buttons ---------- */
+.primaryBtn,
+.miniBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 32px;
+  border-radius: var(--r);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease), opacity 0.15s;
+}
 
-.chip { display: inline-flex; align-items: center; gap: 0.4rem; background: #f4f3f0; border: 1.5px solid transparent; border-radius: 999px; padding: 0.45rem 0.9rem; font-size: 0.72rem; font-weight: 600; color: var(--ink-soft); cursor: pointer; }
-.chipOn { border-color: var(--ink); background: var(--paper); color: var(--ink); }
+.primaryBtn {
+  align-self: flex-start;
+  padding: 0.5rem 1rem;
+  background: var(--ink);
+  color: var(--wall);
+  border: 1px solid var(--ink);
+}
+.primaryBtn:hover:not(:disabled) { background: var(--vip); border-color: var(--vip); color: #fff; opacity: 1; }
+.primaryBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.primaryBtn:focus-visible,
+.miniBtn:focus-visible,
+.chip:focus-visible { outline: 2px solid var(--vip); outline-offset: 2px; }
 
-.saleRow { display: flex; justify-content: space-between; align-items: center; width: 100%; background: none; border: none; padding: 0.7rem 0.2rem; border-bottom: 1px solid rgba(14,14,14,0.06); cursor: pointer; text-align: left; }
+.miniBtn {
+  padding: 0.35rem 0.75rem;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+.miniBtn:hover:not(:disabled) { background: var(--ink); color: var(--wall); border-color: var(--ink); }
+.miniBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---------- chips (filters / toggles) ---------- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.chip:hover { color: var(--ink); border-color: var(--ink); }
+.chipOn,
+.chipOn:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--wall);
+}
+
+/* ---------- sale list ---------- */
+.saleRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0.75rem 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  transition: background 0.15s var(--ease);
+}
+.saleRow:hover { background: var(--tint); box-shadow: 0 0 0 0.6rem var(--tint); }
 .saleRow:last-child { border-bottom: none; }
-.saleTitle { font-weight: 600; font-size: 0.92rem; }
-.saleMeta { font-size: 0.72rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; }
 
-.lotRow { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0.2rem; border-bottom: 1px solid rgba(14,14,14,0.06); }
+.saleTitle { font-weight: 600; font-size: 0.92rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.saleMeta {
+  font-family: var(--font-label);
+  font-style: italic;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* ---------- lot list ---------- */
+.lotRow {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
 .lotRow:last-child { border-bottom: none; }
-.lotPos { font-family: var(--font-display); font-size: 0.75rem; color: var(--ink-faint); }
-.lotTitle { flex: 1; font-size: 0.9rem; font-weight: 500; }
-.lotBadge { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f4f3f0; color: var(--ink-soft); }
-.lot_on_block { background: var(--vip); color: #fff; }
-.lot_sold { background: var(--ink); color: var(--wall); }
-.lotBid { font-family: var(--font-display); font-size: 0.78rem; }
-.miniBtn { display: inline-flex; align-items: center; gap: 0.35rem; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 0.35rem 0.8rem; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); cursor: pointer; }
-.miniBtn:hover { background: var(--ink); color: var(--wall); }
+
+.lotPos {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  min-width: 2.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lotTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lotBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--tint);
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.lot_on_block { background: rgba(91, 58, 142, 0.08); border-color: rgba(91, 58, 142, 0.35); color: var(--vip); }
+.lot_sold     { background: var(--ink); border-color: var(--ink); color: var(--wall); }
+
+.lotBid {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 720px) {
+  .layout { padding: calc(var(--nav-h) + 1rem) 0 4rem; font-size: 0.9rem; }
+  .wrap { gap: 1rem; }
+
+  /* heading block keeps side padding; cards run edge to edge */
+  .heading, .statusLine, .msg, .backBtn, .muted { margin-left: 1rem; margin-right: 1rem; }
+  .heading { font-size: 1.5rem; }
+
+  .card {
+    padding: 1.1rem 1rem 1.2rem;
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+    gap: 0.9rem;
+  }
+
+  /* inputs + buttons: 44px targets, 16px text (no iOS zoom), stacked */
+  .input { min-height: 44px; font-size: 1rem; padding: 0.6rem 0.8rem; }
+  .row { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .row > .input { flex: 1 1 auto; width: 100%; }
+  .row > .primaryBtn, .row > .miniBtn { width: 100%; }
+  .row:has(> .chip) { flex-direction: row; flex-wrap: wrap; }   /* chip rows stay inline */
+  .primaryBtn, .miniBtn { min-height: 44px; font-size: 0.72rem; }
+  .primaryBtn { align-self: stretch; }
+  .chip { min-height: 40px; padding: 0 0.9rem; }
+
+  /* sale list: title over meta, bigger tap area */
+  .saleRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+    padding: 0.9rem 0;
+  }
+  .saleRow:hover { background: transparent; box-shadow: none; }
+  .saleTitle { font-size: 1rem; white-space: normal; }
+
+  /* lot list: position + title on line one, badge / bid / button on line two */
+  .lotRow {
+    display: grid;
+    grid-template-columns: 2.2rem minmax(0, 1fr) auto;
+    grid-template-areas:
+      'pos title title'
+      'pos badge bid'
+      'pos btn   btn';
+    column-gap: 0.6rem;
+    row-gap: 0.45rem;
+    padding: 0.85rem 0;
+    align-items: center;
+  }
+  .lotPos   { grid-area: pos; align-self: start; padding-top: 0.15rem; }
+  .lotTitle { grid-area: title; white-space: normal; font-size: 0.98rem; }
+  .lotBadge { grid-area: badge; justify-self: start; }
+  .lotBid   { grid-area: bid; justify-self: end; font-size: 0.95rem; }
+  .lotRow .miniBtn { grid-area: btn; width: 100%; margin-top: 0.2rem; }
+}
+
+@media (max-width: 380px) {
+  .lotRow { grid-template-columns: 1.8rem minmax(0, 1fr) auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layout * { transition: none !important; }
+}

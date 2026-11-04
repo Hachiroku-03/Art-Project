@@ -1,8 +1,16 @@
 /* =====================================================================
-   PostRoomPage.module.css — refined pass
+   PostRoomPage.module.css — refined pass (CONSOLIDATED + bounded comments)
    Colors: UNCHANGED. Only spacing, scale, rhythm, hierarchy, motion.
    Class names preserved → drop-in replacement.
    New optional classes are marked  [NEW]  (safe to ignore if unused).
+
+   Consolidation note: the avatar / headerRight / dangerBtn / cAvatar /
+   cRemoved / metaDanger rules that were re-appended across several turns
+   are now folded into their logical homes and de-duplicated, .actions is
+   reunited with its desktop media override, and the two new destructive
+   buttons are added to the keyboard focus list. The comments thread is now
+   a bounded, internally-scrolling pane (.commentsScroll) so a long thread
+   does NOT grow the page without limit. No color changes.
    ===================================================================== */
 
 /* ---------- local rhythm tokens (no colors) ---------- */
@@ -144,10 +152,12 @@
 .who { display: flex; align-items: center; gap: .8rem; min-width: 0; }
 .avatar {
   width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%;
+  overflow: hidden;                          /* clip the <img> to the circle (merged in) */
   background: var(--wall); border: 1px solid var(--line);
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-display); font-size: .9rem;
 }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 50%; }
 .vipRing { border: 2px solid var(--vip); box-shadow: 0 0 0 3px rgba(91,58,142,0.12); }
 .name {
   background: none; border: none; padding: 0; margin: 0;
@@ -172,6 +182,20 @@
 .followBtn:active { transform: scale(.97); }
 .following { background: var(--ink); border-color: var(--ink); color: var(--wall); }
 .following:hover { opacity: .85; }
+
+/* header right cluster: Follow+Report (others) or Delete (author); anchors the report menu */
+.headerRight { display: flex; align-items: center; gap: .5rem; position: relative; }
+
+/* destructive author action (post delete); reuses --err token so it reads dangerous, not neutral */
+.dangerBtn {
+  flex-shrink: 0; border: 1px solid var(--err); background: transparent; border-radius: 999px;
+  padding: .5rem 1rem;
+  font-family: var(--font-ui); font-size: .66rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--err); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.dangerBtn:hover { background: var(--err); color: var(--paper); }
+.dangerBtn:disabled { opacity: .6; cursor: progress; }
 
 .infoBlock { margin-bottom: 1.35rem; max-width: 62ch; }
 .artTitle {
@@ -208,11 +232,20 @@
 .right { margin-left: auto; }
 @keyframes pop { 0% { transform: scale(.7); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
 
-/* ---------- 3. COMMENTS ---------- */
+/* ---------- 3. COMMENTS ----------
+   Bounded comments pane. The thread list gets its OWN internal scroll so a long
+   thread does NOT grow the page without limit. The sort / translate head is a
+   SIBLING ABOVE the pane (not inside it), so the controls never scroll away.
+   Short threads (under the cap) show NO scrollbar — the pane sizes to content —
+   so this is invisible until a thread is long enough to need it. Tune 70vh to
+   taste; media-query it off on mobile if you prefer full page-scroll there. */
 .commentsSection { padding: 1.35rem var(--pad-x) 1.5rem; }
 @media (min-width: 800px) { .commentsSection { padding: 1.6rem var(--pad-x-lg) 2rem; } }
 
-.commentsHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.commentsHead {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 1rem;
+}
 .commentsTitle { font-size: .68rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .headActions { display: flex; gap: .25rem; align-items: center; }
 .sortBtn, .translateBtn {
@@ -226,6 +259,18 @@
 .translateBtn { color: var(--ink-faint); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
 .translateBtn:hover { color: var(--vip); text-decoration-color: currentColor; }
 
+/* THE SCROLL PANE: wraps ONLY the thread list in the TSX (see the edit there). */
+.commentsScroll {
+  max-height: 70vh;              /* bound the container's growth */
+  overflow-y: auto;              /* auto = no bar until content exceeds the cap */
+  overscroll-behavior: contain;  /* inner scroll hitting the end won't yank the page */
+  scrollbar-width: thin;         /* Firefox */
+  padding-right: .35rem;         /* breathe room so text isn't flush to the bar */
+}
+.commentsScroll::-webkit-scrollbar { width: 6px; }
+.commentsScroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; }
+.commentsScroll::-webkit-scrollbar-track { background: transparent; }
+
 .noComments { text-align: center; font-family: var(--font-label); font-style: italic; color: var(--ink-soft); padding: 2.25rem 0 1rem; margin: 0; }
 
 .threadContainer { padding: .25rem 0; }
@@ -238,10 +283,12 @@
 }
 .cAvatar {
   width: 36px; height: 36px; border-radius: 50%;
+  overflow: hidden;                          /* clip the <img> to the circle (merged in) */
   background: var(--wall); border: 1px solid var(--line);
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-display); font-size: .78rem; color: var(--ink-soft);
 }
+.cAvatar img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 50%; }
 .cMain { min-width: 0; padding-top: .1rem; }
 .cName { font-weight: 600; font-size: .86rem; line-height: 1.2; display: flex; align-items: center; gap: .5rem; margin: 0; }
 .authorTag {
@@ -250,9 +297,12 @@
   padding: .16rem .42rem; border-radius: 999px; line-height: 1;
 }
 .cBody { font-size: .92rem; line-height: 1.55; margin: .3rem 0 0; overflow-wrap: anywhere; }
+.cRemoved { color: var(--ink-faint); font-style: italic; }   /* soft-deleted comment body */
 .cMeta { display: flex; align-items: center; gap: 1rem; margin-top: .45rem; font-size: .72rem; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .metaBtn { background: none; border: none; padding: 0; font-size: .72rem; font-weight: 700; letter-spacing: .02em; color: var(--ink-soft); cursor: pointer; transition: color .15s; }
 .metaBtn:hover { color: var(--ink); }
+.metaDanger { color: var(--err); }                           /* inline comment-delete affordance */
+.metaDanger:hover { color: var(--err); text-decoration: underline; text-underline-offset: 2px; }
 
 .cLike {
   display: flex; flex-direction: column; align-items: center; gap: .2rem;
@@ -354,7 +404,8 @@
 /* ---------- a11y / motion ---------- */
 .name:focus-visible, .followBtn:focus-visible, .actionBtn:focus-visible, .cLike:focus-visible,
 .metaBtn:focus-visible, .sortBtn:focus-visible, .translateBtn:focus-visible,
-.mediaBtn:focus-visible, .sendBtn:focus-visible, .backBtnFloat:focus-visible, .galArrow:focus-visible, .dot:focus-visible {
+.mediaBtn:focus-visible, .sendBtn:focus-visible, .backBtnFloat:focus-visible, .galArrow:focus-visible, .dot:focus-visible,
+.dangerBtn:focus-visible, .metaDanger:focus-visible {
   outline: 2px solid var(--vip); outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {

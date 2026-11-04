@@ -7,14 +7,18 @@ import { VoiceRecorder } from '../components/VoiceRecorder'
 import { VoiceNote } from '../components/VoiceNote'
 import { Lightbox } from '../components/Lightbox'
 import { translateMany } from '../lib/translate'
+import { getViewer } from '../lib/session'
 import styles from './PostRoomPage.module.css'
 
 const AUTH_API = 'http://localhost:8000'
 const FEED_API = 'http://localhost:8001'
 
+const REPORT_REASONS = ['Spam or scam', 'Infringes my rights', 'Harassment or hate', 'Misleading / fake art', 'Other']
+
 type PostData = {
   id: number; type: string; title: string; description: string; image_url: string;
-  images?: string[];
+  images?: string[] | string;            // backend may return a JSON string
+  avatar_url?: string | null;            // author photo (room header)
   price?: string; current_bid?: string;
   created_at: string;
   username: string; role: string; tier: string; display_name: string;
@@ -23,6 +27,8 @@ type PostData = {
 }
 type CommentRow = {
   id: number; user_name: string; body: string; kind: string; parent_id: number | null; created_at: string;
+  avatar_url?: string | null;            // commenter photo (thread)
+  deleted?: boolean;                     // soft-deleted -> render [removed], keep replies
   like_count?: number; liked_by_viewer?: boolean;
 }
 
@@ -35,10 +41,45 @@ function shortTime(raw: string) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+// Accept array OR JSON string OR lone url -> always a clean string[].
+function parseImages(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === 'string' && !!x.trim())
+  if (typeof raw === 'string' && raw.trim()) {
+    const t = raw.trim()
+    if (t.startsWith('[')) {
+      try {
+        const p = JSON.parse(t)
+        if (Array.isArray(p)) return p.filter((x): x is string => typeof x === 'string' && !!x.trim())
+      } catch { /* not JSON -> fall through */ }
+    }
+    return [t]
+  }
+  return []
+}
+
+// Per-comment avatar with its OWN failure state: one broken/hotlink-blocked CDN URL
+// must not hide every other avatar in the thread (a shared boolean would).
+// Sized entirely by CSS (.cAvatar 36px, .repliesWrap .cAvatar 28px) — no inline size,
+// so the replies override keeps working.
+function CommentAvatar({ name, url }: { name: string; url?: string | null }) {
+  const [failed, setFailed] = useState(false)
+  const initial = (name || '?')[0]?.toUpperCase() || '?'
+  return (
+    <div className={styles.cAvatar}>
+      {url && !failed ? (
+        <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      ) : (
+        initial
+      )}
+    </div>
+  )
+}
+
 export function PostRoomPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const viewer = localStorage.getItem('space_user') || ''
+  // identity resolved like the feed (getViewer first) so isOwn is correct on your own post
+  const viewer = getViewer() || localStorage.getItem('space_user') || ''
 
   const [post, setPost] = useState<PostData | null>(null)
   const [comments, setComments] = useState<CommentRow[]>([])
@@ -53,8 +94,17 @@ export function PostRoomPage() {
   const [bookmarked, setBookmarked] = useState(false)
   const [bmCount, setBmCount] = useState(0)
   const [galleryIndex, setGalleryIndex] = useState(0)
-  const [lightbox, setLightbox] = useState<{ items: string[]; index: number } | null>(null)   // ← NEW
+  const [lightbox, setLightbox] = useState<{ items: string[]; index: number } | null>(null)
   const trackRef = useRef<HTMLDivElement>(null)
+
+  const [avatarFailed, setAvatarFailed] = useState(false)   // room header avatar only
+
+  const [deleting, setDeleting] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportReason, setReportReason] = useState('')
+  const [reportNote, setReportNote] = useState('')
+  const [reporting, setReporting] = useState(false)
+  const [reported, setReported] = useState(false)
 
   const [draft, setDraft] = useState('')
   const [replyingTo, setReplyingTo] = useState<CommentRow | null>(null)
@@ -80,7 +130,10 @@ export function PostRoomPage() {
         return bLikes - aLikes
       })
     }
-    return base
+    // backend returns ASC; 'newest' must reverse it
+    return [...base].sort(
+      (a, b) => new Date(b.created_at.replace(' ', 'T')).getTime() - new Date(a.created_at.replace(' ', 'T')).getTime(),
+    )
   }, [comments, sortBy, commentLikes, post])
 
   useEffect(() => {
@@ -105,6 +158,7 @@ export function PostRoomPage() {
           setBookmarked(!!data.post.bookmarked_by_viewer)
           setBmCount(data.post.bookmark_count ?? 0)
           setGalleryIndex(0)
+          setAvatarFailed(false)
           if (data.post.description) {
             try {
               const t = (await translateMany([data.post.description], language))[0]
@@ -126,7 +180,7 @@ export function PostRoomPage() {
         const likeMap: Record<number, { liked: boolean; count: number }> = {}
         list.forEach(c => { likeMap[c.id] = { liked: !!c.liked_by_viewer, count: c.like_count || 0 } })
         setCommentLikes(likeMap)
-        const textComments = list.filter(c => c.kind === 'text')
+        const textComments = list.filter(c => c.kind === 'text' && !c.deleted)
         if (textComments.length > 0) {
           const tResults = await translateMany(textComments.map(c => c.body), language)
           const map: Record<number, string> = {}
@@ -154,6 +208,7 @@ export function PostRoomPage() {
   async function toggleCommentLike(c: CommentRow) {
     const res = await fetch(`${FEED_API}/comments/${c.id}/like`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer }) })
     const data = await res.json()
+    if (data.error) { setError(data.error); return }
     setCommentLikes(prev => ({ ...prev, [c.id]: { liked: data.liked, count: data.count } }))
   }
   async function toggleFollow() {
@@ -162,6 +217,71 @@ export function PostRoomPage() {
     const data = await res.json()
     setFollowing(data.following)
   }
+
+  // author deletes own post (soft). viewer via query (DELETE bodies get stripped).
+  async function deletePost() {
+    if (!post) return
+    const ok = window.confirm(`Delete "${post.title}"? This cannot be undone.`)
+    if (!ok) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`${FEED_API}/posts/${post.id}?viewer=${encodeURIComponent(viewer)}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && !data.error) {
+        navigate('/feed', { replace: true })
+        return
+      }
+      setError(data.error || 'Could not delete this post.')
+    } catch {
+      setError('Network error while deleting.')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // comment-author soft-deletes own comment. Mark removed IN PLACE (do not splice)
+  // so replies stay under the [removed] root.
+  async function deleteComment(c: CommentRow) {
+    if (!viewer) return
+    const ok = window.confirm('Delete this comment?')
+    if (!ok) return
+    try {
+      const res = await fetch(`${FEED_API}/comments/${c.id}?viewer=${encodeURIComponent(viewer)}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && !data.error) {
+        setComments(prev => prev.map(x => (x.id === c.id ? { ...x, deleted: true } : x)))
+      } else {
+        setError(data.error || 'Could not delete this comment.')
+      }
+    } catch {
+      setError('Network error while deleting comment.')
+    }
+  }
+
+  // non-author reports the post. Self-reports rejected server-side (and never offered here).
+  async function submitReport() {
+    if (!post || reporting) return
+    const reason = (reportReason || reportNote || 'Other').trim() || 'Other'
+    setReporting(true)
+    try {
+      const res = await fetch(`${FEED_API}/posts/${post.id}/report`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ viewer, reason, note: reportNote.trim() || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && !data.error) {
+        setReported(true); setReportOpen(false); setReportReason(''); setReportNote('')
+        window.setTimeout(() => setReported(false), 4000)
+      } else {
+        setError(data.error || 'Could not send the report.')
+      }
+    } catch {
+      setError('Network error while reporting.')
+    } finally {
+      setReporting(false)
+    }
+  }
+
   async function uploadFile(file: File): Promise<string | null> {
     const form = new FormData(); form.append('file', file)
     try {
@@ -170,37 +290,54 @@ export function PostRoomPage() {
       return data.url ?? null
     } catch { return null }
   }
-  async function postComment(body: string, kind: 'text' | 'image' | 'voice') {
-    if (!post) return
-    const res = await fetch(`${FEED_API}/posts/${post.id}/comments`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ viewer, body, kind, parent_id: replyingTo?.id || null }),
-    })
-    const data = await res.json()
-    if (data.comment) {
-      const newC = data.comment as CommentRow
-      setComments(prev => [...prev, newC])
-      setCommentLikes(prev => ({ ...prev, [newC.id]: { liked: false, count: 0 } }))
-      setReplyingTo(null)
-      if (kind === 'text') {
-        try {
-          const t = (await translateMany([newC.body], lang))[0]
-          setCommentTranslations(prev => ({ ...prev, [newC.id]: t }))
-        } catch { /* keep original */ }
+
+  // flatten replies to the top-level ancestor so a reply-to-a-reply isn't orphaned.
+  async function postComment(body: string, kind: 'text' | 'image' | 'voice'): Promise<boolean> {
+    if (!post) return false
+    const parentId = replyingTo ? (replyingTo.parent_id ?? replyingTo.id) : null
+    try {
+      const res = await fetch(`${FEED_API}/posts/${post.id}/comments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ viewer, body, kind, parent_id: parentId }),
+      })
+      const data = await res.json()
+      if (data.comment) {
+        const newC = data.comment as CommentRow
+        setComments(prev => [...prev, newC])
+        setCommentLikes(prev => ({ ...prev, [newC.id]: { liked: false, count: 0 } }))
+        setReplyingTo(null)
+        if (kind === 'text') {
+          try {
+            const t = (await translateMany([newC.body], lang))[0]
+            setCommentTranslations(prev => ({ ...prev, [newC.id]: t }))
+          } catch { /* keep original */ }
+        }
+        return true
       }
+      return false
+    } catch {
+      return false
     }
   }
+
   async function handleVoiceSend(blob: Blob) {
-    const file = new File([blob], 'voice.webm', { type: blob.type || 'audio/webm' })
+    // iOS emits audio/mp4 (some builds audio/mpeg); name by real subtype.
+    const subtype = (blob.type || 'audio/webm').split('/')[1]?.split(';')[0].trim() || 'webm'
+    const ext = subtype === 'mpeg' ? 'mp3' : subtype === 'mp4' ? 'm4a' : subtype
+    const file = new File([blob], `voice.${ext}`, { type: blob.type || 'audio/webm' })
     const url = await uploadFile(file)
     if (url) await postComment(url, 'voice')
   }
+
   async function submitComment(e: FormEvent) {
     e.preventDefault()
-    if (!draft.trim()) return
-    const text = draft.trim(); setDraft('')
-    await postComment(text, 'text')
+    const text = draft.trim()
+    if (!text) return
+    // keep the draft until the server confirms (a failed post must not erase your text)
+    const ok = await postComment(text, 'text')
+    if (ok) setDraft('')
   }
+
   function handleImagePick(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     uploadFile(file).then(url => { if (url) postComment(url, 'image') })
@@ -213,7 +350,7 @@ export function PostRoomPage() {
 
   if (loading) return <main className={styles.layout}><Navbar /><Preloader done={false} /></main>
 
-  if (!post) return (
+   if (!post) return (
     <main className={styles.layout}>
       <Navbar />
       <div style={{ padding: '140px 2rem', textAlign: 'center' }}>
@@ -228,9 +365,12 @@ export function PostRoomPage() {
   )
 
   // ---- derived + plain handlers, AFTER the early returns (not hooks → legal) ----
+  // case-insensitive, trimmed ownership check: author sees Delete ONLY (no Follow/Report)
+  const isOwn = !!viewer && viewer.trim().toLowerCase() === (post.username || '').trim().toLowerCase()
   const hasAutoDesc = !!autoDesc && autoDesc.trim() !== (post.description || '').trim()
   const getReplies = (parentId: number) => comments.filter(c => c.parent_id === parentId)
-  const gallery = (post.images && post.images.length) ? post.images : (post.image_url ? [post.image_url] : [])
+  const parsedImages = parseImages(post.images)
+  const gallery = parsedImages.length ? parsedImages : (post.image_url ? [post.image_url] : [])
   const multi = gallery.length > 1
 
   function scrollToIndex(i: number) {
@@ -245,13 +385,40 @@ export function PostRoomPage() {
     if (i !== galleryIndex) setGalleryIndex(i)
   }
   function openLightbox(i: number) { if (gallery.length) setLightbox({ items: gallery, index: i }) }
+  // snap the track to the lightbox's last index on close (no dot/count desync)
+  function closeLightbox() {
+    setLightbox(null)
+    const el = trackRef.current
+    if (el) el.scrollLeft = galleryIndex * el.clientWidth
+  }
 
   function renderComment(c: CommentRow) {
     const lk = commentLikes[c.id] || { liked: false, count: 0 }
-    const isAuthor = c.user_name === post?.username
+    const uname = (c.user_name || '').trim().toLowerCase()
+    const isAuthor = uname === (post?.username || '').trim().toLowerCase()   // "Author" tag
+    const isMine = uname === (viewer || '').trim().toLowerCase()             // can delete
+
+    // REMOVED: keep avatar + name so the thread reads; blank the body; no like/reply/media.
+    // This branch runs BEFORE the kind checks so a removed image/voice comment doesn't
+    // still render its media.
+    if (c.deleted) {
+      return (
+        <div key={c.id} className={styles.commentRow}>
+          <CommentAvatar name={c.user_name} url={c.avatar_url} />
+          <div className={styles.cMain}>
+            <p className={styles.cName}>
+              {c.user_name}
+              {isAuthor && <span className={styles.authorTag}>Author</span>}
+            </p>
+            <p className={`${styles.cBody} ${styles.cRemoved}`}>[This comment was removed]</p>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div key={c.id} className={styles.commentRow}>
-        <div className={styles.cAvatar}>{(c.user_name || '?')[0].toUpperCase()}</div>
+        <CommentAvatar name={c.user_name} url={c.avatar_url} />
         <div className={styles.cMain}>
           <p className={styles.cName}>
             {c.user_name}
@@ -267,6 +434,9 @@ export function PostRoomPage() {
           <div className={styles.cMeta}>
             <span>{shortTime(c.created_at)}</span>
             <button className={styles.metaBtn} onClick={() => handleReplyClick(c)}>Reply</button>
+            {isMine && (
+              <button className={`${styles.metaBtn} ${styles.metaDanger}`} onClick={() => void deleteComment(c)}>Delete</button>
+            )}
           </div>
         </div>
         <button className={`${styles.cLike} ${lk.liked ? styles.cLiked : ''}`} onClick={() => toggleCommentLike(c)} aria-label="Like comment">
@@ -282,7 +452,6 @@ export function PostRoomPage() {
       <Navbar />
       <div className={styles.container}>
 
-        {/* ONE fused card: stage + info + comments share a single frame (no floating stack) */}
         <div className={styles.piece}>
 
           {/* 1. MEDIA STAGE */}
@@ -318,18 +487,91 @@ export function PostRoomPage() {
             <header className={styles.header}>
               <div className={styles.who}>
                 <div className={`${styles.avatar} ${post.tier === 'vip' ? styles.vipRing : ''}`}>
-                  {(post.display_name || post.username)[0].toUpperCase()}
+                  {post.avatar_url && !avatarFailed ? (
+                    <img src={post.avatar_url} alt="" referrerPolicy="no-referrer" onError={() => setAvatarFailed(true)} />
+                  ) : (
+                    (post.display_name || post.username)[0]?.toUpperCase()
+                  )}
                 </div>
                 <div>
                   <button className={styles.name} onClick={() => navigate(`/profile/${post.username}`)}>{post.display_name || post.username}</button>
                   <p className={styles.meta}>{post.type.toUpperCase()} · {exactTime(post.created_at)}</p>
                 </div>
               </div>
-              {viewer !== post.username && (
-                <button className={`${styles.followBtn} ${following ? styles.following : ''}`} onClick={toggleFollow}>
-                  {following ? 'Following' : 'Follow'}
-                </button>
-              )}
+
+              {/* author -> Delete ONLY ; stranger -> Follow + Report */}
+              <div className={styles.headerRight}>
+                {isOwn ? (
+                  <button className={styles.dangerBtn} onClick={() => void deletePost()} disabled={deleting} aria-label="Delete post">
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </button>
+                ) : (
+                  <>
+                    <button className={`${styles.followBtn} ${following ? styles.following : ''}`} onClick={toggleFollow}>
+                      {following ? 'Following' : 'Follow'}
+                    </button>
+                    <button className={styles.followBtn} onClick={() => setReportOpen(o => !o)} aria-label="Report post" title="Report this post">
+                      {reported ? 'Reported' : 'Report'}
+                    </button>
+
+                    {reportOpen && !reported && (
+                      <div
+                        role="dialog"
+                        aria-label="Report post"
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', right: 0, top: 'calc(100% + .4rem)', zIndex: 40,
+                          width: 240, padding: '.6rem .65rem', borderRadius: 10,
+                          background: 'var(--paper)', border: '1px solid var(--line)',
+                          boxShadow: '0 16px 40px -8px rgba(20,18,15,0.18)',
+                          display: 'flex', flexDirection: 'column', gap: '.45rem', textAlign: 'left',
+                        }}
+                      >
+                        <span style={{ font: '600 .66rem var(--font-ui)', letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--ink-faint)' }}>
+                          Report this post
+                        </span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.3rem' }}>
+                          {REPORT_REASONS.map(r => (
+                            <button
+                              key={r}
+                              type="button"
+                              onClick={() => setReportReason(r)}
+                              style={{
+                                font: '500 .68rem var(--font-ui)', padding: '.28rem .5rem', borderRadius: 999, cursor: 'pointer',
+                                border: `1px solid ${reportReason === r ? 'var(--ink)' : 'var(--line)'}`,
+                                background: reportReason === r ? 'var(--ink)' : 'transparent',
+                                color: reportReason === r ? 'var(--paper)' : 'var(--ink-soft)',
+                              }}
+                            >
+                              {r}
+                            </button>
+                          ))}
+                        </div>
+                        <textarea
+                          value={reportNote}
+                          onChange={e => setReportNote(e.target.value)}
+                          placeholder="Add detail (optional)…"
+                          rows={2}
+                          style={{ font: '.8rem var(--font-ui)', padding: '.4rem .5rem', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--wall)', color: 'var(--ink)', resize: 'vertical' }}
+                        />
+                        <div style={{ display: 'flex', gap: '.4rem', justifyContent: 'flex-end' }}>
+                          <button type="button" onClick={() => setReportOpen(false)} style={{ font: '600 .66rem var(--font-ui)', padding: '.32rem .6rem', borderRadius: 999, border: '1px solid var(--line)', background: 'none', color: 'var(--ink-soft)', cursor: 'pointer' }}>
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void submitReport()}
+                            disabled={reporting || (!reportReason && !reportNote.trim())}
+                            style={{ font: '600 .66rem var(--font-ui)', padding: '.32rem .7rem', borderRadius: 999, border: '1px solid var(--ink)', background: 'var(--ink)', color: 'var(--paper)', cursor: (reporting || (!reportReason && !reportNote.trim())) ? 'progress' : 'pointer', opacity: (reporting || (!reportReason && !reportNote.trim())) ? 0.55 : 1 }}
+                          >
+                            {reporting ? 'Sending…' : 'Submit'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </header>
 
             <div className={styles.infoBlock}>
@@ -351,7 +593,7 @@ export function PostRoomPage() {
           {/* 3. COMMENTS THREAD */}
           <div className={styles.commentsSection}>
             <div className={styles.commentsHead}>
-              <span className={styles.commentsTitle}>Comments · {comments.length}</span>
+              <span className={styles.commentsTitle}>Comments · {comments.filter(c => !c.deleted).length}</span>
               {comments.length > 0 && (
                 <div className={styles.headActions}>
                   <button className={styles.sortBtn} onClick={() => setSortBy(s => s === 'top' ? 'newest' : 'top')}>
@@ -364,35 +606,38 @@ export function PostRoomPage() {
               )}
             </div>
 
-            {topLevelComments.length === 0 ? (
-              <p className={styles.noComments}>Be the first to comment on this piece.</p>
-            ) : (
-              topLevelComments.map(c => {
-                const replies = getReplies(c.id)
-                const isExpanded = expandedThreads[c.id]
-                return (
-                  <div key={c.id} className={styles.threadContainer}>
-                    {renderComment(c)}
-                    {replies.length > 0 && (
-                      <div className={styles.repliesWrap}>
-                        {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
-                        {replies.length > 1 && !isExpanded && (
-                          <button className={styles.viewReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: true }))}>
-                            View {replies.length} replies
-                            <ChevronDown size={14} />
-                          </button>
-                        )}
-                        {isExpanded && replies.length > 1 && (
-                          <button className={styles.hideReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: false }))}>
-                            Hide replies
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })
-            )}
+            {/* BOUNDED PANE: only the thread list scrolls internally; the head above stays pinned. */}
+            <div className={styles.commentsScroll}>
+              {topLevelComments.length === 0 ? (
+                <p className={styles.noComments}>Be the first to comment on this piece.</p>
+              ) : (
+                topLevelComments.map(c => {
+                  const replies = getReplies(c.id)
+                  const isExpanded = expandedThreads[c.id]
+                  return (
+                    <div key={c.id} className={styles.threadContainer}>
+                      {renderComment(c)}
+                      {replies.length > 0 && (
+                        <div className={styles.repliesWrap}>
+                          {(isExpanded ? replies : replies.slice(0, 1)).map(r => renderComment(r))}
+                          {replies.length > 1 && !isExpanded && (
+                            <button className={styles.viewReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: true }))}>
+                              View {replies.length} replies
+                              <ChevronDown size={14} />
+                            </button>
+                          )}
+                          {isExpanded && replies.length > 1 && (
+                            <button className={styles.hideReplies} onClick={() => setExpandedThreads(p => ({ ...p, [c.id]: false }))}>
+                              Hide replies
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              )}
+            </div>
           </div>
 
         </div>{/* /.piece */}
@@ -428,7 +673,7 @@ export function PostRoomPage() {
 
       </div>
 
-      {lightbox && <Lightbox items={lightbox.items} index={lightbox.index} onClose={() => setLightbox(null)} onIndex={setGalleryIndex} />}
+      {lightbox && <Lightbox items={lightbox.items} index={lightbox.index} onClose={closeLightbox} onIndex={setGalleryIndex} />}
     </main>
   )
 }

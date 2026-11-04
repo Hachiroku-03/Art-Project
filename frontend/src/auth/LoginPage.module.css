@@ -207,3 +207,21 @@
 .toastOk { color: var(--ok); }
 .toastErr { color: var(--err); }
 .toastNote { color: var(--ink-soft); }
+
+/* Google Identity Services slot (the official button renders inside this div).
+   min-height avoids a layout shift while the iframe loads. */
+.gsiSlot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* Non-blocking note when GSI itself fails to load/init (e.g. blocked script). */
+.googleNote {
+  margin-top: 0.6rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--err);
+}

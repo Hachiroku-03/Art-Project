@@ -1,103 +1,238 @@
+/* PostCard — "The Wall"
+   No card box. The work hangs at natural ratio on a hairline mat,
+   a wall label sits beneath, one hairline action row.
+   Palette: global tokens only. Corners: soft 4px. */
+
+.card { --r: 4px; }
+
 .card {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 20px;                 /* the curvy edge; overflow:hidden rounds header+actions for free */
-  margin-bottom: 2.2rem;
-  overflow: hidden;
-  box-shadow: var(--shadow-card);
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
-  animation: fadeUp 0.5s ease both;
-}
-.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
-
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(14px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; }
-.who { display: flex; align-items: center; gap: 0.8rem; }
-
-.avatar {
-  width: 42px; height: 42px; border-radius: 50%;
-  background: var(--wall); border: 1px solid var(--line-strong);
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-display); font-size: 0.95rem;
-}
-.vipRing { border: 2px solid var(--vip); box-shadow: 0 0 0 2px var(--paper); }
-
-/* name is a <button> → needs the reset it was missing */
-.name {
-  background: none; border: none; padding: 0; margin: 0; font-family: inherit;
-  font-weight: 600; font-size: 0.95rem; color: var(--ink); cursor: pointer;
-  text-align: left; transition: color 0.15s;
-}
-.name:hover { color: var(--vip); text-decoration: underline; text-underline-offset: 3px; }
-
-.meta { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.15rem; font-size: 0.66rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); }
-.typeBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.12rem 0.5rem;
-  font-weight: 600;
-  color: var(--ink-soft);
-}
-
-.followBtn {
-  background: transparent; border: 1px solid var(--ink); border-radius: 999px; color: var(--ink);
-  font-family: var(--font-ui); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.14em;
-  text-transform: uppercase; padding: 0.45rem 0.95rem; cursor: pointer; transition: all 0.2s;
-}
-.followBtn:hover { background: var(--ink); color: var(--wall); }
-.following { background: var(--ink); color: var(--wall); }
-
-.imageWrap { position: relative; aspect-ratio: 4 / 3; background: var(--wall); overflow: hidden; }   /* +relative for the pill */
-.artImage { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.7s cubic-bezier(0.2, 0.6, 0.2, 1); }
-.card:hover .artImage { transform: scale(1.025); }
-.artPlaceholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-family: var(--font-label); font-style: italic; color: var(--ink-faint); }
-
-.imgCount {
-  position: absolute; right: 0.7rem; bottom: 0.7rem; z-index: 2;
-  display: inline-flex; align-items: center; gap: 0.3rem;
-  background: rgba(0,0,0,0.55); backdrop-filter: blur(6px); color: #fff;
-  font-family: var(--font-ui); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.06em;
-  padding: 0.28rem 0.6rem; border-radius: 999px;
-}
-
-.labelBlock { padding: 1.25rem 1.25rem 0.5rem; }
-.artTitle { font-family: var(--font-label); font-style: italic; font-weight: 500; font-size: 1.45rem; line-height: 1.25; margin-bottom: 0.35rem; }
-.medium { font-size: 0.86rem; color: var(--ink-soft); line-height: 1.55; }
-
-.actions { display: flex; align-items: center; gap: 1.1rem; padding: 0.85rem 1.25rem; margin-top: 0.9rem; border-top: 1px solid var(--line); }
-.actionBtn { display: flex; align-items: center; gap: 0.45rem; background: none; border: none; color: var(--ink); font-family: var(--font-ui); font-size: 0.8rem; cursor: pointer; padding: 0.35rem; transition: color 0.2s, transform 0.15s; }
-.actionBtn:hover { color: var(--vip); transform: translateY(-1px); }
-.liked { color: var(--vip); }
-.bookmarked { color: var(--vip); }
-.right { margin-left: auto; }
-
-.avatarWrap {
-  position: relative;
-  background: none;
-  border: none;
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-bottom: 1.25rem;
   cursor: pointer;
 }
 
-.avatarWrap.hasStory .avatar {
-  border: 2.5px solid var(--vip);
-  box-shadow: 0 0 0 2px var(--paper), 0 0 8px rgba(91,58,142,0.3);
+/* ---------- the work ---------- */
+.frame {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1px;
 }
 
-.avatarImg {
+.art {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  width: auto;
+  height: auto;
+  border-radius: calc(var(--r) - 1px);
+}
+
+.placeholder {
   width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  background: var(--wall);
+  color: var(--ink-faint);
+  font: italic 1rem var(--font-label);
 }
 
-.shared {
-  color: var(--vip);
+.count {
+  position: absolute;
+  top: .6rem;
+  right: .6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  padding: .25rem .5rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--ink-soft);
+  font: 500 .68rem var(--font-ui);
+  letter-spacing: .06em;
+}
+
+/* ---------- wall label ---------- */
+.label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .25rem 1.5rem;
+  align-items: start;
+  padding: 0 .125rem;
+}
+
+.labelMain { min-width: 0; }
+
+.artistRow {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-bottom: .2rem;
+}
+
+.avatarWrap {
+  all: unset;
+  display: inline-flex;
+  border-radius: 50%;
+  padding: 2px;
+  cursor: pointer;
+}
+.hasStory { box-shadow: 0 0 0 1px var(--vip); }
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: 500 .8rem var(--font-label);
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vip { border-color: var(--vip); }
+
+.artist {
+  all: unset;
+  cursor: pointer;
+  font: 600 .95rem var(--font-ui);
+  color: var(--ink);
+  letter-spacing: -.005em;
+}
+.artist:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+.title {
+  margin: 0 0 .3rem;
+  font: italic 500 1.5rem/1.2 var(--font-label);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.year {
+  margin-left: .45rem;
+  font-size: 1rem;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.spec {
+  margin: 0;
+  font: .8rem/1.5 var(--font-ui);
+  color: var(--ink-soft);
+}
+.spec i { font: italic .95rem var(--font-label); }
+.dot { margin: 0 .4rem; }
+
+.note {
+  margin: .5rem 0 0;
+  max-width: 56ch;
+  font: .86rem/1.55 var(--font-ui);
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.translated {
+  margin-left: .5rem;
+  font: italic .78rem var(--font-label);
+  color: var(--ink-faint);
+}
+
+.labelSide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: .5rem;
+  padding-top: .35rem;
+}
+
+.time {
+  font: 600 .62rem var(--font-ui);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.follow {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  padding: .4rem .8rem;
+  color: var(--ink);
+  font: 600 .64rem var(--font-ui);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.follow:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.own {
+  font: italic .9rem var(--font-label);
+  color: var(--ink-faint);
+  padding: .4rem 0;
+}
+
+.following { border-color: var(--line); color: var(--ink-soft); }
+.following:hover { background: none; color: var(--err); border-color: var(--err); }
+
+/* ---------- actions ---------- */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+  padding-top: .75rem;
+  border-top: 1px solid var(--line);
+}
+
+.act {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  min-height: 32px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font: 500 .8rem var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  transition: color .15s;
+}
+.act:hover { color: var(--ink); }
+.act.on { color: var(--vip); }
+
+.keep { margin-left: auto; }
+
+/* ---------- keyboard focus ----------
+   all:unset (on .avatarWrap / .artist / .act) and the bare-button .follow strip
+   the native focus ring, so a tabbing user gets no visible cursor. Restore it for
+   keyboard users only; mouse users see zero change. */
+.avatarWrap:focus-visible,
+.artist:focus-visible,
+.act:focus-visible,
+.follow:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: var(--r);
+}
+
+/* ---------- phone ---------- */
+@media (max-width: 640px) {
+  .card { gap: .8rem; }
+  .frame { border-left: 0; border-right: 0; border-radius: 0; margin: 0 -1rem; }
+  .art { max-height: 80vh; border-radius: 0; }
+  .label { grid-template-columns: 1fr; gap: .5rem; }
+  .labelSide { flex-direction: row; align-items: center; justify-content: space-between; padding-top: .25rem; }
+  .title { font-size: 1.35rem; }
+  .actions { gap: 1.1rem; }
+  .act { min-height: 44px; }
 }
