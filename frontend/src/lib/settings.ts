@@ -1,5 +1,4 @@
-const ACCOUNT_API =
-  (import.meta as any).env?.VITE_API_URL || 'http://localhost:8001'
+import { FEED_API as ACCOUNT_API } from './config'
 
 export type NotificationCategoryKey =
   | 'messages'

@@ -20,10 +20,11 @@ import { NotificationBell } from './NotificationBell'
 import { ErrorBoundary } from './ErrorBoundary'
 import { API } from '../lib/sales'
 import { teardown } from '../lib/chat'
+import { AUTH_API as AUTH } from '../lib/config'
 import { clearSession, getRole, getTier, getViewer } from '../lib/session'
 import styles from './Navbar.module.css'
 
-const AUTH = 'http://localhost:8000'
+// const AUTH = 'http://localhost:8000'
 const SALES = API
 
 const ME_ORIGINS = [AUTH, SALES]

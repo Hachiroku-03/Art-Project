@@ -8,7 +8,7 @@ import { FilterRail, type StatusFilter, type TierFilter } from '../components/au
 import { API, normalizeAccessMode, type Sale } from '../lib/sales'
 import styles from './AuctionsPage.module.css'
 
-const AUTH = 'http://localhost:8000'
+import { AUTH_API as AUTH } from '../lib/config'
 
 type SortKey = 'default' | 'soonest' | 'recent'
 type Standing = 'loading' | 'none' | 'pending' | 'approved' | 'rejected'

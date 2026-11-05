@@ -1,8 +1,9 @@
 import { useState, useRef, type ChangeEvent, type FormEvent } from 'react'
 import { Zap, Paintbrush, Gavel, Image as ImageIcon, X } from 'lucide-react'
+import { FEED_API } from '../lib/config'
 import styles from './Composer.module.css'
 
-const FEED_API = 'http://localhost:8001'
+// const FEED_API = 'http://localhost:8001'
 
 const TYPES = [
   { key: 'drop', label: 'Drop', icon: Zap },

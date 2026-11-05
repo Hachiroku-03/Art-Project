@@ -1,4 +1,4 @@
-const API = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8001'
+import { FEED_API as API } from './config'
 
 export type CommunityGroup = {
   id: number

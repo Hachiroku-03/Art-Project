@@ -1,4 +1,4 @@
-const AUTH = 'http://localhost:8000'
+import { AUTH_API as AUTH } from './config'
 
 export type WalletData = {
   balance: string

@@ -1,4 +1,4 @@
-const TRANSLATE_API = 'http://localhost:8002'
+import { TRANSLATE_API } from './config'
 
 export function viewerLang(): string {
   return (navigator.language || 'en').slice(0, 2)

@@ -63,7 +63,7 @@ import {
 } from '../lib/chat'
 import styles from './MessengerPage.module.css'
 
-const AUTH_API = 'http://localhost:8000'
+import { AUTH_API } from '../lib/config'
 const QUICK_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🙏']
 
 const RECORDING_TTL = 15000

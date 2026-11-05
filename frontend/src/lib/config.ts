@@ -19,3 +19,4 @@ function pickEnv(value: unknown, fallback: string): string {
 
 export const AUTH_API = pickEnv(import.meta.env.VITE_AUTH_API, 'http://localhost:8000')
 export const FEED_API = pickEnv(import.meta.env.VITE_FEED_API, 'http://localhost:8001')
+export const TRANSLATE_API = pickEnv(import.meta.env.VITE_TRANSLATE_API, 'http://localhost:8002')

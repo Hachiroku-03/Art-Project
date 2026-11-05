@@ -16,8 +16,9 @@
 // ============================================================================
 
 import { type AccessMode, normalizeAccessMode } from './sales'
+import { FEED_API } from './config'
 
-export const AUCTION_API = 'http://localhost:8001'
+export const AUCTION_API = FEED_API
 
 // Old literal union KEPT for back-compat (components may compare tier === 'vip_only').
 // New code reads auction.access_mode instead, which fetchAuctions normalizes.

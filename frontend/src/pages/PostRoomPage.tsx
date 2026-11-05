@@ -10,8 +10,7 @@ import { translateMany } from '../lib/translate'
 import { getViewer } from '../lib/session'
 import styles from './PostRoomPage.module.css'
 
-const AUTH_API = 'http://localhost:8000'
-const FEED_API = 'http://localhost:8001'
+import { AUTH_API, FEED_API } from '../lib/config'
 
 const REPORT_REASONS = ['Spam or scam', 'Infringes my rights', 'Harassment or hate', 'Misleading / fake art', 'Other']
 

@@ -4,7 +4,7 @@ import { Crown, Check, ArrowLeft, CalendarClock, AlertTriangle, ArrowUpRight } f
 import { fetchVipStatus, fmtMoney, fmtDate, type VipStatus } from '../lib/wallet'
 import styles from './PricingPage.module.css'
 
-const AUTH = 'http://localhost:8000'
+import { AUTH_API as AUTH } from '../lib/config'
 const UNLOCKS = [
   'Bid inside VIP-only rooms — the crown gate opens for you.',
   'The VIP mark on your wall, your name, and your comments.',

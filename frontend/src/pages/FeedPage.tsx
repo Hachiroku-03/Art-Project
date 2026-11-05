@@ -22,8 +22,7 @@ import { translateMany } from '../lib/translate'
 import { getViewer } from '../lib/session'
 import styles from './FeedPage.module.css'
 
-const AUTH_API = 'http://localhost:8000'
-const FEED_API = 'http://localhost:8001'
+import { AUTH_API, FEED_API } from '../lib/config'
 
 export function FeedPage() {
   const navigate = useNavigate()

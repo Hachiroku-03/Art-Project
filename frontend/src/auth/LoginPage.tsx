@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, ScanFace, ArrowRight } from 'lucide-react'
 import styles from './LoginPage.module.css'
+import { AUTH_API as API } from '../lib/config'
 import { setSession } from '../lib/session'
 import { ThreeBackground } from './ThreeBackground'
 import { useGoogleAuth } from '../lib/useGoogleAuth'
 
-const API = 'http://localhost:8000'
+
 
 type FieldErrors = {
   identifier?: string

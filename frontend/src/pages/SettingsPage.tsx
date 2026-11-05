@@ -31,8 +31,7 @@ import {
 } from '../lib/settings'
 import styles from './SettingsPage.module.css'
 
-const AUTH_API =
-  (import.meta as any).env?.VITE_AUTH_API_URL || 'http://localhost:8000'
+import { AUTH_API } from '../lib/config'
 
 type Section = 'profile' | 'notifications' | 'auctions' | 'privacy' | 'house' | 'support'
 type HouseStatus = 'loading' | 'none' | 'pending' | 'approved' | 'rejected'

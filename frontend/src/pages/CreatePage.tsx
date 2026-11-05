@@ -4,7 +4,7 @@ import { Zap, Paintbrush, Gavel, Image as ImageIcon, X, ArrowLeft } from 'lucide
 import { Navbar } from '../components/Navbar'
 import styles from './CreatePage.module.css'
 
-const FEED_API = 'http://localhost:8001'
+import { FEED_API } from '../lib/config'
 
 const TYPES = [
   { key: 'drop', label: 'Drop', icon: Zap, blurb: 'New work, open for bids' },

@@ -2,10 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGoogleAuth } from '../lib/useGoogleAuth'
 import { setSession } from '../lib/session'
+import { AUTH_API as API } from '../lib/config'
 import styles from './SignupPage.module.css'
 import { ThreeBackground } from './ThreeBackground'
 
-const API = 'http://localhost:8000'
+
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
