@@ -1,5 +1,6 @@
 import asyncio
 import os
+import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -44,7 +45,10 @@ async def lifespan(app: FastAPI):
     try:
         init_db()
     except Exception as exc:
-        print(f"[startup] database init failed: {exc}")
+        # Print the REAL traceback so the next log names the exact db.py line
+        # instead of the vague "cursor already closed".
+        print(f"[startup] database init failed: {exc!r}")
+        traceback.print_exc()
 
     task = asyncio.create_task(_sweep_loop())
     try:
@@ -59,15 +63,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Read ALLOWED_ORIGINS from the environment, exactly like auth_server.py.
+# A hardcoded list here would silently ignore the feed dashboard's env var and
+# re-trigger the CORS preflight block the moment the live site calls /feed.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,   # feed uses viewer-param / token-in-body, not cookies.
+    allow_methods=["*"],       # If you ever send cookies, flip to True AND keep
+    allow_headers=["*"],       # explicit origins — never ["*"] with credentials.
 )
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")

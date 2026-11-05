@@ -502,12 +502,7 @@ def init_db():
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_events_account ON payment_events (account, created_at DESC)")
 
-    conn.commit()
-    conn.close()
-
     # ============ HOUSE PAYOUT PROFILE ============
-    # Stores the house's payout destination. This is not a wallet. It is the
-    # bank/subaccount information used later for real payouts.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS house_payout_profiles (
             user_name TEXT PRIMARY KEY,
@@ -523,15 +518,13 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_house_payout_status ON house_payout_profiles (status)")
 
-def ensure_money_precision(conn):
-    """Idempotently widen every backend money column to NUMERIC(18,2).
-    Mirrors what the auth service already does for ledger_entries.amount.
-    Call from init_db() AFTER the CREATE TABLE statements. Safe to re-run."""
-    cur = conn.cursor()
-    cur.execute(
+    # ============ WIDEN MONEY COLUMNS TO NUMERIC(18,2) ============
+    # Inlined from the old ensure_money_precision() so there is no separate
+    # symbol to go missing. Runs on the SAME open cursor; the single commit at
+    # the end of init_db() covers it. Idempotent — safe to re-run every boot.
+    cursor.execute(
         """
         DO $$
         DECLARE
@@ -557,5 +550,6 @@ def ensure_money_precision(conn):
         END $$;
         """
     )
+
     conn.commit()
-    cur.close()
+    conn.close()
