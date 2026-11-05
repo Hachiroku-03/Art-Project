@@ -1210,7 +1210,7 @@ def revert_lot_to_passed(lot_id: int, data: dict):
                 status = 'passed',
                 sold_price = NULL,
                 winner_username = NULL,
-                payment_status = NULL,
+                payment_status = unpaid,
                 checkout_url = NULL,
                 payment_reference = NULL,
                 payment_updated_at = NULL,
@@ -1348,7 +1348,7 @@ def reopen_lot(lot_id: int, data: dict):
                 hammer_at = NULL,
                 sold_price = NULL,
                 winner_username = NULL,
-                payment_status = NULL,
+                payment_status = unpaid,
                 checkout_url = NULL,
                 payment_reference = NULL,
                 payment_updated_at = NULL

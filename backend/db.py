@@ -466,8 +466,21 @@ def init_db():
     cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS estimate_high NUMERIC(12,2)")
     cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS hammer_at TIMESTAMP")
     cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'unpaid'")  #-- unpaid|paid|refunded (E2 chase path)
+        # ---- columns sales.py reads/writes that the schema was missing ----
+    # ended_at = ACTUAL close stamp (distinct from scheduled ends_at). Written by
+    #   end_sale, read by /sales, /my_sales, /sales/{id}, settlement. Without it
+    #   the whole end→settle→pay lifecycle is blocked, not just the floor reads.
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP")
+    # payment_reference / payment_updated_at / checkout_url = the buyer-payment
+    #   triple. Read by _initialize_lot_checkout, get_sale, settlement_view,
+    #   my_won_lots; written by _initialize_lot_checkout, revert_lot_to_passed,
+    #   reopen_lot. Without them settle/collect/pay crash exactly like ended_at did.
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS payment_reference TEXT")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS payment_updated_at TIMESTAMP")
+    cursor.execute("ALTER TABLE lots ADD COLUMN IF NOT EXISTS checkout_url TEXT")
     cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ticket_capacity INTEGER")                    #-- null = unlimited
     cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS settled_at TIMESTAMP")
+    cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP")
     cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS payout_status TEXT NOT NULL DEFAULT 'none'")  #-- none|pending|paid|failed
     cursor.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS payout_reference TEXT")
     cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'purchased'")     #purchased|invited|complimentary|void
