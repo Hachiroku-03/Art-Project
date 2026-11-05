@@ -1,3 +1,5 @@
+import { FEED_API } from './config'
+
 // ============================================================================
 // sales.ts — auction lib. SUPERSET: every original export is kept with its
 // original signature/return so existing pages (AuctionsPage, AuctionRoomPage,
@@ -17,14 +19,8 @@
 //   frontend reads payment_status from backend
 // ============================================================================
 
-const ENV_API = (import.meta as any)?.env?.VITE_API_URL
-
-export const API =
-  typeof ENV_API === 'string' && ENV_API.trim()
-    ? ENV_API.trim()
-    : 'http://localhost:8001'
-
-export const AUCTION_API = API
+export const API = FEED_API
+export const AUCTION_API = FEED_API
 
 // ---- access mode (new canonical union; old `tier` string is kept on Sale) ----
 export type AccessMode = 'open' | 'vip' | 'invite'
@@ -180,7 +176,7 @@ export function formatRemaining(diffMs: number): string {
   const totalSec = Math.floor(diffMs / 1000)
   const d = Math.floor(totalSec / 86400)
   const h = Math.floor((totalSec % 86400) / 3600)
-  const m = Math.floor((totalSec % 3600) / 60)
+  const m = Math.floor((totalSec % 86400) / 60)
   const s = totalSec % 60
 
   if (d >= 1) return `${d}d ${h}h`
