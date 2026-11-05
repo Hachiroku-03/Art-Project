@@ -13,7 +13,6 @@ import {
   Trash2,
   Users,
   Wallet,
-  X,
 } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import {
