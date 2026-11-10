@@ -1,3 +1,4 @@
+# backend/routers/feed.py — leak-wrapped. Logic, SQL, glyphs, comments unchanged.
 """
 feed.py — the social/feed router (your own origin; no Paystack, no YouTube, no tunnel).
 
@@ -74,28 +75,32 @@ async def upload(file: UploadFile = File(...)):
 
 @router.get("/feed")
 def get_feed(viewer: str = ""):
-    conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    cursor.execute('''
-        SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
-               posts.created_at::text AS created_at, users.username, users.role, users.tier,
-               profiles.display_name, profiles.avatar_url,
-               (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
-               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
-               (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
-               EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
-               EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
-               EXISTS(SELECT 1 FROM bookmarks WHERE bookmarks.post_id = posts.id AND bookmarks.user_name = %s) AS bookmarked_by_viewer,
-               (SELECT COUNT(*) FROM bookmarks WHERE bookmarks.post_id = posts.id) AS bookmark_count,
-               EXISTS(SELECT 1 FROM stories WHERE user_name = users.username AND expires_at > CURRENT_TIMESTAMP) AS has_active_story
-        FROM posts
-        JOIN users ON posts.author_id = users.id
-        LEFT JOIN profiles ON profiles.user_id = users.id
-        WHERE posts.deleted_at IS NULL
-        ORDER BY posts.created_at DESC LIMIT 20
-    ''', (viewer, viewer, viewer))
-    feed_items = cursor.fetchall(); conn.close()
-    return {"feed": feed_items}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute('''
+            SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
+                   posts.created_at::text AS created_at, users.username, users.role, users.tier,
+                   profiles.display_name, profiles.avatar_url,
+                   (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
+                   (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
+                   (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
+                   EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
+                   EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
+                   EXISTS(SELECT 1 FROM bookmarks WHERE bookmarks.post_id = posts.id AND bookmarks.user_name = %s) AS bookmarked_by_viewer,
+                   (SELECT COUNT(*) FROM bookmarks WHERE bookmarks.post_id = posts.id) AS bookmark_count,
+                   EXISTS(SELECT 1 FROM stories WHERE user_name = users.username AND expires_at > CURRENT_TIMESTAMP) AS has_active_story
+            FROM posts
+            JOIN users ON posts.author_id = users.id
+            LEFT JOIN profiles ON profiles.user_id = users.id
+            WHERE posts.deleted_at IS NULL
+            ORDER BY posts.created_at DESC LIMIT 20
+        ''', (viewer, viewer, viewer))
+        feed_items = cursor.fetchall()
+        return {"feed": feed_items}
+    finally:
+        if conn: conn.close()
 
 @router.post("/posts")
 def create_post(data: dict):
@@ -107,40 +112,48 @@ def create_post(data: dict):
     images = [u for u in images if isinstance(u, str) and u.strip()][:8]
     cover = images[0] if images else (data.get("image_url", "") or "").strip()
     if not viewer or not title: return {"error": "viewer and title required"}
-    conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    cursor.execute("SELECT id FROM users WHERE username = %s", (viewer,))
-    author = cursor.fetchone()
-    if not author: conn.close(); return {"error": "unknown author"}
-    cursor.execute(
-        "INSERT INTO posts (author_id, type, title, description, image_url, images) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-        (author["id"], post_type, title, description, cover, json.dumps(images)))
-    new_id = cursor.fetchone()["id"]; conn.commit(); conn.close()
-    return {"message": "posted", "id": new_id}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute("SELECT id FROM users WHERE username = %s", (viewer,))
+        author = cursor.fetchone()
+        if not author: return {"error": "unknown author"}
+        cursor.execute(
+            "INSERT INTO posts (author_id, type, title, description, image_url, images) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            (author["id"], post_type, title, description, cover, json.dumps(images)))
+        new_id = cursor.fetchone()["id"]; conn.commit()
+        return {"message": "posted", "id": new_id}
+    finally:
+        if conn: conn.close()
 
 @router.get("/posts/{post_id}")
 def get_post(post_id: int, viewer: str = ""):
-    conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    cursor.execute('''
-        SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
-               posts.created_at::text AS created_at, users.username, users.role, users.tier,
-               profiles.display_name, profiles.avatar_url,
-               (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
-               (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
-               (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
-               EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
-               EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
-               EXISTS(SELECT 1 FROM bookmarks WHERE bookmarks.post_id = posts.id AND bookmarks.user_name = %s) AS bookmarked_by_viewer,
-               (SELECT COUNT(*) FROM bookmarks WHERE bookmarks.post_id = posts.id) AS bookmark_count
-        FROM posts
-        JOIN users ON posts.author_id = users.id
-        LEFT JOIN profiles ON profiles.user_id = users.id
-        WHERE posts.id = %s AND posts.deleted_at IS NULL
-    ''', (viewer, viewer, viewer, post_id))
-    post = cursor.fetchone(); conn.close()
-    if not post: return {"error": "post not found"}
-    return {"post": post}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute('''
+            SELECT posts.id, posts.type, posts.title, posts.description, posts.image_url, posts.images, posts.price,
+                   posts.created_at::text AS created_at, users.username, users.role, users.tier,
+                   profiles.display_name, profiles.avatar_url,
+                   (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id) AS like_count,
+                   (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.deleted_at IS NULL) AS comment_count,
+                   (SELECT MAX(amount)::text FROM bids WHERE bids.post_id = posts.id) AS current_bid,
+                   EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_name = %s) AS liked_by_viewer,
+                   EXISTS(SELECT 1 FROM follows WHERE follower = %s AND followee = users.username) AS followed_by_viewer,
+                   EXISTS(SELECT 1 FROM bookmarks WHERE bookmarks.post_id = posts.id AND bookmarks.user_name = %s) AS bookmarked_by_viewer,
+                   (SELECT COUNT(*) FROM bookmarks WHERE bookmarks.post_id = posts.id) AS bookmark_count
+            FROM posts
+            JOIN users ON posts.author_id = users.id
+            LEFT JOIN profiles ON profiles.user_id = users.id
+            WHERE posts.id = %s AND posts.deleted_at IS NULL
+        ''', (viewer, viewer, viewer, post_id))
+        post = cursor.fetchone()
+        if not post: return {"error": "post not found"}
+        return {"post": post}
+    finally:
+        if conn: conn.close()
 
 # ---------------------------------------------------------------------------
 # NEW: author deletes own post (soft). viewer from query OR body (DELETE bodies
@@ -213,52 +226,67 @@ def report_post(post_id: int, data: dict):
 
 @router.post("/posts/{post_id}/like")
 def toggle_like(post_id: int, data: dict):
-    viewer = data.get("viewer", ""); conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM likes WHERE post_id = %s AND user_name = %s", (post_id, viewer))
-    if cursor.fetchone(): cursor.execute("DELETE FROM likes WHERE post_id = %s AND user_name = %s", (post_id, viewer)); liked = False
-    else: cursor.execute("INSERT INTO likes (post_id, user_name) VALUES (%s, %s)", (post_id, viewer)); liked = True
-    conn.commit(); cursor.execute("SELECT COUNT(*) AS c FROM likes WHERE post_id = %s", (post_id,)); count = cursor.fetchone()["c"]; conn.close()
-    return {"liked": liked, "count": count}
+    viewer = data.get("viewer", "")
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM likes WHERE post_id = %s AND user_name = %s", (post_id, viewer))
+        if cursor.fetchone(): cursor.execute("DELETE FROM likes WHERE post_id = %s AND user_name = %s", (post_id, viewer)); liked = False
+        else: cursor.execute("INSERT INTO likes (post_id, user_name) VALUES (%s, %s)", (post_id, viewer)); liked = True
+        conn.commit(); cursor.execute("SELECT COUNT(*) AS c FROM likes WHERE post_id = %s", (post_id,)); count = cursor.fetchone()["c"]
+        return {"liked": liked, "count": count}
+    finally:
+        if conn: conn.close()
 
 @router.get("/posts/{post_id}/comments")
 def get_comments(post_id: int, viewer: str = ""):
     """Join users->profiles so each comment carries avatar_url, and return the
     `deleted` flag so the frontend can render [removed] instead of hiding the row
     (which would orphan its replies)."""
-    conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    cursor.execute('''
-        SELECT c.id, c.user_name, c.body, c.kind, c.parent_id,
-               c.created_at::text AS created_at,
-               p.avatar_url,
-               (c.deleted_at IS NOT NULL) AS deleted,
-               (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = c.id) AS like_count,
-               EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = c.id AND cl.user_name = %s) AS liked_by_viewer
-        FROM comments c
-        LEFT JOIN users u ON u.username = c.user_name
-        LEFT JOIN profiles p ON p.user_id = u.id
-        WHERE c.post_id = %s
-        ORDER BY c.created_at ASC
-    ''', (viewer, post_id))
-    rows = cursor.fetchall(); conn.close(); return {"comments": rows}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute('''
+            SELECT c.id, c.user_name, c.body, c.kind, c.parent_id,
+                   c.created_at::text AS created_at,
+                   p.avatar_url,
+                   (c.deleted_at IS NOT NULL) AS deleted,
+                   (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = c.id) AS like_count,
+                   EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = c.id AND cl.user_name = %s) AS liked_by_viewer
+            FROM comments c
+            LEFT JOIN users u ON u.username = c.user_name
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE c.post_id = %s
+            ORDER BY c.created_at ASC
+        ''', (viewer, post_id))
+        rows = cursor.fetchall()
+        return {"comments": rows}
+    finally:
+        if conn: conn.close()
 
 @router.post("/posts/{post_id}/comments")
 def add_comment(post_id: int, data: dict):
     viewer, body, kind, parent_id = data.get("viewer", ""), data.get("body", "").strip(), data.get("kind", "text"), data.get("parent_id")
-    conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    cursor.execute("INSERT INTO comments (post_id, user_name, body, kind, parent_id) VALUES (%s, %s, %s, %s, %s) RETURNING id, user_name, body, kind, parent_id, created_at::text AS created_at", (post_id, viewer, body, kind, parent_id))
-    row = dict(cursor.fetchone())
-    # RETURNING cannot join, so fetch the commenter's avatar separately -> a freshly
-    # posted comment shows its photo immediately instead of waiting for a reload.
-    cursor.execute(
-        "SELECT p.avatar_url FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.username = %s",
-        (viewer,),
-    )
-    av = cursor.fetchone()
-    row["avatar_url"] = (av or {}).get("avatar_url")
-    row["deleted"] = False
-    conn.commit(); conn.close(); return {"comment": row}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        cursor.execute("INSERT INTO comments (post_id, user_name, body, kind, parent_id) VALUES (%s, %s, %s, %s, %s) RETURNING id, user_name, body, kind, parent_id, created_at::text AS created_at", (post_id, viewer, body, kind, parent_id))
+        row = dict(cursor.fetchone())
+        # RETURNING cannot join, so fetch the commenter's avatar separately -> a freshly
+        # posted comment shows its photo immediately instead of waiting for a reload.
+        cursor.execute(
+            "SELECT p.avatar_url FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.username = %s",
+            (viewer,),
+        )
+        av = cursor.fetchone()
+        row["avatar_url"] = (av or {}).get("avatar_url")
+        row["deleted"] = False
+        conn.commit()
+        return {"comment": row}
+    finally:
+        if conn: conn.close()
 
 # ---------------------------------------------------------------------------
 # NEW: comment-author soft-deletes own comment (idempotent). viewer via query OR
@@ -289,104 +317,135 @@ def delete_comment(comment_id: int, viewer: str = "", data: dict = {}):
 
 @router.post("/comments/{comment_id}/like")
 def toggle_comment_like(comment_id: int, data: dict):
-    viewer = data.get("viewer", ""); conn = get_db(); cursor = conn.cursor()
-    _ensure_post_schema(cursor); conn.commit()
-    # reject liking a removed comment
-    cursor.execute("SELECT deleted_at FROM comments WHERE id = %s", (comment_id,))
-    crow = cursor.fetchone()
-    if not crow: conn.close(); return {"error": "comment not found"}
-    if crow["deleted_at"] is not None: conn.close(); return {"error": "this comment was removed"}
-    cursor.execute("SELECT 1 FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer))
-    if cursor.fetchone(): cursor.execute("DELETE FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer)); liked = False
-    else: cursor.execute("INSERT INTO comment_likes (comment_id, user_name) VALUES (%s, %s)", (comment_id, viewer)); liked = True
-    conn.commit(); cursor.execute("SELECT COUNT(*) AS c FROM comment_likes WHERE comment_id = %s", (comment_id,)); count = cursor.fetchone()["c"]; conn.close()
-    return {"liked": liked, "count": count}
+    viewer = data.get("viewer", "")
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        _ensure_post_schema(cursor); conn.commit()
+        # reject liking a removed comment
+        cursor.execute("SELECT deleted_at FROM comments WHERE id = %s", (comment_id,))
+        crow = cursor.fetchone()
+        if not crow: return {"error": "comment not found"}
+        if crow["deleted_at"] is not None: return {"error": "this comment was removed"}
+        cursor.execute("SELECT 1 FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer))
+        if cursor.fetchone(): cursor.execute("DELETE FROM comment_likes WHERE comment_id = %s AND user_name = %s", (comment_id, viewer)); liked = False
+        else: cursor.execute("INSERT INTO comment_likes (comment_id, user_name) VALUES (%s, %s)", (comment_id, viewer)); liked = True
+        conn.commit(); cursor.execute("SELECT COUNT(*) AS c FROM comment_likes WHERE comment_id = %s", (comment_id,)); count = cursor.fetchone()["c"]
+        return {"liked": liked, "count": count}
+    finally:
+        if conn: conn.close()
 
 @router.post("/follow")
 def toggle_follow(data: dict):
-    viewer, target = data.get("viewer", ""), data.get("target", ""); conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM follows WHERE follower = %s AND followee = %s", (viewer, target))
-    if cursor.fetchone(): cursor.execute("DELETE FROM follows WHERE follower = %s AND followee = %s", (viewer, target)); following = False
-    else: cursor.execute("INSERT INTO follows (follower, followee) VALUES (%s, %s)", (viewer, target)); following = True
-    conn.commit(); conn.close(); return {"following": following}
+    viewer, target = data.get("viewer", ""), data.get("target", "")
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM follows WHERE follower = %s AND followee = %s", (viewer, target))
+        if cursor.fetchone(): cursor.execute("DELETE FROM follows WHERE follower = %s AND followee = %s", (viewer, target)); following = False
+        else: cursor.execute("INSERT INTO follows (follower, followee) VALUES (%s, %s)", (viewer, target)); following = True
+        conn.commit()
+        return {"following": following}
+    finally:
+        if conn: conn.close()
 
 @router.post("/posts/{post_id}/bid")
 def place_bid(post_id: int, data: dict):
-    viewer = data.get("viewer", ""); amount = float(data.get("amount", 0)); conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT COALESCE(MAX(amount), 0) AS top FROM bids WHERE post_id = %s", (post_id,)); top = float(cursor.fetchone()["top"])
-    if amount <= top: conn.close(); return {"error": f"bid must exceed {top}"}
-    cursor.execute("INSERT INTO bids (post_id, user_name, amount) VALUES (%s, %s, %s)", (post_id, viewer, amount)); conn.commit(); conn.close()
-    return {"message": "bid placed", "current_bid": amount}
+    viewer = data.get("viewer", ""); amount = float(data.get("amount", 0))
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute("SELECT COALESCE(MAX(amount), 0) AS top FROM bids WHERE post_id = %s", (post_id,)); top = float(cursor.fetchone()["top"])
+        if amount <= top: return {"error": f"bid must exceed {top}"}
+        cursor.execute("INSERT INTO bids (post_id, user_name, amount) VALUES (%s, %s, %s)", (post_id, viewer, amount)); conn.commit()
+        return {"message": "bid placed", "current_bid": amount}
+    finally:
+        if conn: conn.close()
 
 @router.post("/posts/{post_id}/bookmark")
 def toggle_bookmark(post_id: int, data: dict):
     viewer = data.get("viewer", "")
     if not viewer: return {"error": "viewer required"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM bookmarks WHERE post_id = %s AND user_name = %s", (post_id, viewer))
-    if cursor.fetchone():
-        cursor.execute("DELETE FROM bookmarks WHERE post_id = %s AND user_name = %s", (post_id, viewer)); bookmarked = False
-    else:
-        cursor.execute("INSERT INTO bookmarks (post_id, user_name) VALUES (%s, %s)", (post_id, viewer)); bookmarked = True
-    conn.commit()
-    cursor.execute("SELECT COUNT(*) AS c FROM bookmarks WHERE post_id = %s", (post_id,))
-    count = cursor.fetchone()["c"]; conn.close()
-    return {"bookmarked": bookmarked, "count": count}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM bookmarks WHERE post_id = %s AND user_name = %s", (post_id, viewer))
+        if cursor.fetchone():
+            cursor.execute("DELETE FROM bookmarks WHERE post_id = %s AND user_name = %s", (post_id, viewer)); bookmarked = False
+        else:
+            cursor.execute("INSERT INTO bookmarks (post_id, user_name) VALUES (%s, %s)", (post_id, viewer)); bookmarked = True
+        conn.commit()
+        cursor.execute("SELECT COUNT(*) AS c FROM bookmarks WHERE post_id = %s", (post_id,))
+        count = cursor.fetchone()["c"]
+        return {"bookmarked": bookmarked, "count": count}
+    finally:
+        if conn: conn.close()
 
 @router.get("/suggestions")
 def suggestions(viewer: str = ""):
     """Left rail: popular members the viewer doesn't already follow.
     Now selects p.avatar_url (was the thin column that hid rail avatars)."""
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute('''
-        SELECT u.username, u.role, u.tier, p.display_name, p.avatar_url,
-               (SELECT COUNT(*) FROM follows f2 WHERE f2.followee = u.username) AS follower_count
-        FROM users u LEFT JOIN profiles p ON p.user_id = u.id
-        WHERE u.username <> %s
-          AND u.username NOT IN (SELECT followee FROM follows WHERE follower = %s)
-        ORDER BY follower_count DESC LIMIT 5
-    ''', (viewer, viewer))
-    rows = cursor.fetchall(); conn.close()
-    return {"suggestions": rows}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.username, u.role, u.tier, p.display_name, p.avatar_url,
+                   (SELECT COUNT(*) FROM follows f2 WHERE f2.followee = u.username) AS follower_count
+            FROM users u LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE u.username <> %s
+              AND u.username NOT IN (SELECT followee FROM follows WHERE follower = %s)
+            ORDER BY follower_count DESC LIMIT 5
+        ''', (viewer, viewer))
+        rows = cursor.fetchall()
+        return {"suggestions": rows}
+    finally:
+        if conn: conn.close()
 
 @router.get("/me/standing")
 def my_standing(viewer: str = ""):
     """Right-rail Paddle: VIP status, lots you're currently top-bid on (live rooms), tickets, keeps."""
     if not viewer: return {"error": "viewer required"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute("SELECT tier FROM users WHERE username = %s", (viewer,))
-    u = cursor.fetchone()
-    if not u: conn.close(); return {"error": "unknown user"}
-    cursor.execute('''
-        SELECT l.id AS lot_id, l.title, l.image_url, a.id AS sale_id, a.title AS sale_title,
-               (SELECT MAX(amount)::text FROM lot_bids WHERE lot_id = l.id) AS top_amount,
-               a.ends_at::text AS ends_at
-        FROM lots l JOIN auctions a ON a.id = l.sale_id
-        WHERE a.status = 'live' AND l.status = 'on_block'
-          AND (SELECT user_name FROM lot_bids WHERE lot_id = l.id ORDER BY amount DESC LIMIT 1) = %s
-        ORDER BY a.ends_at
-    ''', (viewer,))
-    leading = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*) AS c FROM tickets WHERE user_name = %s", (viewer,))
-    tickets = cursor.fetchone()["c"]
-    cursor.execute("SELECT COUNT(*) AS c FROM bookmarks WHERE user_name = %s", (viewer,))
-    collects = cursor.fetchone()["c"]
-    conn.close()
-    return {"tier": u["tier"], "leading": leading, "tickets": tickets, "collects": collects}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute("SELECT tier FROM users WHERE username = %s", (viewer,))
+        u = cursor.fetchone()
+        if not u: return {"error": "unknown user"}
+        cursor.execute('''
+            SELECT l.id AS lot_id, l.title, l.image_url, a.id AS sale_id, a.title AS sale_title,
+                   (SELECT MAX(amount)::text FROM lot_bids WHERE lot_id = l.id) AS top_amount,
+                   a.ends_at::text AS ends_at
+            FROM lots l JOIN auctions a ON a.id = l.sale_id
+            WHERE a.status = 'live' AND l.status = 'on_block'
+              AND (SELECT user_name FROM lot_bids WHERE lot_id = l.id ORDER BY amount DESC LIMIT 1) = %s
+            ORDER BY a.ends_at
+        ''', (viewer,))
+        leading = cursor.fetchall()
+        cursor.execute("SELECT COUNT(*) AS c FROM tickets WHERE user_name = %s", (viewer,))
+        tickets = cursor.fetchone()["c"]
+        cursor.execute("SELECT COUNT(*) AS c FROM bookmarks WHERE user_name = %s", (viewer,))
+        collects = cursor.fetchone()["c"]
+        return {"tier": u["tier"], "leading": leading, "tickets": tickets, "collects": collects}
+    finally:
+        if conn: conn.close()
 
 @router.get("/me")
 def get_me(viewer: str = ""):
     """Current user's profile — drives the navbar avatar."""
     if not viewer: return {"error": "viewer required"}
-    conn = get_db(); cursor = conn.cursor()
-    cursor.execute('''
-        SELECT u.username, u.role, u.tier, p.display_name, p.avatar_url, p.banner_url
-        FROM users u LEFT JOIN profiles p ON p.user_id = u.id
-        WHERE u.username = %s
-    ''', (viewer,))
-    row = cursor.fetchone(); conn.close()
-    if not row: return {"error": "unknown user"}
-    return {"user": dict(row)}
+    conn = None
+    try:
+        conn = get_db(); cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.username, u.role, u.tier, p.display_name, p.avatar_url, p.banner_url
+            FROM users u LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE u.username = %s
+        ''', (viewer,))
+        row = cursor.fetchone()
+        if not row: return {"error": "unknown user"}
+        return {"user": dict(row)}
+    finally:
+        if conn: conn.close()
 
 @router.get("/stories")
 def list_stories(viewer: str = ""):

@@ -1,0 +1,254 @@
+/* Palette is inherited from .admin-shell (custom props cascade to children),
+   but every var() carries a literal fallback so the panel is self-contained
+   even if rendered outside the shell. Black / white / beige. */
+.admin-overview {
+  --ao-ink: var(--admin-ink, #111111);
+  --ao-muted: var(--admin-muted, #5f5a52);
+  --ao-paper: var(--admin-paper, #ffffff);
+  --ao-sand: var(--admin-sand, #f4efe6);
+  --ao-line: var(--admin-line, #ddd4c6);
+  --ao-danger: var(--admin-danger, #8b2f2f);
+  color: var(--ao-ink);
+}
+
+.admin-overview-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-overview-toolbar h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.admin-overview-sub {
+  margin: 0;
+  color: var(--ao-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-overview-refresh {
+  appearance: none;
+  border: 1px solid var(--ao-line);
+  background: var(--ao-paper);
+  color: var(--ao-ink);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+}
+.admin-overview-refresh:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(17, 17, 17, 0.06);
+}
+.admin-overview-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.admin-overview-refresh:focus-visible {
+  outline: 3px solid rgba(17, 17, 17, 0.18);
+  outline-offset: 2px;
+}
+
+.admin-overview-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--ao-danger);
+  border-left-width: 5px;
+  background: #fbf1f1;
+  color: var(--ao-ink);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.admin-overview-error button {
+  appearance: none;
+  border: 1px solid var(--ao-danger);
+  background: var(--ao-paper);
+  color: var(--ao-danger);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.admin-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.admin-stat {
+  background: var(--ao-paper);
+  border: 1px solid var(--ao-line);
+  border-radius: 14px;
+  padding: 16px 16px 14px;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.admin-stat:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px rgba(17, 17, 17, 0.05);
+}
+.admin-stat.is-loading {
+  opacity: 0.7;
+}
+
+.admin-stat.is-attention {
+  border-left: 4px solid var(--ao-danger);
+  background: #fffaf6;
+}
+
+.admin-stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.admin-stat-label {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ao-muted);
+  font-weight: 600;
+}
+.admin-stat-flag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ao-danger);
+  background: #f6e3e3;
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.admin-stat-value {
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 4px;
+}
+.admin-stat-hint {
+  font-size: 12px;
+  color: var(--ao-muted);
+  line-height: 1.4;
+}
+
+.admin-activity {
+  margin-top: 22px;
+  border-top: 1px solid var(--ao-line);
+  padding-top: 18px;
+}
+.admin-activity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.admin-activity-head h4 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.admin-activity-count {
+  font-size: 12px;
+  color: var(--ao-muted);
+}
+
+.admin-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.admin-activity-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 10px;
+}
+.admin-activity-row:hover {
+  background: var(--ao-sand);
+}
+.admin-activity-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ao-ink);
+}
+.admin-activity-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.admin-activity-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ao-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-activity-meta {
+  font-size: 12px;
+  color: var(--ao-muted);
+}
+.admin-activity-empty {
+  margin: 0;
+  color: var(--ao-muted);
+  font-size: 13px;
+  padding: 8px;
+}
+
+/* skeleton rows while first loading */
+.admin-activity-row.is-skeleton {
+  pointer-events: none;
+}
+.admin-activity-row.is-skeleton .admin-activity-dot {
+  background: var(--ao-line);
+}
+.admin-activity-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--ao-sand), #efe7d8, var(--ao-sand));
+  background-size: 200% 100%;
+  animation: ao-shimmer 1.2s ease-in-out infinite;
+  flex: 1;
+}
+@keyframes ao-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 560px) {
+  .admin-overview-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .admin-overview-refresh {
+    align-self: flex-start;
+  }
+  .admin-stat-value {
+    font-size: 26px;
+  }
+}

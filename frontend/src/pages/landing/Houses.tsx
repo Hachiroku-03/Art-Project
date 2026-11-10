@@ -4,14 +4,14 @@ import { Band, bandStyles } from './Band'
 import s from './Houses.module.css'
 
 const HOUSES = [
-  { n: 'Okonkwo House', c: 'Port Harcourt', k: 'Painting · Works on paper' },
-  { n: 'Lagos Salon', c: 'Lagos', k: 'Contemporary · Photography' },
-  { n: 'Rele Rooms', c: 'Lagos', k: 'Emerging artists' },
-  { n: 'The Annex PH', c: 'Port Harcourt', k: 'Sculpture · Textile' },
-  { n: 'Nike Floor', c: 'Lagos · Osogbo', k: 'Adire · Batik · Beadwork' },
-  { n: 'Kó Studio', c: 'Lagos', k: 'Modern Nigerian masters' },
-  { n: 'Abuja Drawing Room', c: 'Abuja', k: 'Drawing · Print' },
-  { n: 'Retro Africa', c: 'Abuja', k: 'Pan-African contemporary' },
+  { n: 'Meridian House',    c: 'Lisbon',     k: 'Painting · Works on paper' },
+  { n: 'Harbour Salon',     c: 'Berlin',     k: 'Contemporary · Photography' },
+  { n: 'Atelier Rooms',     c: 'New York',   k: 'Emerging artists' },
+  { n: 'The Annex',         c: 'London',     k: 'Sculpture · Textile' },
+  { n: 'Northlight Floor',  c: 'Copenhagen', k: 'Fibre · Print · Beadwork' },
+  { n: 'Kestrel Studio',    c: 'Seoul',      k: 'Modern & Contemporary' },
+  { n: 'Drawing Room',      c: 'Melbourne',  k: 'Drawing · Print' },
+  { n: 'Retro Modern',      c: 'Toronto',    k: 'International contemporary' },
 ]
 
 export const Houses = forwardRef<HTMLElement>(function Houses(_, ref) {

@@ -14,6 +14,7 @@ This service owns:
 - wallet ledger
 - VIP subscription
 - /me endpoint used by Navbar
+- admin console endpoints (/admin/*)
 
 IMPORTANT LEDGER PARITY:
 This service shares the same ledger_entries table as backend port 8001.
@@ -58,7 +59,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL missing — check your .env file")
 
-# Admins who may approve/reject house applications.
+# Admins who may approve/reject house applications and access /admin/*.
 # Comma-separated usernames in .env.
 ADMIN_USERNAMES = {
     u.strip()
@@ -67,8 +68,6 @@ ADMIN_USERNAMES = {
 }
 
 # Monthly VIP price, debited on signup/renewal.
-# Keep this env-overridable. If your wallet is NGN-denominated, this should
-# probably be an NGN amount, not USD 20.
 VIP_PRICE = float(os.getenv("VIP_PRICE", "20"))
 
 # Mock/dev wallet top-up cap.
@@ -83,8 +82,6 @@ HOLDERS = {PLATFORM_REVENUE, ESCROW}
 
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 FACE_THRESHOLD = float(os.getenv("FACE_THRESHOLD", "0.363"))
-# Google Identity Services (credential / ID-token flow). Public id only —
-# this flow needs NO client_secret and NO redirect URI (see the endpoint note).
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
@@ -247,7 +244,6 @@ def init_db():
         """
     )
 
-    # Expand money precision safely if an older table used NUMERIC(12,2).
     cursor.execute(
         """
         ALTER TABLE ledger_entries
@@ -315,11 +311,6 @@ def hash_password(password: str, salt: str) -> str:
 
 
 def _valid_embedding(embedding) -> list[float] | None:
-    """
-    Validate a face embedding before storing/comparing.
-
-    Must be a non-empty list of finite floats.
-    """
     if not isinstance(embedding, list) or not embedding:
         return None
 
@@ -335,11 +326,6 @@ def _valid_embedding(embedding) -> list[float] | None:
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """
-    Cosine similarity.
-
-    If dimensions differ, return 0.0 instead of silently truncating with zip().
-    """
     if not a or not b or len(a) != len(b):
         return 0.0
 
@@ -352,10 +338,8 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
     return dot / (norm_a * norm_b)
 
+
 def _http_get_json(url: str, timeout: float = 8.0):
-    """stdlib GET -> (status, parsed_json_or_None, error_string_or_None).
-    No new dependency (no requests/PyJWT) so a missing module can't crash the
-    service the way a dropped export has before."""
     req = urllib.request.Request(url, headers={"User-Agent": "thespace-auth/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -381,28 +365,11 @@ def _http_get_json(url: str, timeout: float = 8.0):
 
 
 def _verify_google_id_token(credential: str):
-    """
-    Verify a GSI ID token (the `credential` the frontend posts).
-    Returns (claims, None) or (None, error).
-
-    Google's tokeninfo checks the SIGNATURE and EXPIRY server-side; we then
-    ENFORCE audience + issuer + expiry + verified-email locally. The audience
-    check is mandatory: without it a valid Google token minted for a DIFFERENT
-    app would be accepted here (cross-app replay).
-
-    No client_secret is involved (credential flow, not code flow) — which is why
-    the server needs only the public client_id and registers no redirect URI.
-
-    tokeninfo is rate-limited; at real scale swap it for local JWKS verification
-    (PyJWT + https://www.googleapis.com/oauth2/v3/certs) keeping the SAME
-    aud/iss/exp checks.
-    """
     if not credential:
         return None, "missing credential"
     if not GOOGLE_CLIENT_ID:
         return None, "Google OAuth not configured on the server"
 
-    # ID tokens are base64url + dots -> already URL-safe, no quoting needed.
     status, claims, err = _http_get_json(f"{GOOGLE_TOKENINFO_URL}?id_token={credential}")
     if status != 200 or not claims:
         return None, err or "token rejected by Google"
@@ -435,8 +402,6 @@ def _sanitize_username_base(email: str) -> str:
 
 
 def _unique_username(cursor, base: str) -> str:
-    """Google gives no username; users.username is the identity key everywhere
-    (ledger user_name, follows, posts), so synthesize a unique one from email."""
     candidate = base
     n = 2
     while n <= 60:
@@ -447,13 +412,9 @@ def _unique_username(cursor, base: str) -> str:
         n += 1
     return f"{base}{secrets.token_hex(2)}"
 
+
 # ---------------------------------------------------------------------------
 # Ledger helpers — KEEP IN SYNC WITH backend/ledger.py on port 8001
-#
-# Per-currency + advisory-locked.
-# The lock key f"{account}|{currency}" must be byte-identical to 8001's.
-# Do not "optimize" this back to a users-row FOR UPDATE; that breaks
-# cross-process serialization between port 8000 and port 8001.
 # ---------------------------------------------------------------------------
 
 def _is_holder(account: str) -> bool:
@@ -487,12 +448,6 @@ def _valid_amount(amount) -> float | None:
 
 
 def _lock_account(cursor, account: str, currency: str) -> bool:
-    """
-    Serialize balance mutations across both processes.
-
-    Returns False if a real user account does not exist.
-    Holder accounts like __escrow__ and __platform_revenue__ have no users row.
-    """
     cursor.execute(
         "SELECT pg_advisory_xact_lock(hashtext(%s))",
         (f"{account}|{currency}",),
@@ -538,13 +493,7 @@ def spend(
     cursor.execute(
         """
         INSERT INTO ledger_entries (
-            user_name,
-            amount,
-            currency,
-            kind,
-            reference,
-            ref_table,
-            ref_id
+            user_name, amount, currency, kind, reference, ref_table, ref_id
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
@@ -574,13 +523,7 @@ def credit(
     cursor.execute(
         """
         INSERT INTO ledger_entries (
-            user_name,
-            amount,
-            currency,
-            kind,
-            reference,
-            ref_table,
-            ref_id
+            user_name, amount, currency, kind, reference, ref_table, ref_id
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
@@ -591,30 +534,10 @@ def credit(
 
 
 # ---------------------------------------------------------------------------
-# VIP sweep — lazy monthly renewal, no scheduler.
-#
-# Runs at the single-call sites where VIP is actually needed:
-#   login, /wallet, /vip/*, /wallet/topup
-#
-# It is intentionally NOT run inside the public /sales loop. The auction floor
-# gate reads the subscription table directly through backend helpers.
-#
-# Concurrency:
-# The claim UPDATE is serialized by the subscription row lock. Under READ
-# COMMITTED, a second concurrent sweep re-evaluates renews_at <= now() after the
-# lock releases and matches 0 rows, so a period is never charged twice.
-#
-# A SAVEPOINT isolates the claim so a FAILED charge rolls back only the claim,
-# not the caller's whole transaction.
+# VIP sweep
 # ---------------------------------------------------------------------------
 
 def _sweep_vip(cursor, viewer: str) -> str:
-    """
-    Normalize the subscription, charge/lapse as due, re-sync users.tier.
-
-    Caller owns the transaction.
-    Returns the effective tier after sweeping.
-    """
     if not viewer:
         return "standard"
 
@@ -627,8 +550,6 @@ def _sweep_vip(cursor, viewer: str) -> str:
     if not u:
         return "standard"
 
-    # Grandfather: legacy tier='vip' with no sub row gets the current month free,
-    # then renews like everyone else. Non-VIPs never get a row.
     cursor.execute(
         "SELECT 1 FROM vip_subscriptions WHERE user_name = %s",
         (viewer,),
@@ -639,12 +560,7 @@ def _sweep_vip(cursor, viewer: str) -> str:
             cursor.execute(
                 """
                 INSERT INTO vip_subscriptions (
-                    user_name,
-                    status,
-                    price,
-                    renews_at,
-                    started_at,
-                    periods_paid
+                    user_name, status, price, renews_at, started_at, periods_paid
                 )
                 VALUES (%s, 'active', %s, CURRENT_TIMESTAMP + INTERVAL '1 month', CURRENT_TIMESTAMP, 0)
                 """,
@@ -653,7 +569,6 @@ def _sweep_vip(cursor, viewer: str) -> str:
         else:
             return "standard"
 
-    # Cancelled-and-expired -> stop, no charge. Access already ran to renews_at.
     cursor.execute(
         """
         UPDATE vip_subscriptions
@@ -666,7 +581,6 @@ def _sweep_vip(cursor, viewer: str) -> str:
         (viewer,),
     )
 
-    # Active-or-past_due, not cancelled, and due -> optimistic claim, then charge.
     cursor.execute("SAVEPOINT vip_sweep")
 
     cursor.execute(
@@ -701,8 +615,6 @@ def _sweep_vip(cursor, viewer: str) -> str:
         )
 
         if not ok:
-            # Undo the claim only. Do not consume renews_at/periods_paid for
-            # money we did not take.
             cursor.execute("ROLLBACK TO SAVEPOINT vip_sweep")
             cursor.execute(
                 """
@@ -715,9 +627,6 @@ def _sweep_vip(cursor, viewer: str) -> str:
                 (err, viewer),
             )
 
-    # Authoritative cache sync:
-    # tier == 'vip' iff an active sub is in-date.
-    # cancelled_at does NOT reduce access, so it is not part of this predicate.
     cursor.execute(
         """
         SELECT
@@ -790,13 +699,7 @@ def signup(data: dict):
 
         cursor.execute(
             """
-            INSERT INTO users (
-                username,
-                email,
-                password_hash,
-                salt,
-                role
-            )
+            INSERT INTO users (username, email, password_hash, salt, role)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
             """,
@@ -807,13 +710,7 @@ def signup(data: dict):
 
         cursor.execute(
             """
-            INSERT INTO profiles (
-                user_id,
-                display_name,
-                bio,
-                extra,
-                language
-            )
+            INSERT INTO profiles (user_id, display_name, bio, extra, language)
             VALUES (%s, %s, %s, %s, %s)
             """,
             (user_id, full_name, "", json.dumps(extra), language),
@@ -872,8 +769,6 @@ def login(data: dict):
         if hash_password(password, row["salt"]) != row["password_hash"]:
             return {"error": "Incorrect password."}
 
-        # Sweep VIP first so the tier the client caches is never stale at
-        # session start.
         tier = _sweep_vip(cursor, row["username"])
 
         conn.commit()
@@ -896,16 +791,6 @@ def login(data: dict):
 
 @app.post("/auth/google")
 def auth_google(data: dict):
-    """
-    Google Identity Services credential (ID-token) sign-in / sign-up.
-
-    The frontend posts the `credential` GSI handed it. We verify it, then EITHER
-    log in an existing user matched by email OR create a password-less user
-    (random salt + independent random hash -> password login can never match) and
-    return the SAME session shape as /login, so the existing setSession() and
-    every viewer-param endpoint keep working unchanged. One endpoint = both
-    "Sign in with Google" and "Sign up with Google".
-    """
     credential = str(data.get("credential") or "").strip()
 
     claims, verr = _verify_google_id_token(credential)
@@ -922,7 +807,6 @@ def auth_google(data: dict):
     try:
         cursor = conn.cursor()
 
-        # 1) Link to an existing account by email (password user OR prior Google user).
         cursor.execute(
             "SELECT id, username, role, tier FROM users WHERE lower(email) = lower(%s)",
             (email,),
@@ -931,7 +815,6 @@ def auth_google(data: dict):
 
         if existing:
             username = existing["username"]
-            # Backfill avatar/display ONLY when empty; never overwrite a chosen value.
             cursor.execute(
                 """
                 UPDATE profiles
@@ -953,11 +836,10 @@ def auth_google(data: dict):
                 "created": False,
             }
 
-        # 2) New Google user -> create (password-less).
         base = _sanitize_username_base(email)
         username = _unique_username(cursor, base)
         salt = secrets.token_hex(16)
-        pw_hash = secrets.token_hex(32)  # independent random -> no password matches
+        pw_hash = secrets.token_hex(32)
 
         cursor.execute(
             """
@@ -977,7 +859,7 @@ def auth_google(data: dict):
             (user_id, name or username, "", json.dumps({}), language, picture),
         )
 
-        tier = _sweep_vip(cursor, username)  # no sub row -> 'standard'
+        tier = _sweep_vip(cursor, username)
         conn.commit()
 
         return {
@@ -990,9 +872,6 @@ def auth_google(data: dict):
         }
 
     except pg_errors.UniqueViolation:
-        # Raced with another request for the same email -> fall back to login.
-        # (Best-effort: if the other txn hasn't committed yet this returns 500
-        # and the user simply retries. Fine at app scale.)
         conn.rollback()
         cursor = conn.cursor()
         cursor.execute(
@@ -1017,19 +896,13 @@ def auth_google(data: dict):
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         conn.close()
-        
+
+
 # ---------------------------------------------------------------------------
 # /me and /profile
 #
-# This is the missing endpoint that caused:
-#   GET http://localhost:8000/me?viewer=ken 404
-#
-# It returns both:
-#   { "user": { ... } }
-# and flat fields:
-#   { "username": ..., "role": ..., ... }
-#
-# That maximizes compatibility with older/newer Navbar code.
+# CHANGED: now returns "is_admin" so the frontend AdminRoute can gate the
+# admin panel. Admin identity comes from ADMIN_USERNAMES env, NOT users.role.
 # ---------------------------------------------------------------------------
 
 def _me_response(ident: str):
@@ -1096,11 +969,7 @@ def _me_response(ident: str):
 
         ngn_balance = balances.get(DEFAULT_CURRENCY, "0.00")
 
-        # Determine effective VIP tier without mutating/charging in a GET.
-        #
-        # If a subscription row exists, trust the subscription table.
-        # If no subscription row exists, fall back to the cached users.tier so
-        # legacy grandfathered VIPs do not instantly disappear from the navbar.
+        # Effective VIP tier without mutating/charging in a GET.
         cursor.execute(
             "SELECT 1 FROM vip_subscriptions WHERE user_name = %s",
             (username,),
@@ -1149,6 +1018,9 @@ def _me_response(ident: str):
         sub_row = cursor.fetchone()
         subscription = dict(sub_row) if sub_row else None
 
+        # ---- THIS IS THE MISSING LINE ----
+        is_admin = username in ADMIN_USERNAMES
+
         payload = {
             "username": username,
             "email": row["email"],
@@ -1156,6 +1028,7 @@ def _me_response(ident: str):
             "tier": effective_tier,
             "cached_tier": row["tier"] or "standard",
             "is_vip": effective_tier == "vip",
+            "is_admin": is_admin,
             "display_name": row["display_name"] or username,
             "avatar_url": row["avatar_url"],
             "banner_url": row["banner_url"],
@@ -1166,8 +1039,6 @@ def _me_response(ident: str):
             "vip_subscription": subscription,
         }
 
-        # Return both shapes:
-        # { user: {...}, username: ..., role: ..., ... }
         return {
             "user": payload,
             **payload,
@@ -1360,7 +1231,6 @@ def login_face(data: dict):
                 best_tier = row["tier"]
 
         if best_user is not None and best_score >= FACE_THRESHOLD:
-            # Same sweep as password login.
             tier = _sweep_vip(cursor, best_user)
             conn.commit()
 
@@ -1387,11 +1257,7 @@ def login_face(data: dict):
 
 
 # ---------------------------------------------------------------------------
-# VIP membership — monthly subscription.
-#
-# upgrade = charge for current period + set renews_at (+1 month).
-# cancel  = stop auto-renew at period end; access continues to renews_at; no refund.
-# resume  = clear pending cancel while paid time remains; free, that month is bought.
+# VIP membership
 # ---------------------------------------------------------------------------
 
 @app.post("/vip/upgrade")
@@ -1406,15 +1272,11 @@ def vip_upgrade(data: dict):
     try:
         cursor = conn.cursor()
 
-        # Normalize first. A lapsed-active must not read as "already vip".
         _sweep_vip(cursor, viewer)
 
         cursor.execute(
             """
-            SELECT
-                status,
-                cancelled_at,
-                renews_at
+            SELECT status, cancelled_at, renews_at
             FROM vip_subscriptions
             WHERE user_name = %s
             FOR UPDATE
@@ -1422,7 +1284,6 @@ def vip_upgrade(data: dict):
             (viewer,),
         )
 
-        # Already active and paid through -> no charge.
         cursor.execute(
             """
             SELECT 1
@@ -1439,7 +1300,6 @@ def vip_upgrade(data: dict):
             conn.rollback()
             return {"error": "you are already a VIP member"}
 
-        # Paid-through-but-cancelled -> resume auto-renew, no charge.
         cursor.execute(
             """
             SELECT 1
@@ -1485,7 +1345,6 @@ def vip_upgrade(data: dict):
                 "renews_at": cursor.fetchone()["renews_at"],
             }
 
-        # Create / resume-from-past_due / reactivate / renew-lapsed -> charge.
         ok, err, bal = spend(
             cursor,
             viewer,
@@ -1503,26 +1362,13 @@ def vip_upgrade(data: dict):
         cursor.execute(
             """
             INSERT INTO vip_subscriptions (
-                user_name,
-                status,
-                price,
-                started_at,
-                renews_at,
-                cancelled_at,
-                last_charged_at,
-                periods_paid,
-                failure_reason
+                user_name, status, price, started_at, renews_at,
+                cancelled_at, last_charged_at, periods_paid, failure_reason
             )
             VALUES (
-                %s,
-                'active',
-                %s,
-                CURRENT_TIMESTAMP,
+                %s, 'active', %s, CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP + INTERVAL '1 month',
-                NULL,
-                CURRENT_TIMESTAMP,
-                1,
-                NULL
+                NULL, CURRENT_TIMESTAMP, 1, NULL
             )
             ON CONFLICT (user_name) DO UPDATE SET
                 status = 'active',
@@ -1582,10 +1428,7 @@ def vip_cancel(data: dict):
 
         cursor.execute(
             """
-            SELECT
-                status,
-                cancelled_at,
-                renews_at::text AS renews_at
+            SELECT status, cancelled_at, renews_at::text AS renews_at
             FROM vip_subscriptions
             WHERE user_name = %s
             FOR UPDATE
@@ -1615,7 +1458,6 @@ def vip_cancel(data: dict):
             (viewer,),
         )
 
-        # Tier stays 'vip' until renews_at. The sweep lapses it then.
         conn.commit()
 
         return {
@@ -1633,12 +1475,6 @@ def vip_cancel(data: dict):
 
 @app.get("/vip/status")
 def vip_status(viewer: str = ""):
-    """
-    Light, canonical VIP truth.
-
-    Sweeps, then returns subscription + balance so the pricing page can warn:
-    "your balance won't cover the next renewal".
-    """
     if not viewer:
         return {"error": "viewer required"}
 
@@ -1649,9 +1485,6 @@ def vip_status(viewer: str = ""):
 
         tier = _sweep_vip(cursor, viewer)
 
-        # VIP is NGN-denominated, so "can you afford the next renewal" must look
-        # at the NGN balance ONLY. Summing USD into it would falsely tell a
-        # lapsed member they're funded when their dollars cannot pay a naira bill.
         cursor.execute(
             """
             SELECT COALESCE(SUM(amount), 0)::text AS bal
@@ -1701,10 +1534,7 @@ def vip_status(viewer: str = ""):
 
 
 # ---------------------------------------------------------------------------
-# Wallet — balance, history, mock top-up, paddle recovery.
-#
-# Top-up sweeps after crediting, so adding funds revives a past_due membership
-# without the user touching the pricing page.
+# Wallet
 # ---------------------------------------------------------------------------
 
 @app.get("/wallet")
@@ -1719,10 +1549,6 @@ def wallet(viewer: str = ""):
 
         tier = _sweep_vip(cursor, viewer)
 
-        # Per-currency: a user can hold NGN and USD independently.
-        # `balance` stays the NGN figure for back-compat with any UI reading one
-        # number. `balances` is the full per-currency map the wallet page should
-        # render. History carries currency so each row can be labeled.
         cursor.execute(
             """
             SELECT
@@ -1798,15 +1624,6 @@ def wallet(viewer: str = ""):
 
 @app.post("/wallet/topup")
 def wallet_topup(data: dict):
-    """
-    DEV/MOCK top-up.
-
-    The Paystack rail on backend port 8001 supersedes this for real money:
-        webhooks.py charge.success -> credit()
-
-    This endpoint is kept so a wallet can be funded in local test without a
-    provider. Currency-aware, default NGN, matching the webhook path.
-    """
     viewer = str(data.get("viewer") or "").strip()
 
     if not viewer:
@@ -1847,13 +1664,10 @@ def wallet_topup(data: dict):
             conn.rollback()
             return {"error": err}
 
-        # Revive a past_due NGN membership with fresh NGN funds.
         _sweep_vip(cursor, viewer)
 
         conn.commit()
 
-        # credit() already returns the new balance for THIS currency, so no
-        # cross-currency re-sum here. The old SUM would have mixed USD in.
         return {
             "message": "funds added",
             "balance": f"{bal:,.2f}",
@@ -1965,12 +1779,7 @@ def house_apply(data: dict):
         cursor.execute(
             """
             INSERT INTO house_applications (
-                user_id,
-                house_name,
-                statement,
-                license,
-                contact_email,
-                status
+                user_id, house_name, statement, license, contact_email, status
             )
             VALUES (%s, %s, %s, %s, %s, 'pending')
             RETURNING id
@@ -2204,6 +2013,403 @@ def house_reject(app_id: int, data: dict):
 
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# ADMIN console endpoints (auth service, port 8000).
+# All gated by _is_admin(viewer) (ADMIN_USERNAMES).
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/overview")
+def admin_overview(viewer: str = ""):
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        def _table_exists(name: str) -> bool:
+            cursor.execute("SELECT to_regclass(%s) IS NOT NULL AS e", (name,))
+            return bool((cursor.fetchone() or {}).get("e"))
+
+        def _count(sql: str) -> int:
+            cursor.execute(sql)
+            r = cursor.fetchone()
+            return int((r or {}).get("c") or 0)
+
+        users = _count("SELECT COUNT(*)::int AS c FROM users")
+        houses = _count("SELECT COUNT(*)::int AS c FROM users WHERE role = 'house'")
+        pending = _count(
+            "SELECT COUNT(*)::int AS c FROM house_applications WHERE status = 'pending'"
+        )
+
+        live = _count("SELECT COUNT(*)::int AS c FROM auctions WHERE status = 'live'") \
+            if _table_exists("auctions") else 0
+        upcoming = _count("SELECT COUNT(*)::int AS c FROM auctions WHERE status = 'upcoming'") \
+            if _table_exists("auctions") else 0
+        open_reports = _count("SELECT COUNT(*)::int AS c FROM post_reports WHERE status = 'open'") \
+            if _table_exists("post_reports") else 0
+
+        cursor.execute(
+            """
+            SELECT h.house_name, h.status, h.created_at::text AS created_at,
+                   u.username AS actor
+            FROM house_applications h
+            JOIN users u ON u.id = h.user_id
+            ORDER BY h.created_at DESC
+            LIMIT 8
+            """
+        )
+        recent = [
+            {
+                "kind": "house_application",
+                "title": f"{r['house_name']} · {r['status']}",
+                "actor": r["actor"],
+                "created_at": r["created_at"],
+            }
+            for r in cursor.fetchall()
+        ]
+
+        return {
+            "users": users,
+            "houses": houses,
+            "pending_house_applications": pending,
+            "live_sales": live,
+            "upcoming_sales": upcoming,
+            "open_reports": open_reports,
+            "recent_activity": recent,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/admin/houses/applications")
+def admin_list_applications(viewer: str = "", status: str = "pending", limit: int = 50):
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    status = (status or "pending").strip().lower()
+    limit = max(1, min(int(limit or 50), 200))
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        where = []
+        params = []
+        if status != "all":
+            where.append("h.status = %s")
+            params.append(status)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        cursor.execute(
+            f"""
+            SELECT
+                h.id,
+                h.user_id,
+                u.username,
+                COALESCE(p.display_name, u.username) AS display_name,
+                p.avatar_url,
+                u.role,
+                h.house_name,
+                h.statement   AS description,
+                h.license,
+                h.contact_email,
+                h.admin_note,
+                h.status,
+                h.created_at::text AS created_at,
+                h.decided_at::text AS decided_at,
+                (SELECT COUNT(*) FROM auctions a WHERE a.host_username = u.username) AS sales_count
+            FROM house_applications h
+            JOIN users u ON u.id = h.user_id
+            LEFT JOIN profiles p ON p.user_id = u.id
+            {where_sql}
+            ORDER BY h.created_at DESC
+            LIMIT %s
+            """,
+            (*params, limit),
+        )
+
+        rows = [dict(r) for r in cursor.fetchall()]
+        return {"applications": rows, "status_filter": status}
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/admin/houses/applications/{app_id}/approve")
+def admin_approve_application(app_id: int, data: dict):
+    viewer = str(data.get("viewer") or "").strip()
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    note = str(data.get("note") or "").strip()
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT h.id, h.user_id, h.status, h.house_name, u.username
+            FROM house_applications h
+            JOIN users u ON u.id = h.user_id
+            WHERE h.id = %s
+            FOR UPDATE OF h
+            """,
+            (app_id,),
+        )
+        app = cursor.fetchone()
+        if not app:
+            return {"error": "application not found"}
+        if app["status"] == "approved":
+            return {"message": "already approved", "application_id": app_id}
+
+        cursor.execute(
+            """
+            UPDATE house_applications
+            SET status = 'approved', decided_at = CURRENT_TIMESTAMP, admin_note = %s
+            WHERE id = %s
+            """,
+            (note, app_id),
+        )
+        cursor.execute("UPDATE users SET role = 'house' WHERE id = %s", (app["user_id"],))
+
+        conn.commit()
+        return {"message": "approved", "application_id": app_id, "username": app["username"]}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/admin/houses/applications/{app_id}/reject")
+def admin_reject_application(app_id: int, data: dict):
+    viewer = str(data.get("viewer") or "").strip()
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    reason = str(data.get("reason") or data.get("note") or "").strip()
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT h.id, h.status
+            FROM house_applications h
+            WHERE h.id = %s
+            FOR UPDATE
+            """,
+            (app_id,),
+        )
+        app = cursor.fetchone()
+        if not app:
+            return {"error": "application not found"}
+        if app["status"] == "rejected":
+            return {"message": "already rejected", "application_id": app_id}
+        if app["status"] == "approved":
+            return {"error": "cannot reject an approved house (revoke instead)"}
+
+        cursor.execute(
+            """
+            UPDATE house_applications
+            SET status = 'rejected', decided_at = CURRENT_TIMESTAMP, admin_note = %s
+            WHERE id = %s
+            """,
+            (reason, app_id),
+        )
+
+        conn.commit()
+        return {"message": "rejected", "application_id": app_id}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.post("/admin/houses/{username}/revoke")
+def admin_revoke_house(username: str, data: dict):
+    viewer = str(data.get("viewer") or "").strip()
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT id, username, role FROM users WHERE lower(username) = lower(%s)",
+            (username,),
+        )
+        u = cursor.fetchone()
+        if not u:
+            return {"error": "unknown user"}
+        if u["role"] != "house":
+            return {"message": "not an accredited house", "username": u["username"]}
+
+        cursor.execute("UPDATE users SET role = 'artist' WHERE id = %s", (u["id"],))
+        cursor.execute(
+            """
+            UPDATE house_applications
+            SET status = 'revoked', decided_at = CURRENT_TIMESTAMP, admin_note = %s
+            WHERE user_id = %s AND status = 'approved'
+            """,
+            (f"revoked by {viewer}", u["id"]),
+        )
+
+        conn.commit()
+        return {"message": "house accreditation revoked", "username": u["username"]}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/admin/users")
+def admin_list_users(
+    viewer: str = "",
+    q: str = "",
+    role: str = "all",
+    limit: int = 30,
+    offset: int = 0,
+):
+    if not _is_admin(viewer):
+        return {"error": "admin only"}
+
+    limit = max(1, min(int(limit or 30), 100))
+    offset = max(0, int(offset or 0))
+    role = (role or "all").strip().lower()
+    query = (q or "").strip()
+    search = f"%{query}%" if query else None
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        def _exists(name: str) -> bool:
+            cursor.execute("SELECT to_regclass(%s) IS NOT NULL AS e", (name,))
+            return bool((cursor.fetchone() or {}).get("e"))
+
+        has_auctions = _exists("auctions")
+        has_follows = _exists("follows")
+        has_reports = _exists("post_reports") and _exists("posts")
+
+        agg = []
+        if has_auctions:
+            agg.append(
+                "(SELECT COUNT(*) FROM auctions a "
+                "WHERE a.host_username = u.username) AS sales_count"
+            )
+        if has_reports:
+            agg.append(
+                """(SELECT COUNT(*)
+                   FROM post_reports pr
+                   JOIN posts ps ON ps.id = pr.post_id
+                   JOIN users au ON au.id = ps.author_id
+                   WHERE au.username = u.username AND pr.status = 'open')
+                   AS reports_count"""
+            )
+        if has_follows:
+            agg.append(
+                "(SELECT COUNT(*) FROM follows f "
+                "WHERE f.followee = u.username) AS followers_count"
+            )
+        agg_sql = (", " + ", ".join(agg)) if agg else ""
+
+        where = []
+        params = []
+        if search:
+            where.append(
+                "(u.username ILIKE %s "
+                "OR COALESCE(p.display_name, '') ILIKE %s "
+                "OR COALESCE(u.email, '') ILIKE %s)"
+            )
+            params += [search, search, search]
+        if role in ("artist", "house"):
+            where.append("u.role = %s")
+            params.append(role)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*)::int AS c
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            {where_sql}
+            """,
+            tuple(params),
+        )
+        total = int((cursor.fetchone() or {}).get("c") or 0)
+
+        cursor.execute(
+            f"""
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                u.role,
+                u.tier,
+                p.display_name,
+                p.avatar_url,
+                p.bio,
+                (SELECT h.status FROM house_applications h
+                 WHERE h.user_id = u.id
+                 ORDER BY h.created_at DESC LIMIT 1) AS house_status,
+                (SELECT h.house_name FROM house_applications h
+                 WHERE h.user_id = u.id AND h.status = 'approved'
+                 ORDER BY h.decided_at DESC NULLS LAST, h.created_at DESC
+                 LIMIT 1) AS house_name
+                {agg_sql}
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            {where_sql}
+            ORDER BY u.username
+            LIMIT %s OFFSET %s
+            """,
+            (*params, limit, offset),
+        )
+
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["is_admin"] = d.get("username") in ADMIN_USERNAMES
+            rows.append(d)
+
+        return {"users": rows, "total": total, "limit": limit, "offset": offset}
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -12,13 +12,13 @@ export type Work = { src: string; title: string; artist: string; year: string; m
 
 /** The wall. Sizes are metres-ish; the corridor lays them out left→right. */
 export const WORKS: Work[] = [
-  { src: a0, title: 'Untitled (Ochre Field)', artist: 'Adaeze Okonkwo', year: '2024', medium: 'Oil on linen',             w: 3.2, h: 1.8 },
-  { src: a1, title: 'Indigo Vespers',         artist: 'Kelechi Mba',     year: '2023', medium: 'Acrylic on canvas',        w: 1.7, h: 2.1 },
-  { src: a3, title: 'Three Marks',            artist: 'Ife Adeyemi',     year: '2025', medium: 'Ink and gesso on board',   w: 2.5, h: 2.0 },
-  { src: a2, title: 'Two Seated',             artist: 'Adaeze Okonkwo', year: '2022', medium: 'Oil on canvas',            w: 1.7, h: 2.1 },
-  { src: a4, title: 'Cadmium Argument',       artist: 'Tobi Lawal',      year: '2024', medium: 'Oil stick on paper',       w: 2.0, h: 2.0 },
-  { src: a5, title: 'Adire Grid',             artist: 'Mara Okoye',      year: '2025', medium: 'Indigo dye on cotton',     w: 1.7, h: 2.1 },
-  { src: a6, title: 'Harmattan, Lagoon',      artist: 'Kelechi Mba',     year: '2024', medium: 'Oil on linen',             w: 3.0, h: 2.0 },
+  { src: a0, title: 'Untitled (Ochre Field)', artist: 'Mara Vance',     year: '2024', medium: 'Oil on linen',           w: 3.2, h: 1.8 },
+  { src: a1, title: 'Indigo Vespers',         artist: 'Julian Reyes',   year: '2023', medium: 'Acrylic on canvas',      w: 1.7, h: 2.1 },
+  { src: a3, title: 'Three Marks',            artist: 'Anouk Deveraux', year: '2025', medium: 'Ink and gesso on board', w: 2.5, h: 2.0 },
+  { src: a2, title: 'Two Seated',             artist: 'Mara Vance',     year: '2022', medium: 'Oil on canvas',          w: 1.7, h: 2.1 },
+  { src: a4, title: 'Cadmium Argument',       artist: 'Elias Thorne',   year: '2024', medium: 'Oil stick on paper',     w: 2.0, h: 2.0 },
+  { src: a5, title: 'Indigo Grid',            artist: 'Nadia Brandt',   year: '2025', medium: 'Indigo dye on cotton',   w: 1.7, h: 2.1 },
+  { src: a6, title: 'Coastal Haze',           artist: 'Julian Reyes',   year: '2024', medium: 'Oil on linen',           w: 3.0, h: 2.0 },
 ]
 
 const GAP = 1.9

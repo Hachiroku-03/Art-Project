@@ -1,3 +1,8 @@
+# backend/routers/community.py — leak-wrapped read endpoints + _resolve_viewer.
+# Every write endpoint (calls CRUD, interest, group meta, sweep) is byte-identical
+# to your paste — they already used try/except/finally. Only the 7 bare reads and
+# the _resolve_viewer helper changed, and only structurally (no new except/commit,
+# so error behaviour is exactly as today, minus the leak).
 import json
 import os
 
@@ -54,11 +59,14 @@ def _canonical_username(cursor, name: str):
 def _resolve_viewer(viewer_raw: str):
     if not viewer_raw:
         return None
-    conn = get_db()
-    cursor = conn.cursor()
-    viewer = _canonical_username(cursor, viewer_raw)
-    conn.close()
-    return viewer
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        return _canonical_username(cursor, viewer_raw)
+    finally:
+        if conn:
+            conn.close()
 
 
 def _parse_json(value, default):
@@ -768,73 +776,77 @@ def community_discover(
     category = (category or "").strip() or None
     scene = (scene or "").strip() or None
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    where = [
-        "c.kind = 'group'",
-        "c.join_mode = ANY(%s)",
-        """NOT EXISTS (
-               SELECT 1 FROM chat_members cm2
-               WHERE cm2.conversation_id = c.id AND cm2.user_name = %s
-           )""",
-    ]
-    # %s binds left-to-right by TEXTUAL position. The gjr JOIN placeholder sits
-    # BEFORE the WHERE clause, so viewer leads, then join_mode, then the NOT
-    # EXISTS viewer, then optionals, then limit.
-    params = [viewer, list(DISCOVER_MODES), viewer]
+        where = [
+            "c.kind = 'group'",
+            "c.join_mode = ANY(%s)",
+            """NOT EXISTS (
+                   SELECT 1 FROM chat_members cm2
+                   WHERE cm2.conversation_id = c.id AND cm2.user_name = %s
+               )""",
+        ]
+        # %s binds left-to-right by TEXTUAL position. The gjr JOIN placeholder sits
+        # BEFORE the WHERE clause, so viewer leads, then join_mode, then the NOT
+        # EXISTS viewer, then optionals, then limit.
+        params = [viewer, list(DISCOVER_MODES), viewer]
 
-    if search:
-        where.append("(c.name ILIKE %s OR COALESCE(c.description,'') ILIKE %s)")
-        params += [search, search]
-    if category:
-        where.append("c.category = %s")
-        params.append(category)
-    if scene:
-        where.append("c.scene = %s")
-        params.append(scene)
+        if search:
+            where.append("(c.name ILIKE %s OR COALESCE(c.description,'') ILIKE %s)")
+            params += [search, search]
+        if category:
+            where.append("c.category = %s")
+            params.append(category)
+        if scene:
+            where.append("c.scene = %s")
+            params.append(scene)
 
-    params.append(limit)
+        params.append(limit)
 
-    cursor.execute(
-        f"""
-        SELECT c.id, c.name, c.image_url, c.description, c.join_mode,
-               c.category, c.tags, c.scene, c.updated_at,
-               (SELECT COUNT(*) FROM chat_members cm WHERE cm.conversation_id = c.id) AS member_count,
-               (
-                   SELECT ARRAY_AGG(x) FROM (
-                       SELECT UPPER(LEFT(COALESCE(p.display_name, u.username), 1)) AS x
-                       FROM chat_members cm
-                       JOIN users u ON u.username = cm.user_name
-                       LEFT JOIN profiles p ON p.user_id = u.id
-                       WHERE cm.conversation_id = c.id
-                       ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, cm.user_name
-                       LIMIT 3
-                   ) s
-               ) AS initials,
-               COALESCE(gjr.status, 'none') AS request_status
-        FROM chat_conversations c
-        LEFT JOIN group_join_requests gjr
-               ON gjr.group_id = c.id AND gjr.user_name = %s
-        WHERE {' AND '.join(where)}
-        ORDER BY c.updated_at DESC NULLS LAST, c.id DESC
-        LIMIT %s
-        """,
-        tuple(params),
-    )
+        cursor.execute(
+            f"""
+            SELECT c.id, c.name, c.image_url, c.description, c.join_mode,
+                   c.category, c.tags, c.scene, c.updated_at,
+                   (SELECT COUNT(*) FROM chat_members cm WHERE cm.conversation_id = c.id) AS member_count,
+                   (
+                       SELECT ARRAY_AGG(x) FROM (
+                           SELECT UPPER(LEFT(COALESCE(p.display_name, u.username), 1)) AS x
+                           FROM chat_members cm
+                           JOIN users u ON u.username = cm.user_name
+                           LEFT JOIN profiles p ON p.user_id = u.id
+                           WHERE cm.conversation_id = c.id
+                           ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, cm.user_name
+                           LIMIT 3
+                       ) s
+                   ) AS initials,
+                   COALESCE(gjr.status, 'none') AS request_status
+            FROM chat_conversations c
+            LEFT JOIN group_join_requests gjr
+                   ON gjr.group_id = c.id AND gjr.user_name = %s
+            WHERE {' AND '.join(where)}
+            ORDER BY c.updated_at DESC NULLS LAST, c.id DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["tags"] = _parse_json(d.get("tags"), [])
-        if not isinstance(d["tags"], list):
-            d["tags"] = []
-        d["initials"] = d.get("initials") or []
-        d["updated_at"] = _iso(d.get("updated_at"))
-        rows.append(d)
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["tags"] = _parse_json(d.get("tags"), [])
+            if not isinstance(d["tags"], list):
+                d["tags"] = []
+            d["initials"] = d.get("initials") or []
+            d["updated_at"] = _iso(d.get("updated_at"))
+            rows.append(d)
 
-    conn.close()
-    return {"groups": rows}
+        return {"groups": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -852,34 +864,38 @@ def community_taxonomy(viewer: str = ""):
     )"""
     base = f"c.kind = 'group' AND c.join_mode = ANY(%s) AND {member_filter}"
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        f"""
-        SELECT DISTINCT c.category
-        FROM chat_conversations c
-        WHERE {base} AND c.category IS NOT NULL AND c.category <> ''
-        ORDER BY c.category
-        """,
-        (list(DISCOVER_MODES), viewer),
-    )
-    categories = [r["category"] for r in cursor.fetchall()]
+        cursor.execute(
+            f"""
+            SELECT DISTINCT c.category
+            FROM chat_conversations c
+            WHERE {base} AND c.category IS NOT NULL AND c.category <> ''
+            ORDER BY c.category
+            """,
+            (list(DISCOVER_MODES), viewer),
+        )
+        categories = [r["category"] for r in cursor.fetchall()]
 
-    cursor.execute(
-        f"""
-        SELECT c.scene, COUNT(*)::int AS count
-        FROM chat_conversations c
-        WHERE {base} AND c.scene IS NOT NULL AND c.scene <> ''
-        GROUP BY c.scene
-        ORDER BY COUNT(*) DESC, c.scene
-        """,
-        (list(DISCOVER_MODES), viewer),
-    )
-    scenes = [{"name": r["scene"], "count": int(r["count"])} for r in cursor.fetchall()]
+        cursor.execute(
+            f"""
+            SELECT c.scene, COUNT(*)::int AS count
+            FROM chat_conversations c
+            WHERE {base} AND c.scene IS NOT NULL AND c.scene <> ''
+            GROUP BY c.scene
+            ORDER BY COUNT(*) DESC, c.scene
+            """,
+            (list(DISCOVER_MODES), viewer),
+        )
+        scenes = [{"name": r["scene"], "count": int(r["count"])} for r in cursor.fetchall()]
 
-    conn.close()
-    return {"categories": categories, "scenes": scenes}
+        return {"categories": categories, "scenes": scenes}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -893,37 +909,41 @@ def community_requests(viewer: str = "", limit: int = 20):
 
     limit = max(1, min(int(limit or 20), 50))
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        SELECT r.id, r.group_id, c.name AS group_name,
-               r.user_name,
-               COALESCE(p.display_name, u.username) AS display_name,
-               p.avatar_url, r.message, r.created_at
-        FROM group_join_requests r
-        JOIN chat_conversations c ON c.id = r.group_id AND c.kind = 'group'
-        JOIN chat_members m ON m.conversation_id = c.id
-                           AND m.user_name = %s
-                           AND m.role IN ('owner','admin')
-        JOIN users u ON u.username = r.user_name
-        LEFT JOIN profiles p ON p.user_id = u.id
-        WHERE r.status = 'pending'
-        ORDER BY r.created_at DESC
-        LIMIT %s
-        """,
-        (viewer, limit),
-    )
+        cursor.execute(
+            """
+            SELECT r.id, r.group_id, c.name AS group_name,
+                   r.user_name,
+                   COALESCE(p.display_name, u.username) AS display_name,
+                   p.avatar_url, r.message, r.created_at
+            FROM group_join_requests r
+            JOIN chat_conversations c ON c.id = r.group_id AND c.kind = 'group'
+            JOIN chat_members m ON m.conversation_id = c.id
+                               AND m.user_name = %s
+                               AND m.role IN ('owner','admin')
+            JOIN users u ON u.username = r.user_name
+            LEFT JOIN profiles p ON p.user_id = u.id
+            WHERE r.status = 'pending'
+            ORDER BY r.created_at DESC
+            LIMIT %s
+            """,
+            (viewer, limit),
+        )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["created_at"] = _iso(d.get("created_at"))
-        rows.append(d)
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["created_at"] = _iso(d.get("created_at"))
+            rows.append(d)
 
-    conn.close()
-    return {"requests": rows}
+        return {"requests": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -937,39 +957,43 @@ def community_invites(viewer: str = "", limit: int = 10):
 
     limit = max(1, min(int(limit or 10), 30))
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        SELECT n.id AS notification_id,
-               n.source_id AS conversation_id,
-               c.name AS group_name,
-               n.actor,
-               COALESCE(ap.display_name, au.username) AS actor_display,
-               n.created_at, n.read_at
-        FROM notifications n
-        JOIN chat_conversations c ON c.id = n.source_id AND c.kind = 'group'
-        JOIN chat_members cm ON cm.conversation_id = c.id AND cm.user_name = %s
-        LEFT JOIN users au ON au.username = n.actor
-        LEFT JOIN profiles ap ON ap.user_id = au.id
-        WHERE n.user_name = %s
-          AND n.category = 'groups'
-          AND n.type = 'group_invite'
-        ORDER BY (n.read_at IS NULL) DESC, n.id DESC
-        LIMIT %s
-        """,
-        (viewer, viewer, limit),
-    )
+        cursor.execute(
+            """
+            SELECT n.id AS notification_id,
+                   n.source_id AS conversation_id,
+                   c.name AS group_name,
+                   n.actor,
+                   COALESCE(ap.display_name, au.username) AS actor_display,
+                   n.created_at, n.read_at
+            FROM notifications n
+            JOIN chat_conversations c ON c.id = n.source_id AND c.kind = 'group'
+            JOIN chat_members cm ON cm.conversation_id = c.id AND cm.user_name = %s
+            LEFT JOIN users au ON au.username = n.actor
+            LEFT JOIN profiles ap ON ap.user_id = au.id
+            WHERE n.user_name = %s
+              AND n.category = 'groups'
+              AND n.type = 'group_invite'
+            ORDER BY (n.read_at IS NULL) DESC, n.id DESC
+            LIMIT %s
+            """,
+            (viewer, viewer, limit),
+        )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["created_at"] = _iso(d.get("created_at"))
-        rows.append(d)
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["created_at"] = _iso(d.get("created_at"))
+            rows.append(d)
 
-    conn.close()
-    return {"invites": rows}
+        return {"invites": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -983,62 +1007,66 @@ def community_people(viewer: str = "", limit: int = 6):
 
     limit = max(1, min(int(limit or 6), 12))
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        WITH cand AS (
-            SELECT u.id, u.username, u.role, u.tier,
-                   p.display_name, p.avatar_url,
-                   (SELECT COUNT(*) FROM follows f WHERE f.followee = u.username) AS follower_count
-            FROM users u
-            LEFT JOIN profiles p ON p.user_id = u.id
-            WHERE u.username <> %s
-              AND u.username NOT IN (SELECT followee FROM follows WHERE follower = %s)
+        cursor.execute(
+            """
+            WITH cand AS (
+                SELECT u.id, u.username, u.role, u.tier,
+                       p.display_name, p.avatar_url,
+                       (SELECT COUNT(*) FROM follows f WHERE f.followee = u.username) AS follower_count
+                FROM users u
+                LEFT JOIN profiles p ON p.user_id = u.id
+                WHERE u.username <> %s
+                  AND u.username NOT IN (SELECT followee FROM follows WHERE follower = %s)
+            )
+            SELECT c.username, c.role, c.tier, c.display_name, c.avatar_url, c.follower_count,
+                   (SELECT COUNT(*)
+                      FROM chat_members a
+                      JOIN chat_members b ON b.conversation_id = a.conversation_id
+                     WHERE a.user_name = %s AND b.user_name = c.username) AS shared_groups,
+                   (SELECT h.house_name FROM house_applications h
+                     WHERE h.user_id = c.id AND h.status = 'approved'
+                     ORDER BY h.created_at DESC LIMIT 1) AS house_name,
+                   (SELECT COUNT(*) FROM auctions au
+                     WHERE au.host_username = c.username AND au.status IN ('live','upcoming')) AS active_sales
+            FROM cand c
+            ORDER BY shared_groups DESC, c.follower_count DESC
+            LIMIT %s
+            """,
+            (viewer, viewer, viewer, limit),
         )
-        SELECT c.username, c.role, c.tier, c.display_name, c.avatar_url, c.follower_count,
-               (SELECT COUNT(*)
-                  FROM chat_members a
-                  JOIN chat_members b ON b.conversation_id = a.conversation_id
-                 WHERE a.user_name = %s AND b.user_name = c.username) AS shared_groups,
-               (SELECT h.house_name FROM house_applications h
-                 WHERE h.user_id = c.id AND h.status = 'approved'
-                 ORDER BY h.created_at DESC LIMIT 1) AS house_name,
-               (SELECT COUNT(*) FROM auctions au
-                 WHERE au.host_username = c.username AND au.status IN ('live','upcoming')) AS active_sales
-        FROM cand c
-        ORDER BY shared_groups DESC, c.follower_count DESC
-        LIMIT %s
-        """,
-        (viewer, viewer, viewer, limit),
-    )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        shared = int(d.get("shared_groups") or 0)
-        followers = int(d.get("follower_count") or 0)
-        sales = int(d.get("active_sales") or 0)
-        house = d.get("house_name")
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            shared = int(d.get("shared_groups") or 0)
+            followers = int(d.get("follower_count") or 0)
+            sales = int(d.get("active_sales") or 0)
+            house = d.get("house_name")
 
-        if d.get("role") == "house" and house:
-            reason = f"{house} · {sales} sale{'s' if sales != 1 else ''} on the floor"
-        elif shared > 0:
-            reason = f"in {shared} of your groups"
-        elif followers > 0:
-            reason = f"{followers} follower{'s' if followers != 1 else ''}"
-        else:
-            reason = "new to the space"
+            if d.get("role") == "house" and house:
+                reason = f"{house} · {sales} sale{'s' if sales != 1 else ''} on the floor"
+            elif shared > 0:
+                reason = f"in {shared} of your groups"
+            elif followers > 0:
+                reason = f"{followers} follower{'s' if followers != 1 else ''}"
+            else:
+                reason = "new to the space"
 
-        d["reason"] = reason
-        d["follower_count"] = followers
-        d["shared_groups"] = shared
-        d["active_sales"] = sales
-        rows.append(d)
+            d["reason"] = reason
+            d["follower_count"] = followers
+            d["shared_groups"] = shared
+            d["active_sales"] = sales
+            rows.append(d)
 
-    conn.close()
-    return {"people": rows}
+        return {"people": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1049,37 +1077,41 @@ def community_live(viewer: str = "", limit: int = 6):
     _ = _resolve_viewer(viewer)  # auth gate; data is public
     limit = max(1, min(int(limit or 6), 12))
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        SELECT a.id, a.title, a.host_username, a.ends_at,
-               COALESCE(hp.display_name, hu.username) AS host_display,
-               (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id AND l.status = 'on_block') AS lots_on_block,
-               (SELECT MAX(lb.amount)
-                  FROM lot_bids lb
-                  JOIN lots l2 ON l2.id = lb.lot_id
-                 WHERE l2.sale_id = a.id) AS top_amount
-        FROM auctions a
-        LEFT JOIN users hu ON hu.username = a.host_username
-        LEFT JOIN profiles hp ON hp.user_id = hu.id
-        WHERE a.status = 'live'
-        ORDER BY a.ends_at ASC
-        LIMIT %s
-        """,
-        (limit,),
-    )
+        cursor.execute(
+            """
+            SELECT a.id, a.title, a.host_username, a.ends_at,
+                   COALESCE(hp.display_name, hu.username) AS host_display,
+                   (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id AND l.status = 'on_block') AS lots_on_block,
+                   (SELECT MAX(lb.amount)
+                      FROM lot_bids lb
+                      JOIN lots l2 ON l2.id = lb.lot_id
+                     WHERE l2.sale_id = a.id) AS top_amount
+            FROM auctions a
+            LEFT JOIN users hu ON hu.username = a.host_username
+            LEFT JOIN profiles hp ON hp.user_id = hu.id
+            WHERE a.status = 'live'
+            ORDER BY a.ends_at ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["ends_at"] = _iso(d.get("ends_at"))
-        d["top_amount"] = str(d["top_amount"]) if d.get("top_amount") is not None else None
-        rows.append(d)
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["ends_at"] = _iso(d.get("ends_at"))
+            d["top_amount"] = str(d["top_amount"]) if d.get("top_amount") is not None else None
+            rows.append(d)
 
-    conn.close()
-    return {"live": rows}
+        return {"live": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1090,32 +1122,36 @@ def community_calendar(viewer: str = "", limit: int = 8):
     _ = _resolve_viewer(viewer)
     limit = max(1, min(int(limit or 8), 20))
 
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        SELECT a.id, a.title, a.status, a.host_username, a.ends_at,
-               COALESCE(hp.display_name, hu.username) AS host_display,
-               (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count
-        FROM auctions a
-        LEFT JOIN users hu ON hu.username = a.host_username
-        LEFT JOIN profiles hp ON hp.user_id = hu.id
-        WHERE a.status IN ('upcoming','live')
-        ORDER BY (a.status = 'live') DESC, a.ends_at ASC
-        LIMIT %s
-        """,
-        (limit,),
-    )
+        cursor.execute(
+            """
+            SELECT a.id, a.title, a.status, a.host_username, a.ends_at,
+                   COALESCE(hp.display_name, hu.username) AS host_display,
+                   (SELECT COUNT(*) FROM lots l WHERE l.sale_id = a.id) AS lot_count
+            FROM auctions a
+            LEFT JOIN users hu ON hu.username = a.host_username
+            LEFT JOIN profiles hp ON hp.user_id = hu.id
+            WHERE a.status IN ('upcoming','live')
+            ORDER BY (a.status = 'live') DESC, a.ends_at ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
 
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["ends_at"] = _iso(d.get("ends_at"))
-        rows.append(d)
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["ends_at"] = _iso(d.get("ends_at"))
+            rows.append(d)
 
-    conn.close()
-    return {"calendar": rows}
+        return {"calendar": rows}
+    finally:
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

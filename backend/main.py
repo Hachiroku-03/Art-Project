@@ -18,6 +18,7 @@ from routers import (
     notifications,
     community,
     webhooks,
+    admin
 )
 import notification_service
 from routers.community import sweep_call_deadlines
@@ -104,6 +105,7 @@ app.include_router(notifications.router)
 app.include_router(community.router)
 app.include_router(webhooks.router)
 app.include_router(notification_service.router)
+app.include_router(admin.router)
 
 if __name__ == "__main__":
     import uvicorn

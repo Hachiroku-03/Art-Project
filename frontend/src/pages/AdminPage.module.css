@@ -1,0 +1,354 @@
+.admin-shell,
+.admin-shell-state {
+  --admin-ink: #f4f1ea;
+  --admin-muted: #8a857c;
+  --admin-faint: #6f6a62;
+  --admin-paper: #100f0d;
+  --admin-paper-2: #141311;
+  --admin-sand: #0a0a0a;
+  --admin-sand-dark: #161512;
+  --admin-line: #1f1d1a;
+  --admin-line-strong: #2a2723;
+  --admin-accent: #d8c3a5;
+  --admin-accent-ink: #0a0a0a;
+  --admin-danger: #c98a8a;
+  --admin-danger-bg: #2a1414;
+  --admin-danger-border: #4a1f1f;
+  --admin-success: #8fc79a;
+  --admin-success-bg: #16241a;
+
+  min-height: 100vh;
+  background: var(--admin-sand);
+  color: var(--admin-ink);
+  font-family: inherit;
+  color-scheme: dark;
+}
+
+.admin-shell *,
+.admin-shell *::before,
+.admin-shell *::after,
+.admin-shell-state *,
+.admin-shell-state *::before,
+.admin-shell-state *::after {
+  box-sizing: border-box;
+}
+
+.admin-shell ::selection,
+.admin-shell-state ::selection {
+  background: rgba(216, 195, 165, 0.28);
+  color: #f4f1ea;
+}
+
+/* ---------------------------------------------------------------------------
+   Loading / denied states
+--------------------------------------------------------------------------- */
+
+.admin-shell-state {
+  display: grid;
+  place-items: center;
+  padding: clamp(20px, 5vw, 64px);
+}
+
+.admin-shell-state-card {
+  width: min(680px, 100%);
+  background: var(--admin-paper);
+  border: 1px solid var(--admin-line);
+  border-radius: 18px;
+  padding: 32px 28px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+}
+
+.admin-shell-state-card h1 {
+  margin: 0 0 10px;
+  font-size: clamp(24px, 4vw, 32px);
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--admin-ink);
+}
+
+.admin-shell-state-card p {
+  margin: 0;
+  color: var(--admin-muted);
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.admin-shell-state-card code {
+  background: #1b1916;
+  color: var(--admin-accent);
+  border: 1px solid #2a2723;
+  border-radius: 7px;
+  padding: 2px 7px;
+  font-size: 0.92em;
+}
+
+.admin-shell-denied {
+  border-left: 5px solid var(--admin-danger);
+}
+
+/* ---------------------------------------------------------------------------
+   Shell root
+--------------------------------------------------------------------------- */
+
+.admin-shell {
+  width: min(1400px, 100%);
+  margin: 0 auto;
+  padding: clamp(20px, 4vw, 48px);
+}
+
+/* ---------------------------------------------------------------------------
+   Header
+--------------------------------------------------------------------------- */
+
+.admin-shell-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  background: linear-gradient(180deg, #121110 0%, #100f0d 100%);
+  border: 1px solid var(--admin-line);
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.28);
+}
+
+.admin-shell-title-block {
+  min-width: 0;
+}
+
+.admin-shell-kicker {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--admin-faint);
+  font-weight: 650;
+}
+
+.admin-shell-header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(24px, 4vw, 34px);
+  line-height: 1.1;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  color: var(--admin-ink);
+}
+
+.admin-shell-subtitle {
+  margin: 0;
+  max-width: 760px;
+  color: var(--admin-muted);
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.admin-shell-subtitle strong {
+  color: var(--admin-accent);
+  font-weight: 650;
+}
+
+.admin-shell-badge {
+  flex: 0 0 auto;
+  background: var(--admin-accent);
+  color: var(--admin-accent-ink);
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  box-shadow: 0 10px 28px rgba(216, 195, 165, 0.12);
+}
+
+/* ---------------------------------------------------------------------------
+   Tab navigation
+--------------------------------------------------------------------------- */
+
+.admin-shell-nav {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.admin-shell-tab {
+  appearance: none;
+  border: 1px solid var(--admin-line);
+  background: var(--admin-paper);
+  color: var(--admin-ink);
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 54px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.admin-shell-tab:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: var(--admin-paper-2);
+  border-color: var(--admin-line-strong);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.admin-shell-tab:focus-visible {
+  outline: 3px solid rgba(216, 195, 165, 0.35);
+  outline-offset: 2px;
+}
+
+.admin-shell-tab.is-active {
+  background: var(--admin-accent);
+  border-color: var(--admin-accent);
+  color: var(--admin-accent-ink);
+  box-shadow: 0 12px 32px rgba(216, 195, 165, 0.16);
+}
+
+.admin-shell-tab.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #0d0c0b;
+}
+
+.admin-shell-tab-label {
+  font-weight: 650;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+.admin-shell-tab-flag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  font-weight: 700;
+}
+
+.admin-shell-tab.is-active .admin-shell-tab-flag {
+  opacity: 0.82;
+}
+
+/* ---------------------------------------------------------------------------
+   Main panel
+--------------------------------------------------------------------------- */
+
+.admin-shell-main {
+  margin-top: 18px;
+  background: var(--admin-paper);
+  border: 1px solid var(--admin-line);
+  border-radius: 20px;
+  padding: 22px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.22);
+  min-height: 420px;
+}
+
+.admin-shell-panel-head {
+  border-bottom: 1px solid var(--admin-line);
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-shell-panel-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--admin-ink);
+}
+
+.admin-shell-panel-head p {
+  margin: 0;
+  color: var(--admin-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 82ch;
+}
+
+.admin-shell-panel-body {
+  min-height: 260px;
+  color: var(--admin-ink);
+}
+
+.admin-shell-panel-body input,
+.admin-shell-panel-body textarea,
+.admin-shell-panel-body select {
+  color-scheme: dark;
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive
+--------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .admin-shell-nav {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .admin-shell {
+    padding: 16px;
+  }
+
+  .admin-shell-header {
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .admin-shell-badge {
+    align-self: flex-start;
+  }
+
+  .admin-shell-nav {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .admin-shell-main {
+    padding: 18px;
+  }
+
+  .admin-shell-state-card {
+    padding: 26px 22px;
+  }
+}
+
+@media (max-width: 520px) {
+  .admin-shell-nav {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-shell-tab {
+    width: 100%;
+  }
+
+  .admin-shell-panel-head h2 {
+    font-size: 20px;
+  }
+
+  .admin-shell-state-card h1 {
+    font-size: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-shell-tab,
+  .admin-shell-state-card,
+  .admin-shell-header,
+  .admin-shell-main {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .admin-shell-tab:hover:not(:disabled) {
+    transform: none;
+  }
+}

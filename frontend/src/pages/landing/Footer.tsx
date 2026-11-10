@@ -55,7 +55,7 @@ export function Footer() {
 
         <div className={s.bottom}>
           <p className={s.legal}>© {year} The Space. All works remain the property of their makers.</p>
-          <p className={s.meta}>Port Harcourt · Lagos · Abuja</p>
+          <p className={s.meta}>Lisbon · Berlin · New York</p>
           {social.length > 0 && (
             <div className={s.social} aria-label="Follow The Space">
               {social.map(x => <a key={x.key} href={x.href} target="_blank" rel="noopener noreferrer">{x.label}</a>)}

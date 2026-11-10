@@ -2,6 +2,8 @@ import { forwardRef, useLayoutEffect, useRef, useState } from 'react'
 import { Band } from './Band'
 import s from './Product.module.css'
 import { gsap, ScrollTrigger, reducedMotion } from '../../lib/motion'
+import a1 from '../../art/a1.jpg'
+import a6 from '../../art/a6.jpg'
 
 /* ---- the three surfaces, in the order a visitor meets them ---- */
 const SURFACES = [
@@ -23,8 +25,8 @@ const SURFACES = [
 ] as const
 
 const BIDS = [
-  ['paddle 0417', '3,600'], ['mara.collects', '3,800'], ['s.balogun', '4,000'],
-  ['tobi.draws', '4,200'], ['mara.collects', '4,400'], ['paddle 0417', '4,600'],
+  ['paddle 0417', '3,600'], ['l.mercer', '3,800'], ['r.vasquez', '4,000'],
+  ['k.lindqvist', '4,200'], ['l.mercer', '4,400'], ['paddle 0417', '4,600'],
 ]
 
 export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
@@ -48,7 +50,6 @@ export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
         onUpdate: self => {
           const i = Math.min(SURFACES.length - 1, Math.floor(self.progress * SURFACES.length))
           setActive(i)
-          // the ledger ticks while the room is the subject
           const seg = self.progress * SURFACES.length - 1
           setRows(Math.max(0, Math.min(BIDS.length, Math.round(seg * (BIDS.length + 1)))))
         },
@@ -56,7 +57,6 @@ export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
     })
 
     mm.add('(max-width: 899px)', () => {
-      // stacked: reveal each vignette, tick the ledger once it is in view
       setActive(-1)
       ScrollTrigger.create({
         trigger: el.querySelector(`[data-vig="room"]`),
@@ -94,12 +94,12 @@ export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
           {/* the wall */}
           <figure className={`${s.vig} ${active === 0 || active === -1 ? s.show : ''}`} data-vig="wall">
             <div className={s.post}>
-              <div className={s.postFrame}><img src="/art/a1.jpg" alt="" /></div>
+              <div className={s.postFrame}><img src={a1} alt="" loading="lazy" decoding="async" /></div>
               <div className={s.postLabel}>
                 <div>
-                  <span className={s.pArtist}>Kelechi Mba</span>
+                  <span className={s.pArtist}>Julian Reyes</span>
                   <em className={s.pTitle}>Indigo Vespers <small>2023</small></em>
-                  <span className={s.pSpec}><i>Acrylic on canvas</i> · 170 × 210 cm · Lagos</span>
+                  <span className={s.pSpec}><i>Acrylic on canvas</i> · 170 × 210 cm</span>
                 </div>
                 <span className={s.pFollow}>Follow</span>
               </div>
@@ -112,26 +112,26 @@ export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
           <figure className={`${s.vig} ${s.dark} ${active === 1 || active === -1 ? s.show : ''}`} data-vig="room">
             <div className={s.room}>
               <div className={s.roomHead}>
-                <span>Harmattan Sale · Evening</span>
+                <span>Autumn Sale · Evening</span>
                 <span className={s.live}><i />{rows >= BIDS.length ? 'Hammer' : 'Live'}</span>
               </div>
               <div className={s.roomBody}>
                 <div className={s.lot}>
-                  <img src="/art/a6.jpg" alt="" />
+                  <img src={a6} alt="" loading="lazy" decoding="async" />
                   <div className={s.lotLabel}>
-                    <b>Lot 7</b><em>Harmattan, Lagoon</em><span>Kelechi Mba · Oil on linen</span>
+                    <b>Lot 7</b><em>Coastal Haze</em><span>Julian Reyes · Oil on linen</span>
                   </div>
                 </div>
                 <ol className={s.ledger}>
                   {BIDS.slice(0, rows).reverse().map(([u, a], i) => (
-                    <li key={u + a} className={i === 0 ? s.lead : ''}><span>{u}</span><b>₦{a},000</b></li>
+                    <li key={u + a} className={i === 0 ? s.lead : ''}><span>{u}</span><b>{a},000</b></li>
                   ))}
                   {rows === 0 && <li className={s.empty}>The lot is on the block.</li>}
                 </ol>
               </div>
               <div className={s.roomFoot}>
                 <span>Your paddle · <b>0417</b></span>
-                <span className={s.bidBtn}>Bid ₦4,800,000</span>
+                <span className={s.bidBtn}>Bid 4,800,000</span>
               </div>
             </div>
             <figcaption className={s.cap}>Auction room · bid panel</figcaption>
@@ -146,15 +146,15 @@ export const Product = forwardRef<HTMLElement>(function Product(_, ref) {
                 ))}
               </aside>
               <div className={s.ctrlMain}>
-                <div className={s.ctrlHead}><span>Rostrum</span><span className={s.ctrlSale}>Harmattan Sale · NGN · locked</span></div>
+                <div className={s.ctrlHead}><span>Rostrum</span><span className={s.ctrlSale}>Autumn Sale · locked</span></div>
                 <div className={s.ctrlNums}>
                   <div><small>On the block</small><b>Lot 7</b></div>
-                  <div><small>Current</small><b>₦4,600,000</b></div>
+                  <div><small>Current</small><b>4,600,000</b></div>
                   <div><small>Bidders</small><b>14</b></div>
                 </div>
                 <table className={s.ctrlTable}>
                   <tbody>
-                    {[['6', 'Adire Grid', 'Sold', '₦1,400,000'], ['7', 'Harmattan, Lagoon', 'On block', '₦4,600,000'], ['8', 'Two Seated', 'Sealed', '—']].map(r => (
+                    {[['6', 'Indigo Grid', 'Sold', '1,400,000'], ['7', 'Coastal Haze', 'On block', '4,600,000'], ['8', 'Two Seated', 'Sealed', '—']].map(r => (
                       <tr key={r[0]} className={r[2] === 'On block' ? s.trOn : ''}>
                         <td>{r[0]}</td><td><em>{r[1]}</em></td><td>{r[2]}</td><td>{r[3]}</td>
                       </tr>
