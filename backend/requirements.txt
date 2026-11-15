@@ -1,8 +1,17 @@
+# fastapi
+# uvicorn
+# psycopg2-binary
+# python-dotenv
+# python-multipart
+# requests
+# deep-translator
+# langdetect
+# tzdata
+
 fastapi
 uvicorn[standard]
 psycopg2-binary
 python-dotenv
-python-multipart
 requests
-deep-translator
-langdetect
+tzdata
+websockets

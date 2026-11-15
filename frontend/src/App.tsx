@@ -1,35 +1,13 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
-import { LoginPage } from "./auth/LoginPage";
-import { SignupPage } from "./auth/SignupPage";
-
-import { LandingPage } from "./pages/LandingPage";
-import { FeedPage } from "./pages/FeedPage";
-import { PostRoomPage } from "./pages/PostRoomPage";
-import { AuctionsPage } from "./pages/AuctionsPage";
-import { AuctionRoomPage } from "./pages/AuctionRoomPage";
-import { ControlRoomPage } from "./pages/ControlRoomPage";
-import { HouseApplicationPage } from "./pages/HouseApplicationPage";
-import { PricingPage } from "./pages/PricingPage";
-import { ProfilePage } from "./pages/ProfilePage";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { WalletPage } from "./pages/WalletPage";
-import { ChatDebugPage } from "./pages/ChatDebugPage";
-import { MessengerPage } from "./pages/MessengerPage";
-import { NotificationsPage } from "./pages/NotificationsPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { CommunityPage } from "./pages/CommunityPage";
-import { CallDetailPage } from "./pages/CallDetailPage";
-import { AdminPage } from "./pages/AdminPage";
-import { SaleDetailPage } from "./pages/SaleDetailPage";
-import { WonLotsPage } from "./pages/WonLotsPage";
 
 const env = (import.meta as any).env || {};
 
 const AUTH_API = String(env.VITE_AUTH_API_URL || "http://localhost:8000").replace(
   /\/+$/,
-  ""
+  "",
 );
 
 const isLocalHost =
@@ -50,7 +28,7 @@ const FALLBACK_ADMIN_USERNAMES = new Set(
   String(env.VITE_ADMIN_USERNAMES || (isLocalHost ? "coura" : ""))
     .split(",")
     .map((value: string) => value.trim())
-    .filter(Boolean)
+    .filter(Boolean),
 );
 
 function getStoredToken(): string {
@@ -66,6 +44,121 @@ function getStoredUser(): string {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Lazy route pages.
+//
+// This keeps heavy pages like Feed/Auctions/Messenger/Community from dragging
+// the whole app bundle into every route.
+// ---------------------------------------------------------------------------
+
+const LoginPage = lazy(() =>
+  import("./auth/LoginPage").then((mod) => ({ default: mod.LoginPage })),
+);
+
+const SignupPage = lazy(() =>
+  import("./auth/SignupPage").then((mod) => ({ default: mod.SignupPage })),
+);
+
+const LandingPage = lazy(() =>
+  import("./pages/LandingPage").then((mod) => ({ default: mod.LandingPage })),
+);
+
+const FeedPage = lazy(() =>
+  import("./pages/FeedPage").then((mod) => ({ default: mod.FeedPage })),
+);
+
+const PostRoomPage = lazy(() =>
+  import("./pages/PostRoomPage").then((mod) => ({ default: mod.PostRoomPage })),
+);
+
+const AuctionsPage = lazy(() =>
+  import("./pages/AuctionsPage").then((mod) => ({ default: mod.AuctionsPage })),
+);
+
+const AuctionRoomPage = lazy(() =>
+  import("./pages/AuctionRoomPage").then((mod) => ({
+    default: mod.AuctionRoomPage,
+  })),
+);
+
+const ControlRoomPage = lazy(() =>
+  import("./pages/ControlRoomPage").then((mod) => ({
+    default: mod.ControlRoomPage,
+  })),
+);
+
+const HouseApplicationPage = lazy(() =>
+  import("./pages/HouseApplicationPage").then((mod) => ({
+    default: mod.HouseApplicationPage,
+  })),
+);
+
+const PricingPage = lazy(() =>
+  import("./pages/PricingPage").then((mod) => ({ default: mod.PricingPage })),
+);
+
+const ProfilePage = lazy(() =>
+  import("./pages/ProfilePage").then((mod) => ({ default: mod.ProfilePage })),
+);
+
+const WalletPage = lazy(() =>
+  import("./pages/WalletPage").then((mod) => ({ default: mod.WalletPage })),
+);
+
+const ChatDebugPage = lazy(() =>
+  import("./pages/ChatDebugPage").then((mod) => ({ default: mod.ChatDebugPage })),
+);
+
+const MessengerPage = lazy(() =>
+  import("./pages/MessengerPage").then((mod) => ({
+    default: mod.MessengerPage,
+  })),
+);
+
+const NotificationsPage = lazy(() =>
+  import("./pages/NotificationsPage").then((mod) => ({
+    default: mod.NotificationsPage,
+  })),
+);
+
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((mod) => ({ default: mod.SettingsPage })),
+);
+
+const CommunityPage = lazy(() =>
+  import("./pages/CommunityPage").then((mod) => ({ default: mod.CommunityPage })),
+);
+
+const CallDetailPage = lazy(() =>
+  import("./pages/CallDetailPage").then((mod) => ({ default: mod.CallDetailPage })),
+);
+
+const AdminPage = lazy(() =>
+  import("./pages/AdminPage").then((mod) => ({ default: mod.AdminPage })),
+);
+
+const SaleDetailPage = lazy(() =>
+  import("./pages/SaleDetailPage").then((mod) => ({ default: mod.SaleDetailPage })),
+);
+
+const WonLotsPage = lazy(() =>
+  import("./pages/WonLotsPage").then((mod) => ({ default: mod.WonLotsPage })),
+);
+
+// ---------------------------------------------------------------------------
+// Route wrapper.
+//
+// No skeleton here. Each page will own its own skeleton/loading UI.
+// ---------------------------------------------------------------------------
+
+function RouteShell({ children }: { children: ReactNode }) {
+  return (
+    <ErrorBoundary>
+      <Suspense fallback={null}>{children}</Suspense>
+    </ErrorBoundary>
+  );
+}
+
 function Gate() {
   const token = getStoredToken();
   return <Navigate to={token ? "/feed" : "/login"} replace />;
@@ -73,7 +166,12 @@ function Gate() {
 
 function LandingGate() {
   const token = getStoredToken();
-  return token ? <Navigate to="/feed" replace /> : <LandingPage />;
+
+  if (token) {
+    return <Navigate to="/feed" replace />;
+  }
+
+  return <LandingPage />;
 }
 
 function AdminRoute() {
@@ -121,21 +219,7 @@ function AdminRoute() {
   }, []);
 
   if (loading) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "grid",
-          placeItems: "center",
-          background: "#0a0a0a",
-          color: "#8a857c",
-          fontFamily: "inherit",
-          fontSize: "14px",
-        }}
-      >
-        Checking admin access…
-      </div>
-    );
+    return null;
   }
 
   const token = getStoredToken();
@@ -146,9 +230,9 @@ function AdminRoute() {
   }
 
   return (
-    <ErrorBoundary>
+    <RouteShell>
       <AdminPage viewer={user} isAdmin={isAdmin} />
-    </ErrorBoundary>
+    </RouteShell>
   );
 }
 
@@ -159,62 +243,200 @@ function App() {
         <Route
           path="/"
           element={
-            <ErrorBoundary>
+            <RouteShell>
               <LandingGate />
-            </ErrorBoundary>
+            </RouteShell>
           }
         />
 
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
+        <Route
+          path="/login"
+          element={
+            <RouteShell>
+              <LoginPage />
+            </RouteShell>
+          }
+        />
 
-        <Route path="/feed" element={<FeedPage />} />
-        <Route path="/community" element={<CommunityPage />} />
-        <Route path="/post/:id" element={<PostRoomPage />} />
+        <Route
+          path="/signup"
+          element={
+            <RouteShell>
+              <SignupPage />
+            </RouteShell>
+          }
+        />
 
-        <Route path="/auctions" element={<AuctionsPage />} />
+        <Route
+          path="/feed"
+          element={
+            <RouteShell>
+              <FeedPage />
+            </RouteShell>
+          }
+        />
 
-        <Route path="/sales/control" element={<ControlRoomPage />} />
-        <Route path="/sales/:saleId" element={<SaleDetailPage />} />
-        <Route path="/sales/:id/room" element={<AuctionRoomPage />} />
-        <Route path="/sales/:id/control" element={<ControlRoomPage />} />
+        <Route
+          path="/community"
+          element={
+            <RouteShell>
+              <CommunityPage />
+            </RouteShell>
+          }
+        />
 
-        <Route path="/house/apply" element={<HouseApplicationPage />} />
-        <Route path="/pricing" element={<PricingPage />} />
-        <Route path="/wallet" element={<WalletPage />} />
-        <Route path="/messenger" element={<MessengerPage />} />
-        <Route path="/chat-debug" element={<ChatDebugPage />} />
-        <Route path="/notifications" element={<NotificationsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route
+          path="/post/:id"
+          element={
+            <RouteShell>
+              <PostRoomPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/auctions"
+          element={
+            <RouteShell>
+              <AuctionsPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/sales/control"
+          element={
+            <RouteShell>
+              <ControlRoomPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/sales/:saleId"
+          element={
+            <RouteShell>
+              <SaleDetailPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/sales/:id/room"
+          element={
+            <RouteShell>
+              <AuctionRoomPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/sales/:id/control"
+          element={
+            <RouteShell>
+              <ControlRoomPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/house/apply"
+          element={
+            <RouteShell>
+              <HouseApplicationPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/pricing"
+          element={
+            <RouteShell>
+              <PricingPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/wallet"
+          element={
+            <RouteShell>
+              <WalletPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/messenger"
+          element={
+            <RouteShell>
+              <MessengerPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/chat-debug"
+          element={
+            <RouteShell>
+              <ChatDebugPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/notifications"
+          element={
+            <RouteShell>
+              <NotificationsPage />
+            </RouteShell>
+          }
+        />
+
+        <Route
+          path="/settings"
+          element={
+            <RouteShell>
+              <SettingsPage />
+            </RouteShell>
+          }
+        />
 
         <Route path="/admin" element={<AdminRoute />} />
 
         <Route
           path="/wins"
           element={
-            <ErrorBoundary>
+            <RouteShell>
               <WonLotsPage />
-            </ErrorBoundary>
+            </RouteShell>
           }
         />
 
-        <Route path="/calls/:id" element={<CallDetailPage />} />
+        <Route
+          path="/calls/:id"
+          element={
+            <RouteShell>
+              <CallDetailPage />
+            </RouteShell>
+          }
+        />
 
         <Route
           path="/profile"
           element={
-            <ErrorBoundary>
+            <RouteShell>
               <ProfilePage />
-            </ErrorBoundary>
+            </RouteShell>
           }
         />
 
         <Route
           path="/profile/:username"
           element={
-            <ErrorBoundary>
+            <RouteShell>
               <ProfilePage />
-            </ErrorBoundary>
+            </RouteShell>
           }
         />
 

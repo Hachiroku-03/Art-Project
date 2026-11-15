@@ -420,3 +420,179 @@
     min-width: 13rem;
   }
 }
+
+/* ----------------------------- AUCTIONS SKELETON ----------------------------- */
+
+@keyframes auctionSkelShimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes auctionSkelSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.skelBar {
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.04),
+    rgba(14, 14, 14, 0.09),
+    rgba(14, 14, 14, 0.04)
+  );
+  background-size: 200% 100%;
+  animation: auctionSkelShimmer 1.35s ease-in-out infinite;
+}
+
+.skelRail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.skelGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1.3rem;
+}
+
+.skelCard {
+  height: 260px;
+  border-radius: 18px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.035),
+    rgba(14, 14, 14, 0.085),
+    rgba(14, 14, 14, 0.035)
+  );
+  background-size: 200% 100%;
+  animation: auctionSkelShimmer 1.35s ease-in-out infinite;
+}
+
+.skelSpin {
+  animation: auctionSkelSpin 0.9s linear infinite;
+}
+
+/* ----------------------------- STATUS ROW ----------------------------- */
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.refreshPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgba(14, 14, 14, 0.08);
+  background: rgba(14, 14, 14, 0.035);
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.errorPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid rgba(109, 26, 36, 0.18);
+  background: rgba(109, 26, 36, 0.06);
+  color: var(--err);
+  border-radius: 999px;
+  padding: 0.35rem 0.45rem 0.35rem 0.7rem;
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  max-width: 100%;
+}
+
+.errorPill button {
+  border: 1px solid rgba(109, 26, 36, 0.2);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--err);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.errorPill button:hover {
+  background: #fff;
+}
+
+/* ----------------------------- RETRY PANEL ----------------------------- */
+
+.retryPanel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 16px;
+  background: rgba(109, 26, 36, 0.04);
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+.retryPanel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.retryPanel button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.retryPanel button:hover {
+  background: #f1f0ed;
+  border-color: var(--ink);
+}
+
+.retryPanel button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* ----------------------------- RESPONSIVE SKELETON ----------------------------- */
+
+@media (max-width: 820px) {
+  .skelGrid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.9rem;
+  }
+
+  .skelCard {
+    height: 210px;
+  }
+}

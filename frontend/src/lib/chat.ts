@@ -3,6 +3,14 @@ import { API } from './sales'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+export type ConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'offline'
+  | 'error'
+
 export type ReactionSummary = {
   emoji: string
   count: number
@@ -81,7 +89,6 @@ export type Conversation = {
   tags?: string[] | null
 }
 
-
 export type ConversationUpdate = Partial<Conversation> & { id: number }
 
 export type ChatEvent =
@@ -98,7 +105,12 @@ export type ChatEvent =
   | { type: 'reaction_removed'; conversation_id: number; message_id: number; user_name: string; emoji: string }
   | { type: 'member_removed'; conversation_id: number; user_name: string }
   | { type: 'conversation_updated'; conversation: ConversationUpdate }
-  | { type: 'status'; online: boolean }
+  | {
+      type: 'status'
+      online: boolean
+      state?: ConnectionState
+      message?: string
+    }
   | { type: 'reconnect' }
   | { type: 'disconnect' }
 
@@ -172,15 +184,29 @@ export type PresenceItem = {
 
 // ---------------------------------------------------------------------------
 // Socket singleton.
+//
+// This is intentionally module-level. Multiple components can subscribe, but
+// there should only ever be one active WebSocket per viewer.
 // ---------------------------------------------------------------------------
 const WS_URL = API.replace(/^http/, 'ws') + '/ws/chat'
 
 let ws: WebSocket | null = null
 let currentViewer = ''
+let socketViewer: string | null = null
 let closedByUs = false
 let attempt = 0
 let reconnectTimer: number | null = null
+let heartbeatTimer: number | null = null
+let lastPongAt = Date.now()
+let connectionState: ConnectionState = 'idle'
+
 const listeners = new Set<(e: ChatEvent) => void>()
+
+// Heartbeat is useful, but backend must support { type: "ping" } -> { type: "pong" }.
+// Keep disabled until you add the backend ping handler.
+const HEARTBEAT_ENABLED = false
+const HEARTBEAT_INTERVAL_MS = 25_000
+const HEARTBEAT_TIMEOUT_MS = 60_000
 
 function emit(e: ChatEvent) {
   for (const fn of Array.from(listeners)) {
@@ -192,11 +218,68 @@ function emit(e: ChatEvent) {
   }
 }
 
+function setConnectionState(next: ConnectionState, message?: string) {
+  connectionState = next
+
+  emit({
+    type: 'status',
+    online: next === 'connected',
+    state: next,
+    message,
+  })
+}
+
+export function getConnectionState(): ConnectionState {
+  return connectionState
+}
+
+function browserIsOnline(): boolean {
+  return typeof navigator === 'undefined' ? true : navigator.onLine
+}
+
 function clearReconnect() {
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+}
+
+function clearHeartbeat() {
+  if (heartbeatTimer !== null) {
+    window.clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+function startHeartbeat() {
+  clearHeartbeat()
+
+  if (!HEARTBEAT_ENABLED) return
+
+  lastPongAt = Date.now()
+
+  heartbeatTimer = window.setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+    const now = Date.now()
+
+    // If no pong for too long, assume the socket is dead.
+    if (now - lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+      try {
+        ws.close()
+      } catch {
+        // ignore
+      }
+
+      return
+    }
+
+    try {
+      ws.send(JSON.stringify({ type: 'ping' }))
+    } catch {
+      // ignore
+    }
+  }, HEARTBEAT_INTERVAL_MS)
 }
 
 function scheduleReconnect() {
@@ -205,49 +288,120 @@ function scheduleReconnect() {
   clearReconnect()
   attempt += 1
 
-  const delay = Math.min(1000 * 2 ** (attempt - 1), 15000)
-  reconnectTimer = window.setTimeout(() => open(currentViewer), delay)
+  const delay = Math.min(1000 * 2 ** (attempt - 1), 15_000)
+
+  setConnectionState(
+    browserIsOnline() ? 'reconnecting' : 'offline',
+    `Retry in ${Math.round(delay / 1000)}s`,
+  )
+
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null
+    open(currentViewer)
+  }, delay)
+}
+
+function detachSocketHandlers(socket: WebSocket | null) {
+  if (!socket) return
+
+  try {
+    socket.onopen = null
+    socket.onmessage = null
+    socket.onclose = null
+    socket.onerror = null
+  } catch {
+    // ignore
+  }
 }
 
 function open(viewer: string) {
+  if (!viewer) return
+
   currentViewer = viewer
   closedByUs = false
 
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  // Already open or connecting for the same viewer. Do not create a second socket.
+  if (
+    ws &&
+    (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) &&
+    socketViewer === viewer
+  ) {
     return
   }
+
+  // If a different viewer is requested, tear down the old socket cleanly.
+  if (ws) {
+    detachSocketHandlers(ws)
+
+    try {
+      ws.close(1000)
+    } catch {
+      // ignore
+    }
+
+    ws = null
+    socketViewer = null
+  }
+
+  clearReconnect()
+  socketViewer = viewer
+
+  setConnectionState(browserIsOnline() ? 'connecting' : 'offline')
 
   try {
     ws = new WebSocket(`${WS_URL}?viewer=${encodeURIComponent(viewer)}`)
   } catch {
+    socketViewer = null
+    setConnectionState('error', 'Could not open chat socket.')
     scheduleReconnect()
     return
   }
 
   ws.onopen = () => {
     attempt = 0
-    emit({ type: 'status', online: true })
+    setConnectionState('connected')
+
+    // Tell consumers to gently resync after connect/reconnect.
     emit({ type: 'reconnect' })
+
+    startHeartbeat()
   }
 
   ws.onmessage = (ev) => {
     let data: ChatEvent
+
     try {
       data = JSON.parse(ev.data)
     } catch {
       return
     }
+
+    // Internal heartbeat response. Do not emit pong to app listeners.
+    if ((data as any)?.type === 'pong') {
+      lastPongAt = Date.now()
+      return
+    }
+
     emit(data)
   }
 
   ws.onclose = (ev) => {
-    emit({ type: 'status', online: false })
+    socketViewer = null
+    clearHeartbeat()
 
     if (ev.code === 4401) {
       closedByUs = true
+      currentViewer = ''
+      setConnectionState('error', 'Not authorized for chat.')
       return
     }
 
+    if (!browserIsOnline()) {
+      setConnectionState('offline', 'You are offline.')
+      return
+    }
+
+    setConnectionState('reconnecting')
     scheduleReconnect()
   }
 
@@ -264,22 +418,30 @@ export function connect(viewer: string) {
 export function teardown() {
   closedByUs = true
   currentViewer = ''
+  socketViewer = null
+
   clearReconnect()
+  clearHeartbeat()
 
   if (ws) {
+    detachSocketHandlers(ws)
+
     try {
       ws.close(1000)
     } catch {
       // already gone
     }
+
     ws = null
   }
 
-  emit({ type: 'status', online: false })
+  setConnectionState('idle')
+  emit({ type: 'disconnect' })
 }
 
 export function subscribe(fn: (e: ChatEvent) => void): () => void {
   listeners.add(fn)
+
   return () => {
     listeners.delete(fn)
   }
@@ -287,14 +449,62 @@ export function subscribe(fn: (e: ChatEvent) => void): () => void {
 
 export function wsSend(obj: Record<string, unknown>): boolean {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj))
-    return true
+    try {
+      ws.send(JSON.stringify(obj))
+      return true
+    } catch {
+      return false
+    }
   }
+
   return false
 }
 
 export function socketOpen(): boolean {
   return !!ws && ws.readyState === WebSocket.OPEN
+}
+
+// ---------------------------------------------------------------------------
+// Browser/network/visibility recovery.
+//
+// Important behavior:
+// - Do not reload the page.
+// - Do not refetch everything.
+// - Only reconnect if the socket is actually closed.
+// - If browser goes offline, mark offline.
+// - If browser comes online, reconnect calmly.
+// ---------------------------------------------------------------------------
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    if (!currentViewer) return
+
+    if (socketOpen()) {
+      setConnectionState('connected')
+      return
+    }
+
+    if (!closedByUs) {
+      attempt = 0
+      open(currentViewer)
+    }
+  })
+
+  window.addEventListener('offline', () => {
+    if (!currentViewer) return
+    setConnectionState('offline', 'You are offline.')
+  })
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (!currentViewer) return
+    if (closedByUs) return
+
+    // Only reconnect if socket is truly closed.
+    // If it is OPEN or CONNECTING, leave it alone.
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      open(currentViewer)
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------

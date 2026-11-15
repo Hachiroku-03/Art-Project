@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Lock, Plus, Search } from 'lucide-react'
+import { Lock, Plus, RefreshCw, Search } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import {
   fetchConversations,
@@ -35,6 +35,10 @@ import {
 import { CallComposerModal } from '../components/CallComposerModal'
 import styles from './CommunityPage.module.css'
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function fromNow(raw?: string | null) {
   if (!raw) return ''
   const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'))
@@ -60,6 +64,7 @@ function previewFromConv(c: Conversation, viewer: string) {
   const kind = c.last_kind
   const body = (c.last_body || '').trim()
   let content: string
+
   if (kind === 'image') content = '📷 Photo'
   else if (kind === 'voice') content = '🎤 Voice note'
   else if (kind === 'video') content = '🎬 Video'
@@ -69,10 +74,9 @@ function previewFromConv(c: Conversation, viewer: string) {
   else if (kind === 'system') content = body || 'System message'
   else content = body || 'New message'
 
-  // last_sender is returned by list_conversations; narrow-cast so this compiles
-  // whether or not the Conversation type already declares the field.
   const sender = String((c as { last_sender?: string | null }).last_sender || '').trim()
   if (!sender) return content
+
   const who = sender.toLowerCase() === (viewer || '').toLowerCase() ? 'You' : sender
   return `${who}: ${content}`
 }
@@ -95,6 +99,7 @@ function Thumb({
       </span>
     )
   }
+
   return (
     <span className={className} style={{ background: tone }}>
       {children}
@@ -109,8 +114,9 @@ const FALLBACK_TONES = [
   'linear-gradient(135deg,#2a4a3f,#4f8a6b)',
 ]
 
-function toneFor(id: number) {
-  return FALLBACK_TONES[id % FALLBACK_TONES.length]
+function toneFor(id: number | string) {
+  const n = typeof id === 'string' ? id.length : id
+  return FALLBACK_TONES[n % FALLBACK_TONES.length]
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -153,31 +159,44 @@ function untilLabel(raw?: string | null, status?: string) {
   if (status && status !== 'open') {
     return { text: status === 'cancelled' ? 'Cancelled' : 'Closed', tone: 'closed' as const }
   }
+
   const d = parseDate(raw)
   if (!d) return { text: '', tone: 'normal' as const }
+
   const ms = d.getTime() - Date.now()
   if (ms <= 0) return { text: 'Deadline passed', tone: 'closed' as const }
+
   const h = ms / 36e5
   if (h < 1) return { text: 'Closes in minutes', tone: 'soon' as const }
   if (h < 24) return { text: `Closes in ${Math.max(1, Math.round(h))}h`, tone: 'soon' as const }
   if (h < 48) return { text: 'Closes tomorrow', tone: 'soon' as const }
+
   return { text: `Closes in ${Math.round(h / 24)}d`, tone: 'normal' as const }
 }
 
 function eligSummary(e: unknown): string {
   if (!e || typeof e !== 'object') return ''
+
   const obj = e as Record<string, unknown>
   const parts: string[] = []
+
   if (obj.region) parts.push(String(obj.region))
-  if (Array.isArray(obj.medium)) parts.push((obj.medium as unknown[]).slice(0, 3).join(', '))
-  else if (typeof obj.medium === 'string' && obj.medium.trim()) parts.push(obj.medium.trim())
+
+  if (Array.isArray(obj.medium)) {
+    parts.push((obj.medium as unknown[]).slice(0, 3).join(', '))
+  } else if (typeof obj.medium === 'string' && obj.medium.trim()) {
+    parts.push(obj.medium.trim())
+  }
+
   if (obj.age_max != null) parts.push(`Under ${obj.age_max}`)
   else if (obj.age_min != null) parts.push(`${obj.age_min}+`)
+
   return parts.slice(0, 3).join(' · ')
 }
 
 function callDateParts(c: CommunityCall) {
   const d = parseDate(c.deadline_at) || parseDate(c.starts_at)
+
   if (d) {
     return {
       top: String(d.getDate()).padStart(2, '0'),
@@ -185,13 +204,245 @@ function callDateParts(c: CommunityCall) {
       code: false,
     }
   }
+
   return { top: kindCode(c.kind), bottom: '', code: true }
 }
+
+// ---------------------------------------------------------------------------
+// Module-level slice cache.
+//
+// This survives component unmount/remount. When the user switches tabs or
+// routes and comes back, Community sections can hydrate instantly from memory.
+// ---------------------------------------------------------------------------
+
+const COMMUNITY_SLICE_TTL = 90_000
+const COMMUNITY_CACHE_MAX = 100
+
+type SliceCacheEntry = {
+  ts: number
+  viewer: string
+  data: unknown
+}
+
+const sliceCache = new Map<string, SliceCacheEntry>()
+
+function makeSliceKey(viewer: string, name: string, params: Record<string, unknown> = {}) {
+  return `${viewer}|${name}|${JSON.stringify(params)}`
+}
+
+function trimSliceCache() {
+  if (sliceCache.size <= COMMUNITY_CACHE_MAX) return
+
+  const entries = Array.from(sliceCache.entries()).sort((a, b) => a[1].ts - b[1].ts)
+  const removeCount = sliceCache.size - COMMUNITY_CACHE_MAX
+
+  for (let i = 0; i < removeCount; i += 1) {
+    sliceCache.delete(entries[i][0])
+  }
+}
+
+function getCachedSlice<T>(key: string, viewer: string): T | null {
+  if (!key || !viewer) return null
+
+  const entry = sliceCache.get(key)
+  if (!entry || entry.viewer !== viewer) return null
+
+  if (Date.now() - entry.ts > COMMUNITY_SLICE_TTL) {
+    sliceCache.delete(key)
+    return null
+  }
+
+  return entry.data as T
+}
+
+function setCachedSlice(key: string, viewer: string, data: unknown) {
+  if (!key || !viewer || data === undefined) return
+
+  sliceCache.set(key, {
+    ts: Date.now(),
+    viewer,
+    data,
+  })
+
+  trimSliceCache()
+}
+
+function invalidateViewerSlices(viewer: string) {
+  if (!viewer) return
+
+  const prefix = `${viewer}|`
+
+  for (const key of Array.from(sliceCache.keys())) {
+    if (key.startsWith(prefix)) {
+      sliceCache.delete(key)
+    }
+  }
+}
+
+async function getOrFetchSlice<T>(
+  key: string,
+  viewer: string,
+  loader: () => Promise<T>,
+  force = false,
+): Promise<T> {
+  if (!force) {
+    const cached = getCachedSlice<T>(key, viewer)
+    if (cached !== null) return cached
+  }
+
+  const data = await loader()
+  setCachedSlice(key, viewer, data)
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// Your Groups cache.
+//
+// Stored in localStorage so it survives full page reloads too.
+// ---------------------------------------------------------------------------
+
+const MY_GROUPS_CACHE_KEY = 'space_community_my_groups_v2_'
+const MY_GROUPS_CACHE_TTL = 2 * 60_000
+const MY_GROUPS_SOFT_TTL = 30_000
+
+type MyGroupsCache = {
+  ts: number
+  groups: Conversation[]
+}
+
+function readMyGroupsCache(viewer: string): MyGroupsCache | null {
+  if (!viewer) return null
+
+  try {
+    const raw = localStorage.getItem(`${MY_GROUPS_CACHE_KEY}${viewer}`)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw) as MyGroupsCache
+
+    if (!parsed || typeof parsed.ts !== 'number') return null
+    if (Date.now() - parsed.ts > MY_GROUPS_CACHE_TTL) return null
+    if (!Array.isArray(parsed.groups)) return null
+
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeMyGroupsCache(viewer: string, groups: Conversation[]) {
+  if (!viewer) return
+
+  try {
+    localStorage.setItem(
+      `${MY_GROUPS_CACHE_KEY}${viewer}`,
+      JSON.stringify({
+        ts: Date.now(),
+        groups,
+      }),
+    )
+  } catch {
+    // ignore quota/private-mode errors
+  }
+}
+
+function clearMyGroupsCache(viewer: string) {
+  if (!viewer) return
+
+  try {
+    localStorage.removeItem(`${MY_GROUPS_CACHE_KEY}${viewer}`)
+  } catch {
+    // ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton / retry UI
+// ---------------------------------------------------------------------------
+
+function CommunitySkeleton() {
+  return (
+    <div className={styles.shell}>
+      <div className={styles.hero}>
+        <div className={styles.heroText}>
+          <div className={styles.skelBar} style={{ width: 220, height: 34 }} />
+          <div className={styles.skelBar} style={{ width: 480, height: 14, marginTop: 12 }} />
+        </div>
+
+        <div className={styles.heroActions}>
+          <div className={styles.skelBar} style={{ width: 280, height: 38, borderRadius: 999 }} />
+          <div className={styles.skelBar} style={{ width: 120, height: 38, borderRadius: 999 }} />
+        </div>
+      </div>
+
+      <div className={styles.grid}>
+        <div className={styles.main}>
+          <section className={styles.section}>
+            <div className={styles.skelBar} style={{ width: 140, height: 14 }} />
+            <div className={styles.skelStrip} style={{ marginTop: 12 }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className={styles.skelCard} style={{ width: 280, height: 92 }} />
+              ))}
+            </div>
+          </section>
+
+          <section className={styles.section}>
+            <div className={styles.skelBar} style={{ width: 140, height: 14 }} />
+            <div className={styles.skelCards} style={{ marginTop: 12 }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className={styles.skelCard} style={{ height: 220 }} />
+              ))}
+            </div>
+          </section>
+
+          <section className={styles.section}>
+            <div className={styles.skelBar} style={{ width: 140, height: 14 }} />
+            <div className={styles.skelCards} style={{ marginTop: 12 }}>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className={styles.skelCard} style={{ height: 120 }} />
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <aside className={styles.rail}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className={styles.skelCard} style={{ height: 170 }} />
+          ))}
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+function SectionRetry({
+  message,
+  onRetry,
+  retrying,
+}: {
+  message: string
+  onRetry: () => void
+  retrying: boolean
+}) {
+  return (
+    <div className={styles.retryPanel}>
+      <span>{message}</span>
+      <button onClick={onRetry} disabled={retrying}>
+        <RefreshCw size={12} className={retrying ? styles.skelSpin : undefined} />
+        {retrying ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 
 export function CommunityPage() {
   const navigate = useNavigate()
   const viewer = localStorage.getItem('space_user') || ''
 
+  // ---- local UI state ----
   const [myGroups, setMyGroups] = useState<Conversation[]>([])
 
   const [search, setSearch] = useState('')
@@ -199,16 +450,25 @@ export function CommunityPage() {
   const [scene, setScene] = useState<string | null>(null)
 
   const [taxonomy, setTaxonomy] = useState<Taxonomy>({ categories: [], scenes: [] })
+  const [taxonomyLoading, setTaxonomyLoading] = useState(true)
+
   const [discover, setDiscover] = useState<CommunityGroup[]>([])
   const [discoverLoading, setDiscoverLoading] = useState(true)
+  const [discoverError, setDiscoverError] = useState<string | null>(null)
+  const [discoverRetrying, setDiscoverRetrying] = useState(false)
+
+  const [calls, setCalls] = useState<CommunityCall[]>([])
+  const [callsLoading, setCallsLoading] = useState(true)
+  const [callsError, setCallsError] = useState<string | null>(null)
+  const [callsRetrying, setCallsRetrying] = useState(false)
 
   const [requests, setRequests] = useState<CommunityRequest[]>([])
   const [invites, setInvites] = useState<CommunityInvite[]>([])
   const [people, setPeople] = useState<CommunityPerson[]>([])
   const [live, setLive] = useState<CommunityLive[]>([])
   const [calendar, setCalendar] = useState<CommunityCalendar[]>([])
-  const [calls, setCalls] = useState<CommunityCall[]>([])
-  const [callsLoading, setCallsLoading] = useState(true)
+  const [sidebarsLoading, setSidebarsLoading] = useState(true)
+
   const [canHost, setCanHost] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
   const [composerInitial, setComposerInitial] = useState<CommunityCall | null>(null)
@@ -217,6 +477,8 @@ export function CommunityPage() {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [recentlyJoinedId, setRecentlyJoinedId] = useState<number | null>(null)
+  const [bootstrapped, setBootstrapped] = useState(false)
+
   const joinTimerRef = useRef<number | null>(null)
   const mounted = useRef(true)
 
@@ -227,6 +489,63 @@ export function CommunityPage() {
     }
   }, [])
 
+  // ---- cache keys ----
+  const taxonomyKey = useMemo(() => (viewer ? makeSliceKey(viewer, 'taxonomy') : ''), [viewer])
+
+  const discoverParams = useMemo(
+    () => ({
+      q: search.trim(),
+      category: category ?? null,
+      scene: scene ?? null,
+    }),
+    [search, category, scene],
+  )
+
+  const discoverKey = useMemo(
+    () => (viewer ? makeSliceKey(viewer, 'discover', discoverParams) : ''),
+    [viewer, discoverParams],
+  )
+
+  const callsParams = useMemo(
+    () => ({
+      scene: scene ?? null,
+      status: 'open',
+      limit: 6,
+    }),
+    [scene],
+  )
+
+  const callsKey = useMemo(
+    () => (viewer ? makeSliceKey(viewer, 'calls', callsParams) : ''),
+    [viewer, callsParams],
+  )
+
+  const canHostKey = useMemo(() => (viewer ? makeSliceKey(viewer, 'can-host') : ''), [viewer])
+
+  const sidebarKeys = useMemo(
+    () => ({
+      requests: viewer ? makeSliceKey(viewer, 'requests') : '',
+      invites: viewer ? makeSliceKey(viewer, 'invites') : '',
+      people: viewer ? makeSliceKey(viewer, 'people') : '',
+      live: viewer ? makeSliceKey(viewer, 'live') : '',
+      calendar: viewer ? makeSliceKey(viewer, 'calendar') : '',
+    }),
+    [viewer],
+  )
+
+  // ---- bootstrapped / skeleton control ----
+  useEffect(() => {
+    if (!viewer) {
+      setBootstrapped(true)
+      return
+    }
+
+    if (!taxonomyLoading && !discoverLoading && !callsLoading) {
+      setBootstrapped(true)
+    }
+  }, [viewer, taxonomyLoading, discoverLoading, callsLoading])
+
+  // ---- open group chat ----
   const openGroupChat = useCallback(
     (id: number) => {
       window.dispatchEvent(new CustomEvent('open-chat', { detail: id }))
@@ -235,112 +554,393 @@ export function CommunityPage() {
     [navigate],
   )
 
-  // ---- your groups (real) ----
+  // ---- taxonomy ----
+  useEffect(() => {
+    if (!viewer || !taxonomyKey) {
+      setTaxonomy({ categories: [], scenes: [] })
+      setTaxonomyLoading(false)
+      return
+    }
+
+    const cached = getCachedSlice<Taxonomy>(taxonomyKey, viewer)
+    if (cached) {
+      setTaxonomy(cached)
+      setTaxonomyLoading(false)
+      return
+    }
+
+    let alive = true
+    setTaxonomyLoading(true)
+
+    fetchCommunityTaxonomy(viewer)
+      .then(t => {
+        if (!alive || !mounted.current) return
+
+        setTaxonomy(t)
+        setCachedSlice(taxonomyKey, viewer, t)
+        setTaxonomyLoading(false)
+      })
+      .catch(() => {
+        if (alive && mounted.current) setTaxonomyLoading(false)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [viewer, taxonomyKey, refreshTick])
+
+  // ---- discover ----
+  const loadDiscover = useCallback(
+    async (force = false) => {
+      if (!viewer || !discoverKey) {
+        setDiscover([])
+        setDiscoverLoading(false)
+        setDiscoverError(null)
+        return
+      }
+
+      if (!force) {
+        const cached = getCachedSlice<CommunityGroup[]>(discoverKey, viewer)
+        if (cached) {
+          setDiscover(cached)
+          setDiscoverLoading(false)
+          setDiscoverError(null)
+          return
+        }
+      }
+
+      setDiscoverLoading(true)
+      setDiscoverError(null)
+
+      try {
+        const rows = await fetchCommunityDiscover(viewer, discoverParams)
+        if (!mounted.current) return
+
+        setDiscover(rows)
+        setCachedSlice(discoverKey, viewer, rows)
+      } catch (e: any) {
+        if (mounted.current) {
+          setDiscoverError(e?.message || 'Could not load groups.')
+        }
+      } finally {
+        if (mounted.current) setDiscoverLoading(false)
+      }
+    },
+    [viewer, discoverKey, discoverParams],
+  )
+
+  useEffect(() => {
+    if (!viewer) {
+      setDiscover([])
+      setDiscoverLoading(false)
+      setDiscoverError(null)
+      return
+    }
+
+    const cached = getCachedSlice<CommunityGroup[]>(discoverKey, viewer)
+    if (cached) {
+      setDiscover(cached)
+      setDiscoverLoading(false)
+      setDiscoverError(null)
+      return
+    }
+
+    let alive = true
+    setDiscoverLoading(true)
+    setDiscoverError(null)
+
+    const timer = window.setTimeout(() => {
+      fetchCommunityDiscover(viewer, discoverParams)
+        .then(rows => {
+          if (!alive || !mounted.current) return
+
+          setDiscover(rows)
+          setCachedSlice(discoverKey, viewer, rows)
+          setDiscoverLoading(false)
+        })
+        .catch(e => {
+          if (!alive || !mounted.current) return
+
+          setDiscoverError(e?.message || 'Could not load groups.')
+          setDiscoverLoading(false)
+        })
+    }, 220)
+
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [viewer, discoverKey, discoverParams, refreshTick])
+
+  const retryDiscover = useCallback(async () => {
+    setDiscoverRetrying(true)
+    await loadDiscover(true)
+    setDiscoverRetrying(false)
+  }, [loadDiscover])
+
+  // ---- calls ----
+  const loadCalls = useCallback(
+    async (force = false) => {
+      if (!viewer || !callsKey) {
+        setCalls([])
+        setCallsLoading(false)
+        setCallsError(null)
+        return
+      }
+
+      if (!force) {
+        const cached = getCachedSlice<CommunityCall[]>(callsKey, viewer)
+        if (cached) {
+          setCalls(cached)
+          setCallsLoading(false)
+          setCallsError(null)
+          return
+        }
+      }
+
+      setCallsLoading(true)
+      setCallsError(null)
+
+      try {
+        const rows = await fetchCommunityCalls(viewer, {
+          scene: callsParams.scene,
+          status: 'open',
+          limit: 6,
+        })
+
+        if (!mounted.current) return
+
+        setCalls(rows)
+        setCachedSlice(callsKey, viewer, rows)
+      } catch (e: any) {
+        if (mounted.current) {
+          setCallsError(e?.message || 'Could not load opportunities.')
+        }
+      } finally {
+        if (mounted.current) setCallsLoading(false)
+      }
+    },
+    [viewer, callsKey, callsParams],
+  )
+
+  useEffect(() => {
+    if (!viewer) {
+      setCalls([])
+      setCallsLoading(false)
+      setCallsError(null)
+      return
+    }
+
+    const cached = getCachedSlice<CommunityCall[]>(callsKey, viewer)
+    if (cached) {
+      setCalls(cached)
+      setCallsLoading(false)
+      setCallsError(null)
+      return
+    }
+
+    let alive = true
+    setCallsLoading(true)
+    setCallsError(null)
+
+    fetchCommunityCalls(viewer, {
+      scene: callsParams.scene,
+      status: 'open',
+      limit: 6,
+    })
+      .then(rows => {
+        if (!alive || !mounted.current) return
+
+        setCalls(rows)
+        setCachedSlice(callsKey, viewer, rows)
+        setCallsLoading(false)
+      })
+      .catch(e => {
+        if (!alive || !mounted.current) return
+
+        setCallsError(e?.message || 'Could not load opportunities.')
+        setCallsLoading(false)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [viewer, callsKey, callsParams, refreshTick])
+
+  const retryCalls = useCallback(async () => {
+    setCallsRetrying(true)
+    await loadCalls(true)
+    setCallsRetrying(false)
+  }, [loadCalls])
+
+  // ---- sidebars ----
+  const loadSidebars = useCallback(async () => {
+    if (!viewer) {
+      setRequests([])
+      setInvites([])
+      setPeople([])
+      setLive([])
+      setCalendar([])
+      setSidebarsLoading(false)
+      return
+    }
+
+    const cachedRequests = getCachedSlice<CommunityRequest[]>(sidebarKeys.requests, viewer)
+    const cachedInvites = getCachedSlice<CommunityInvite[]>(sidebarKeys.invites, viewer)
+    const cachedPeople = getCachedSlice<CommunityPerson[]>(sidebarKeys.people, viewer)
+    const cachedLive = getCachedSlice<CommunityLive[]>(sidebarKeys.live, viewer)
+    const cachedCalendar = getCachedSlice<CommunityCalendar[]>(sidebarKeys.calendar, viewer)
+
+    if (
+      cachedRequests !== null &&
+      cachedInvites !== null &&
+      cachedPeople !== null &&
+      cachedLive !== null &&
+      cachedCalendar !== null
+    ) {
+      setRequests(cachedRequests)
+      setInvites(cachedInvites)
+      setPeople(cachedPeople)
+      setLive(cachedLive)
+      setCalendar(cachedCalendar)
+      setSidebarsLoading(false)
+      return
+    }
+
+    setSidebarsLoading(true)
+
+    const [rq, iv, pp] = await Promise.all([
+      cachedRequests !== null
+        ? Promise.resolve(cachedRequests)
+        : getOrFetchSlice(sidebarKeys.requests, viewer, () =>
+            fetchCommunityRequests(viewer).catch(() => [] as CommunityRequest[]),
+          ),
+      cachedInvites !== null
+        ? Promise.resolve(cachedInvites)
+        : getOrFetchSlice(sidebarKeys.invites, viewer, () =>
+            fetchCommunityInvites(viewer).catch(() => [] as CommunityInvite[]),
+          ),
+      cachedPeople !== null
+        ? Promise.resolve(cachedPeople)
+        : getOrFetchSlice(sidebarKeys.people, viewer, () =>
+            fetchCommunityPeople(viewer).catch(() => [] as CommunityPerson[]),
+          ),
+    ])
+
+    if (!mounted.current) return
+
+    setRequests(rq)
+    setInvites(iv)
+    setPeople(pp)
+
+    const [lv, cal] = await Promise.all([
+      cachedLive !== null
+        ? Promise.resolve(cachedLive)
+        : getOrFetchSlice(sidebarKeys.live, viewer, () =>
+            fetchCommunityLive(viewer).catch(() => [] as CommunityLive[]),
+          ),
+      cachedCalendar !== null
+        ? Promise.resolve(cachedCalendar)
+        : getOrFetchSlice(sidebarKeys.calendar, viewer, () =>
+            fetchCommunityCalendar(viewer).catch(() => [] as CommunityCalendar[]),
+          ),
+    ])
+
+    if (!mounted.current) return
+
+    setLive(lv)
+    setCalendar(cal)
+    setSidebarsLoading(false)
+  }, [viewer, sidebarKeys])
+
+  useEffect(() => {
+    if (!viewer) return
+
+    const timer = window.setTimeout(() => {
+      void loadSidebars()
+    }, 350)
+
+    return () => window.clearTimeout(timer)
+  }, [viewer, loadSidebars, refreshTick])
+
+  // ---- can host ----
+  useEffect(() => {
+    if (!viewer || !canHostKey) {
+      setCanHost(false)
+      return
+    }
+
+    const cached = getCachedSlice<boolean>(canHostKey, viewer)
+    if (cached !== null) {
+      setCanHost(cached)
+      return
+    }
+
+    let alive = true
+
+    const timer = window.setTimeout(() => {
+      fetchCanHostCalls(viewer)
+        .then(ok => {
+          if (!alive || !mounted.current) return
+
+          setCanHost(ok)
+          setCachedSlice(canHostKey, viewer, ok)
+        })
+        .catch(() => {
+          if (alive && mounted.current) setCanHost(false)
+        })
+    }, 550)
+
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [viewer, canHostKey, refreshTick])
+
+  // ---- your groups ----
   useEffect(() => {
     if (!viewer) {
       setMyGroups([])
       return
     }
-    let alive = true
-    fetchConversations(viewer, false)
-      .then(rows => {
-        if (alive) setMyGroups(rows.filter(c => c.kind === 'group'))
-      })
-      .catch(() => {
-        if (alive) setMyGroups([])
-      })
-    return () => {
-      alive = false
-    }
-  }, [viewer, refreshTick])
 
-  // ---- taxonomy (real chips/counts) ----
-  useEffect(() => {
-    if (!viewer) return
-    fetchCommunityTaxonomy(viewer)
-      .then(t => mounted.current && setTaxonomy(t))
-      .catch(() => {})
-  }, [viewer])
+    const cached = readMyGroupsCache(viewer)
 
-  // ---- discover (real, filtered server-side) ----
-  useEffect(() => {
-    if (!viewer) {
-      setDiscover([])
-      setDiscoverLoading(false)
-      return
+    if (cached) {
+      setMyGroups(cached.groups)
+
+      // If cache is recently fresh, do not refetch on simple tab switch.
+      if (Date.now() - cached.ts < MY_GROUPS_SOFT_TTL) {
+        return
+      }
     }
+
     let alive = true
-    setDiscoverLoading(true)
+    const delay = cached ? 1200 : 250
+
     const timer = window.setTimeout(() => {
-      fetchCommunityDiscover(viewer, { q: search.trim(), category, scene })
-        .then(rows => alive && setDiscover(rows))
-        .catch(() => alive && setDiscover([]))
-        .finally(() => alive && setDiscoverLoading(false))
-    }, 250)
+      fetchConversations(viewer, false)
+        .then(rows => {
+          if (!alive || !mounted.current) return
+
+          const groups = rows.filter(c => c.kind === 'group')
+          setMyGroups(groups)
+          writeMyGroupsCache(viewer, groups)
+        })
+        .catch(() => {
+          if (alive && mounted.current && !cached) {
+            setMyGroups([])
+          }
+        })
+    }, delay)
+
     return () => {
       alive = false
       window.clearTimeout(timer)
     }
-  }, [viewer, search, category, scene, refreshTick])
+  }, [viewer, refreshTick])
 
-  // ---- open calls (real, filtered by the active scene chip) ----
-  useEffect(() => {
-    if (!viewer) {
-      setCalls([])
-      setCallsLoading(false)
-      return
-    }
-    let alive = true
-    setCallsLoading(true)
-    fetchCommunityCalls(viewer, { scene, status: 'open', limit: 6 })
-      .then(rows => alive && setCalls(rows))
-      .catch(() => alive && setCalls([]))
-      .finally(() => alive && setCallsLoading(false))
-    return () => {
-      alive = false
-    }
-  }, [viewer, scene, refreshTick])
-
-  // ---- can this viewer post/manage calls? mirrors the server's authority rule ----
-  useEffect(() => {
-    if (!viewer) {
-      setCanHost(false)
-      return
-    }
-    let alive = true
-    fetchCanHostCalls(viewer)
-      .then(ok => alive && setCanHost(ok))
-      .catch(() => alive && setCanHost(false))
-    return () => {
-      alive = false
-    }
-  }, [viewer])
-
-  // ---- sidebars (real) ----
-  const loadSidebars = useCallback(async () => {
-    if (!viewer) return
-    const [rq, iv, pp, lv, cal] = await Promise.all([
-      fetchCommunityRequests(viewer).catch(() => []),
-      fetchCommunityInvites(viewer).catch(() => []),
-      fetchCommunityPeople(viewer).catch(() => []),
-      fetchCommunityLive(viewer).catch(() => []),
-      fetchCommunityCalendar(viewer).catch(() => []),
-    ])
-    if (!mounted.current) return
-    setRequests(rq)
-    setInvites(iv)
-    setPeople(pp)
-    setLive(lv)
-    setCalendar(cal)
-  }, [viewer])
-
-  useEffect(() => {
-    void loadSidebars()
-  }, [loadSidebars, refreshTick])
-
-  // Live membership changes: when ToastHost reports a new group notification
-  // (approval / invite / rejection / removal), refresh Your-groups, Discover and
-  // the side rails so the page reflects true membership without a manual reload.
+  // ---- group notification refresh ----
   useEffect(() => {
     if (!viewer) return
 
@@ -348,6 +948,8 @@ export function CommunityPage() {
       const n = (event as CustomEvent<AppNotification>).detail
       if (!n || n.category !== 'groups') return
 
+      invalidateViewerSlices(viewer)
+      clearMyGroupsCache(viewer)
       setRefreshTick(t => t + 1)
 
       const joined = n.type === 'group_request_approved' || n.type === 'group_invite'
@@ -355,7 +957,11 @@ export function CommunityPage() {
 
       if (joined && gid != null) {
         setRecentlyJoinedId(gid)
-        if (joinTimerRef.current != null) window.clearTimeout(joinTimerRef.current)
+
+        if (joinTimerRef.current != null) {
+          window.clearTimeout(joinTimerRef.current)
+        }
+
         joinTimerRef.current = window.setTimeout(() => {
           joinTimerRef.current = null
           setRecentlyJoinedId(null)
@@ -364,92 +970,145 @@ export function CommunityPage() {
     }
 
     window.addEventListener('space:notification', onNotif as EventListener)
-    return () => window.removeEventListener('space:notification', onNotif as EventListener)
+
+    return () => {
+      window.removeEventListener('space:notification', onNotif as EventListener)
+    }
   }, [viewer])
 
   useEffect(() => {
     return () => {
-      if (joinTimerRef.current != null) window.clearTimeout(joinTimerRef.current)
+      if (joinTimerRef.current != null) {
+        window.clearTimeout(joinTimerRef.current)
+      }
     }
   }, [])
 
-  // ---- discover actions (real join/request/cancel) ----
+  // ---- actions ----
   const onJoinRequest = useCallback(
     async (g: CommunityGroup) => {
       if (!viewer) return
+
       setBusyId(g.id)
+
       try {
         if (g.request_status === 'pending') {
           const d = await cancelGroupJoinRequest(viewer, g.id)
+
           if (!d.error) {
-            setDiscover(prev => prev.map(x => (x.id === g.id ? { ...x, request_status: 'none' } : x)))
+            const next = discover.map(x =>
+              x.id === g.id ? { ...x, request_status: 'none' } : x,
+            )
+
+            setDiscover(next)
+            setCachedSlice(discoverKey, viewer, next)
           }
+
           return
         }
+
         const d = await joinOrRequestGroup(viewer, g.id)
+
         if (d.status === 'joined') {
-          setDiscover(prev => prev.filter(x => x.id !== g.id))
+          const next = discover.filter(x => x.id !== g.id)
+          setDiscover(next)
+          setCachedSlice(discoverKey, viewer, next)
+
+          invalidateViewerSlices(viewer)
+          clearMyGroupsCache(viewer)
+          setRefreshTick(t => t + 1)
+
           openGroupChat(g.id)
-          void loadSidebars()
           return
         }
-        setDiscover(prev => prev.map(x => (x.id === g.id ? { ...x, request_status: 'pending' } : x)))
+
+        const next = discover.map(x =>
+          x.id === g.id ? { ...x, request_status: 'pending' } : x,
+        )
+
+        setDiscover(next)
+        setCachedSlice(discoverKey, viewer, next)
       } finally {
         setBusyId(null)
       }
     },
-    [loadSidebars, openGroupChat, viewer],
+    [discover, discoverKey, openGroupChat, viewer],
   )
 
-  // ---- request approve/reject (real) ----
   const onApprove = useCallback(
     async (r: CommunityRequest) => {
       if (!viewer) return
+
       setBusyId(r.id)
+
       try {
         const d = await approveGroupJoinRequest(viewer, r.group_id, r.id)
+
         if (!d.error) {
-          setRequests(prev => prev.filter(x => x.id !== r.id))
-          setDiscover(prev => prev.filter(x => x.id !== r.group_id))
-          void loadSidebars()
+          const nextRequests = requests.filter(x => x.id !== r.id)
+          const nextDiscover = discover.filter(x => x.id !== r.group_id)
+
+          setRequests(nextRequests)
+          setDiscover(nextDiscover)
+
+          setCachedSlice(sidebarKeys.requests, viewer, nextRequests)
+          setCachedSlice(discoverKey, viewer, nextDiscover)
+
+          invalidateViewerSlices(viewer)
+          clearMyGroupsCache(viewer)
+          setRefreshTick(t => t + 1)
         }
       } finally {
         setBusyId(null)
       }
     },
-    [loadSidebars, viewer],
+    [discover, discoverKey, requests, sidebarKeys.requests, viewer],
   )
 
   const onDecline = useCallback(
     async (r: CommunityRequest) => {
       if (!viewer) return
+
       setBusyId(r.id)
+
       try {
         const d = await rejectGroupJoinRequest(viewer, r.group_id, r.id)
-        if (!d.error) setRequests(prev => prev.filter(x => x.id !== r.id))
+
+        if (!d.error) {
+          const next = requests.filter(x => x.id !== r.id)
+          setRequests(next)
+          setCachedSlice(sidebarKeys.requests, viewer, next)
+        }
       } finally {
         setBusyId(null)
       }
     },
-    [viewer],
+    [requests, sidebarKeys.requests, viewer],
   )
 
-  // ---- invite accept/later (real) ----
   const onInvite = useCallback(
     async (iv: CommunityInvite, accept: boolean) => {
       if (!viewer) return
+
       void markNotificationRead(viewer, iv.notification_id)
-      setInvites(prev => prev.filter(x => x.notification_id !== iv.notification_id))
-      if (accept) openGroupChat(iv.conversation_id)
+
+      const next = invites.filter(x => x.notification_id !== iv.notification_id)
+      setInvites(next)
+      setCachedSlice(sidebarKeys.invites, viewer, next)
+
+      if (accept) {
+        openGroupChat(iv.conversation_id)
+      }
     },
-    [openGroupChat, viewer],
+    [invites, openGroupChat, sidebarKeys.invites, viewer],
   )
 
-  // ---- follow (real /follow on sales backend) ----
   const onFollow = useCallback(
     async (username: string) => {
       if (!viewer) return
+
       setFollowed(prev => ({ ...prev, [username]: !prev[username] }))
+
       try {
         await fetch(`${API}/follow`, {
           method: 'POST',
@@ -466,33 +1125,52 @@ export function CommunityPage() {
   const onToggleCallInterest = useCallback(
     async (c: CommunityCall) => {
       if (!viewer) return
-      const next = !c.interested_by_viewer
+
+      const nextInterested = !c.interested_by_viewer
+
       setBusyId(c.id)
-      setCalls(prev =>
-        prev.map(x =>
-          x.id === c.id
-            ? { ...x, interested_by_viewer: next, interest_count: Math.max(0, x.interest_count + (next ? 1 : -1)) }
-            : x,
-        ),
+
+      const optimisticCalls = calls.map(x =>
+        x.id === c.id
+          ? {
+              ...x,
+              interested_by_viewer: nextInterested,
+              interest_count: Math.max(0, x.interest_count + (nextInterested ? 1 : -1)),
+            }
+          : x,
       )
+
+      setCalls(optimisticCalls)
+
       try {
         const d = await toggleCommunityCallInterest(viewer, c.id)
+
         if (d.error) {
-          setCalls(prev =>
-            prev.map(x =>
-              x.id === c.id
-                ? { ...x, interested_by_viewer: !next, interest_count: Math.max(0, x.interest_count + (next ? -1 : 1)) }
-                : x,
-            ),
+          const reverted = calls.map(x =>
+            x.id === c.id
+              ? {
+                  ...x,
+                  interested_by_viewer: !nextInterested,
+                  interest_count: Math.max(0, x.interest_count + (nextInterested ? -1 : 1)),
+                }
+              : x,
           )
+
+          setCalls(reverted)
+          setCachedSlice(callsKey, viewer, reverted)
         } else if (typeof d.count === 'number') {
-          setCalls(prev => prev.map(x => (x.id === c.id ? { ...x, interest_count: d.count! } : x)))
+          const confirmed = calls.map(x =>
+            x.id === c.id ? { ...x, interest_count: d.count! } : x,
+          )
+
+          setCalls(confirmed)
+          setCachedSlice(callsKey, viewer, confirmed)
         }
       } finally {
         setBusyId(null)
       }
     },
-    [viewer],
+    [calls, callsKey, viewer],
   )
 
   const openComposer = useCallback((call?: CommunityCall | null) => {
@@ -500,25 +1178,51 @@ export function CommunityPage() {
     setComposerOpen(true)
   }, [])
 
-  const handleCallSaved = useCallback((call: CommunityCall) => {
-    setCalls(prev => {
-      const i = prev.findIndex(x => x.id === call.id)
-      if (i >= 0) {
-        const cp = [...prev]
-        cp[i] = call
+  const handleCallSaved = useCallback(
+    (call: CommunityCall) => {
+      setCalls(prev => {
+        const i = prev.findIndex(x => x.id === call.id)
+
+        if (i >= 0) {
+          const cp = [...prev]
+          cp[i] = call
+          setCachedSlice(callsKey, viewer, cp)
+          return cp
+        }
+
+        const cp = [call, ...prev]
+        setCachedSlice(callsKey, viewer, cp)
         return cp
-      }
-      return [call, ...prev]
-    })
-    setComposerOpen(false)
-    setComposerInitial(null)
-  }, [])
+      })
+
+      setComposerOpen(false)
+      setComposerInitial(null)
+    },
+    [callsKey, viewer],
+  )
 
   const sceneCount = useMemo(() => {
     const m: Record<string, number> = {}
-    for (const s of taxonomy.scenes) m[s.name] = s.count
+
+    for (const s of taxonomy.scenes) {
+      m[s.name] = s.count
+    }
+
     return m
   }, [taxonomy])
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  if (!bootstrapped) {
+    return (
+      <main className={styles.layout}>
+        <Navbar />
+        <CommunitySkeleton />
+      </main>
+    )
+  }
 
   return (
     <main className={styles.layout}>
@@ -545,6 +1249,7 @@ export function CommunityPage() {
                 aria-label="Search community"
               />
             </div>
+
             <button
               className={styles.startBtn}
               onClick={() => navigate('/messenger', { state: { openCreateGroup: true } })}
@@ -557,53 +1262,79 @@ export function CommunityPage() {
 
         <div className={styles.grid}>
           <div className={styles.main}>
-            {/* YOUR GROUPS — real */}
+            {/* YOUR GROUPS */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>
                   Your groups{myGroups.length > 0 ? ` · ${myGroups.length}` : ''}
                 </span>
+
                 <button className={styles.secLink} onClick={() => navigate('/messenger')}>
                   Manage
                 </button>
               </div>
 
               {myGroups.length === 0 ? (
-                <p className={styles.emptyInline}>You’re not in any groups yet. Discover one below.</p>
+                <p className={styles.emptyInline}>
+                  You’re not in any groups yet. Discover one below.
+                </p>
               ) : (
                 <div className={styles.filmstrip}>
                   {myGroups.map(g => {
                     const cat = [g.category, g.scene].filter(Boolean).join(' · ')
+
                     return (
-                      <button key={g.id} className={styles.myGroupCard} onClick={() => openGroupChat(g.id)}>
+                      <button
+                        key={g.id}
+                        className={styles.myGroupCard}
+                        onClick={() => openGroupChat(g.id)}
+                      >
                         <span className={styles.myGroupTop}>
-                          <Thumb tone={toneFor(g.id)} image={g.image_url} className={styles.myGroupAvatar} />
+                          <Thumb
+                            tone={toneFor(g.id)}
+                            image={g.image_url}
+                            className={styles.myGroupAvatar}
+                          />
+
                           <span className={styles.myGroupMid}>
                             <span className={styles.myGroupName}>{g.name || 'Group'}</span>
                             {cat && <span className={styles.myGroupCat}>{cat}</span>}
                           </span>
                         </span>
-                        <span className={styles.myGroupPreview}>{previewFromConv(g, viewer)}</span>
-                        {(g.unread || 0) > 0 && <span className={styles.myGroupBadge}>{g.unread}</span>}
-                        {recentlyJoinedId === g.id && <span className={styles.myGroupNew}>New</span>}
+
+                        <span className={styles.myGroupPreview}>
+                          {previewFromConv(g, viewer)}
+                        </span>
+
+                        {(g.unread || 0) > 0 && (
+                          <span className={styles.myGroupBadge}>{g.unread}</span>
+                        )}
+
+                        {recentlyJoinedId === g.id && (
+                          <span className={styles.myGroupNew}>New</span>
+                        )}
                       </button>
                     )
                   })}
+
                   <button
                     className={styles.newGroupTile}
                     onClick={() => navigate('/messenger', { state: { openCreateGroup: true } })}
                   >
-                    <span className={styles.newGroupIcon}><Plus size={15} /></span>
+                    <span className={styles.newGroupIcon}>
+                      <Plus size={15} />
+                    </span>
                     <span className={styles.newGroupLabel}>New group</span>
                   </button>
                 </div>
               )}
             </section>
 
-            {/* DISCOVER — real */}
+            {/* DISCOVER */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>Discover groups</span>
+
                 <button
                   className={styles.secLink}
                   onClick={() => {
@@ -623,6 +1354,7 @@ export function CommunityPage() {
                 >
                   All
                 </button>
+
                 {taxonomy.categories.map(c => (
                   <button
                     key={c}
@@ -634,8 +1366,18 @@ export function CommunityPage() {
                 ))}
               </div>
 
-              {discoverLoading ? (
-                <p className={styles.emptyInline}>Finding groups…</p>
+              {discoverError ? (
+                <SectionRetry
+                  message={discoverError}
+                  onRetry={retryDiscover}
+                  retrying={discoverRetrying}
+                />
+              ) : discoverLoading ? (
+                <div className={styles.skelCards}>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className={styles.skelCard} style={{ height: 220 }} />
+                  ))}
+                </div>
               ) : discover.length === 0 ? (
                 <p className={styles.emptyInline}>
                   No discoverable groups match yet. Owners can open a group’s info to set its
@@ -650,7 +1392,11 @@ export function CommunityPage() {
 
                     return (
                       <article key={g.id} className={styles.discoverCard}>
-                        <Thumb tone={toneFor(g.id)} image={g.image_url} className={styles.discoverImage}>
+                        <Thumb
+                          tone={toneFor(g.id)}
+                          image={g.image_url}
+                          className={styles.discoverImage}
+                        >
                           <span
                             className={`${styles.modeBadge} ${
                               g.join_mode === 'open' ? styles.modePublic : styles.modeLock
@@ -661,18 +1407,22 @@ export function CommunityPage() {
                             ) : (
                               <Lock size={10} />
                             )}
+
                             {g.join_mode === 'open'
                               ? 'Public'
                               : g.join_mode === 'request'
                                 ? 'Request'
                                 : 'Invite only'}
                           </span>
+
                           {g.category && <span className={styles.catTag}>{g.category}</span>}
                         </Thumb>
 
                         <div className={styles.discoverBody}>
                           <h3 className={styles.discoverName}>{g.name || 'Untitled group'}</h3>
-                          <p className={styles.discoverDesc}>{g.description || 'No description.'}</p>
+                          <p className={styles.discoverDesc}>
+                            {g.description || 'No description.'}
+                          </p>
 
                           {g.tags && g.tags.length > 0 && (
                             <div className={styles.tagRow}>
@@ -692,6 +1442,7 @@ export function CommunityPage() {
                                 </span>
                               ))}
                             </span>
+
                             <span className={styles.metaText}>{g.member_count} members</span>
                           </div>
                         </div>
@@ -737,12 +1488,13 @@ export function CommunityPage() {
               )}
             </section>
 
-            {/* OPEN CALLS — real community_calls */}
+            {/* OPEN CALLS */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>
                   Open calls{calls.length > 0 ? ` · ${calls.length}` : ''}
                 </span>
+
                 {canHost && (
                   <button className={styles.postCallBtn} onClick={() => openComposer(null)}>
                     <Plus size={13} /> Post an opportunity
@@ -750,8 +1502,18 @@ export function CommunityPage() {
                 )}
               </div>
 
-              {callsLoading ? (
-                <p className={styles.emptyInline}>Loading opportunities…</p>
+              {callsError ? (
+                <SectionRetry
+                  message={callsError}
+                  onRetry={retryCalls}
+                  retrying={callsRetrying}
+                />
+              ) : callsLoading ? (
+                <div className={styles.skelCards}>
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className={styles.skelCard} style={{ height: 120 }} />
+                  ))}
+                </div>
               ) : calls.length === 0 ? (
                 <p className={styles.emptyInline}>
                   No open calls right now. Accredited houses and curators post opportunities here.
@@ -763,6 +1525,7 @@ export function CommunityPage() {
                     const ul = untilLabel(c.deadline_at, c.status)
                     const closed = c.status !== 'open'
                     const elig = eligSummary(c.eligibility)
+
                     const subBits = [c.host_display || c.host_user_name || 'House']
                     if (c.online) subBits.push('Online')
                     else if (c.location) subBits.push(c.location)
@@ -791,6 +1554,7 @@ export function CommunityPage() {
                             {kindLabel(c.kind)}
                             {c.scene ? ` · ${c.scene}` : ''}
                           </span>
+
                           <h4 className={styles.callTitle}>{c.title}</h4>
                           <p className={styles.callSub}>{subBits.join(' · ')}</p>
 
@@ -840,21 +1604,25 @@ export function CommunityPage() {
               )}
             </section>
 
-            {/* AUCTION CALENDAR — real auction timeline */}
+            {/* AUCTION CALENDAR */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>Auction calendar</span>
+
                 <button className={styles.secLink} onClick={() => navigate('/auctions')}>
                   Full floor
                 </button>
               </div>
 
-              {calendar.length === 0 ? (
+              {sidebarsLoading && calendar.length === 0 ? (
+                <p className={styles.emptyInline}>Checking the calendar…</p>
+              ) : calendar.length === 0 ? (
                 <p className={styles.emptyInline}>No upcoming sales on the calendar yet.</p>
               ) : (
                 <div className={styles.callGrid}>
                   {calendar.map(c => {
                     const dm = dayMonth(c.ends_at)
+
                     return (
                       <article
                         key={c.id}
@@ -867,11 +1635,14 @@ export function CommunityPage() {
                           <strong>{dm.day}</strong>
                           <span>{dm.month}</span>
                         </div>
+
                         <div className={styles.callBody}>
                           <span className={styles.callType}>
                             {c.status === 'live' ? 'Live now' : 'Upcoming sale'}
                           </span>
+
                           <h4 className={styles.callTitle}>{c.title}</h4>
+
                           <p className={styles.callSub}>
                             {c.host_display || c.host_username || 'House'} · {c.lot_count} lots
                           </p>
@@ -883,7 +1654,7 @@ export function CommunityPage() {
               )}
             </section>
 
-            {/* SCENES — real counts from group.scene */}
+            {/* SCENES */}
             <section className={styles.section}>
               <div className={styles.secHead}>
                 <span className={styles.secLabel}>Scenes</span>
@@ -910,12 +1681,13 @@ export function CommunityPage() {
             </section>
           </div>
 
-          {/* RIGHT RAIL — real */}
+          {/* RIGHT RAIL */}
           <aside className={styles.rail}>
-            {/* LIVE NOW — real live auctions */}
+            {/* LIVE NOW */}
             <div className={styles.railCard}>
               <div className={styles.railHead}>
                 <span className={styles.secLabel}>Live now</span>
+
                 {live.length > 0 && (
                   <span className={styles.liveCount}>
                     <span className={styles.liveDot} /> {live.length}
@@ -923,15 +1695,22 @@ export function CommunityPage() {
                 )}
               </div>
 
-              {live.length === 0 ? (
+              {sidebarsLoading && live.length === 0 ? (
+                <p className={styles.emptyInline}>Checking the floor…</p>
+              ) : live.length === 0 ? (
                 <p className={styles.emptyInline}>No rooms on the block right now.</p>
               ) : (
                 <div className={styles.liveList}>
                   {live.map(l => (
-                    <button key={l.id} className={styles.liveRow} onClick={() => navigate(`/sales/${l.id}`)}>
+                    <button
+                      key={l.id}
+                      className={styles.liveRow}
+                      onClick={() => navigate(`/sales/${l.id}`)}
+                    >
                       <Thumb tone={toneFor(l.id)} className={styles.liveThumb}>
                         <span className={styles.liveBadge}>LOT</span>
                       </Thumb>
+
                       <span className={styles.liveMid}>
                         <strong>{l.title}</strong>
                         <span>
@@ -945,26 +1724,36 @@ export function CommunityPage() {
               )}
             </div>
 
-            {/* REQUESTS & INVITES — real */}
+            {/* REQUESTS & INVITES */}
             <div className={styles.railCard}>
               <div className={styles.railHead}>
                 <span className={styles.secLabel}>Requests &amp; invites</span>
                 <span className={styles.railCount}>{requests.length + invites.length}</span>
               </div>
 
-              {requests.length + invites.length === 0 ? (
+              {sidebarsLoading && requests.length + invites.length === 0 ? (
+                <p className={styles.emptyInline}>Loading requests…</p>
+              ) : requests.length + invites.length === 0 ? (
                 <p className={styles.emptyInline}>Nothing waiting.</p>
               ) : (
                 <div className={styles.reqList}>
                   {requests.map(r => (
                     <div key={`rq-${r.id}`} className={styles.reqItem}>
-                      <Thumb tone={toneFor(r.id)} image={r.avatar_url} className={styles.reqAvatar}>
-                        {!r.avatar_url && <span>{(r.display_name || r.user_name || '?')[0]?.toUpperCase()}</span>}
+                      <Thumb
+                        tone={toneFor(r.id)}
+                        image={r.avatar_url}
+                        className={styles.reqAvatar}
+                      >
+                        {!r.avatar_url && (
+                          <span>{(r.display_name || r.user_name || '?')[0]?.toUpperCase()}</span>
+                        )}
                       </Thumb>
+
                       <p className={styles.reqText}>
                         <strong>{r.display_name || r.user_name}</strong> asked to join{' '}
                         <strong>{r.group_name || 'a group'}</strong>
                       </p>
+
                       <div className={styles.reqActions}>
                         <button
                           className={`${styles.reqBtn} ${styles.reqApprove}`}
@@ -973,6 +1762,7 @@ export function CommunityPage() {
                         >
                           Approve
                         </button>
+
                         <button
                           className={`${styles.reqBtn} ${styles.reqDecline}`}
                           onClick={() => void onDecline(r)}
@@ -986,13 +1776,18 @@ export function CommunityPage() {
 
                   {invites.map(iv => (
                     <div key={`iv-${iv.notification_id}`} className={styles.reqItem}>
-                      <Thumb tone={toneFor(iv.conversation_id)} className={styles.reqAvatar}>
+                      <Thumb
+                        tone={toneFor(iv.conversation_id)}
+                        className={styles.reqAvatar}
+                      >
                         <span>{(iv.group_name || 'G')[0]?.toUpperCase()}</span>
                       </Thumb>
+
                       <p className={styles.reqText}>
                         <strong>{iv.actor_display || 'A member'}</strong> added you to{' '}
                         <strong>{iv.group_name || 'a group'}</strong>
                       </p>
+
                       <div className={styles.reqActions}>
                         <button
                           className={`${styles.reqBtn} ${styles.reqAccept}`}
@@ -1000,6 +1795,7 @@ export function CommunityPage() {
                         >
                           Open
                         </button>
+
                         <button
                           className={`${styles.reqBtn} ${styles.reqLater}`}
                           onClick={() => void onInvite(iv, false)}
@@ -1013,27 +1809,42 @@ export function CommunityPage() {
               )}
             </div>
 
-            {/* AROUND THE WORK — real */}
+            {/* AROUND THE WORK */}
             <div className={styles.railCard}>
               <div className={styles.railHead}>
                 <span className={styles.secLabel}>Around the work</span>
               </div>
 
-              {people.length === 0 ? (
+              {sidebarsLoading && people.length === 0 ? (
+                <p className={styles.emptyInline}>Loading suggestions…</p>
+              ) : people.length === 0 ? (
                 <p className={styles.emptyInline}>No suggestions yet.</p>
               ) : (
                 <div className={styles.peopleList}>
                   {people.map(p => (
                     <div key={p.username} className={styles.personRow}>
-                      <Thumb tone={toneFor(p.username.length)} image={p.avatar_url} className={styles.personAvatar}>
-                        {!p.avatar_url && <span>{(p.display_name || p.username || '?')[0]?.toUpperCase()}</span>}
+                      <Thumb
+                        tone={toneFor(p.username.length)}
+                        image={p.avatar_url}
+                        className={styles.personAvatar}
+                      >
+                        {!p.avatar_url && (
+                          <span>{(p.display_name || p.username || '?')[0]?.toUpperCase()}</span>
+                        )}
                       </Thumb>
-                      <button className={styles.personMid} onClick={() => navigate(`/profile/${p.username}`)}>
+
+                      <button
+                        className={styles.personMid}
+                        onClick={() => navigate(`/profile/${p.username}`)}
+                      >
                         <strong>{p.display_name || p.username}</strong>
                         <span>{p.reason}</span>
                       </button>
+
                       <button
-                        className={`${styles.followBtn} ${followed[p.username] ? styles.followBtnOn : ''}`}
+                        className={`${styles.followBtn} ${
+                          followed[p.username] ? styles.followBtnOn : ''
+                        }`}
                         onClick={() => void onFollow(p.username)}
                       >
                         {followed[p.username] ? 'Following' : 'Follow'}
@@ -1044,11 +1855,12 @@ export function CommunityPage() {
               )}
             </div>
 
-            {/* HOUSE RULES — static trust footer */}
+            {/* HOUSE RULES */}
             <div className={styles.railCard}>
               <div className={styles.railHead}>
                 <span className={styles.secLabel}>House rules</span>
               </div>
+
               <ol className={styles.rulesList}>
                 <li className={styles.ruleItem}>
                   <span className={styles.ruleNum}>01</span>
@@ -1056,18 +1868,21 @@ export function CommunityPage() {
                     <strong>Critique the work, not the person.</strong> Say what you see, then what you’d try.
                   </span>
                 </li>
+
                 <li className={styles.ruleItem}>
                   <span className={styles.ruleNum}>02</span>
                   <span className={styles.ruleText}>
                     <strong>No off-platform sales.</strong> Deals in a group are deals outside the ledger — and outside protection.
                   </span>
                 </li>
+
                 <li className={styles.ruleItem}>
                   <span className={styles.ruleNum}>03</span>
                   <span className={styles.ruleText}>
                     <strong>Credit the hand.</strong> Post only work you made or own, and say which.
                   </span>
                 </li>
+
                 <li className={styles.ruleItem}>
                   <span className={styles.ruleNum}>04</span>
                   <span className={styles.ruleText}>

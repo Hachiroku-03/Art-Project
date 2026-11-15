@@ -1,17 +1,24 @@
-# backend/routers/community.py — leak-wrapped read endpoints + _resolve_viewer.
-# Every write endpoint (calls CRUD, interest, group meta, sweep) is byte-identical
-# to your paste — they already used try/except/finally. Only the 7 bare reads and
-# the _resolve_viewer helper changed, and only structurally (no new except/commit,
-# so error behaviour is exactly as today, minus the leak).
+# backend/routers/community.py
+#
+# Hardened community router:
+# - one DB connection per request where possible
+# - read endpoints wrapped in try/except so they do not escape as 500
+# - safe pooled connection cleanup
+# - community call date validation
+# - live/calendar slices are public and do not waste a DB connection on viewer lookup
+#
 import json
 import os
+import datetime as dt
 
 from fastapi import APIRouter
 
 from db import get_db
 from notification_service import create_notification
 
+
 router = APIRouter()
+
 
 GROUP_JOIN_MODES = {"open", "request", "invite", "private"}
 DISCOVER_MODES = ("open", "request")
@@ -41,32 +48,61 @@ ADMIN_USERNAMES = {
 
 
 # ---------------------------------------------------------------------------
-# helpers (mirrors the per-router style used by chat.py / notifications.py)
+# Safe connection helpers
+# ---------------------------------------------------------------------------
+def _rollback(conn):
+    if not conn:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _close(conn):
+    if not conn:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# helpers
 # ---------------------------------------------------------------------------
 def _canonical_username(cursor, name: str):
     name = (name or "").strip()
     if not name:
         return None
+
     cursor.execute("SELECT username FROM users WHERE username = %s", (name,))
     row = cursor.fetchone()
     if row:
         return row["username"]
+
     cursor.execute("SELECT username FROM users WHERE lower(username) = lower(%s)", (name,))
     row = cursor.fetchone()
     return row["username"] if row else None
 
 
 def _resolve_viewer(viewer_raw: str):
+    """
+    Kept for compatibility, but endpoints below should prefer resolving
+    viewer on the same connection as the main query to avoid double get_db().
+    """
     if not viewer_raw:
         return None
+
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
         return _canonical_username(cursor, viewer_raw)
+    except Exception:
+        return None
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 def _parse_json(value, default):
@@ -93,6 +129,87 @@ def _group_role(cursor, conv_id: int, user: str):
     )
     row = cursor.fetchone()
     return row["role"] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Date helpers / validation
+# ---------------------------------------------------------------------------
+def _parse_dt(value):
+    """
+    Parse common datetime strings into a naive datetime.
+
+    The community_calls table uses plain TIMESTAMP columns in this project,
+    so we normalize aware datetimes to UTC and strip tzinfo for comparison.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, dt.datetime):
+        parsed = value
+    else:
+        s = str(value).strip()
+        if not s:
+            return None
+
+        # Support trailing Z.
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+
+        parsed = None
+
+        try:
+            parsed = dt.datetime.fromisoformat(s)
+        except Exception:
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d",
+            ):
+                try:
+                    parsed = dt.datetime.strptime(s, fmt)
+                    break
+                except Exception:
+                    pass
+
+        if parsed is None:
+            return None
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
+    return parsed
+
+
+def _validate_call_dates(starts_at, ends_at, deadline_at):
+    """
+    Return an error string if dates are invalid, otherwise None.
+    """
+    s = _parse_dt(starts_at)
+    e = _parse_dt(ends_at)
+    d = _parse_dt(deadline_at)
+
+    if starts_at not in (None, "") and s is None:
+        return "invalid starts_at"
+
+    if ends_at not in (None, "") and e is None:
+        return "invalid ends_at"
+
+    if deadline_at not in (None, "") and d is None:
+        return "invalid deadline_at"
+
+    if s and e and e <= s:
+        return "ends_at must be after starts_at"
+
+    if s and d and d < s:
+        return "deadline_at cannot be before starts_at"
+
+    if e and d and d > e:
+        return "deadline_at cannot be after ends_at"
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Open calls / events
@@ -216,8 +333,6 @@ def community_calls(
     status: str = "open",
     limit: int = 20,
 ):
-    v = _resolve_viewer(viewer) or ""
-
     limit = max(1, min(int(limit or 20), 50))
     kind = (kind or "").strip().lower()
     scene = (scene or "").strip()
@@ -262,52 +377,62 @@ def community_calls(
         """
     )
 
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Resolve viewer on the SAME connection.
+        v = _canonical_username(cursor, viewer) or ""
+
         cursor.execute(sql, (v, *params, limit))
         rows = [_clean_call(r) for r in cursor.fetchall()]
         conn.commit()
         return {"calls": rows}
+
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 @router.get("/community/calls/can-host")
 def community_calls_can_host(viewer: str = ""):
-    v = _resolve_viewer(viewer)
-    if not v:
-        return {"can_host": False}
-
-    conn = get_db()
-    cursor = conn.cursor()
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        v = _canonical_username(cursor, viewer)
+        if not v:
+            return {"can_host": False}
+
         can_host = _can_host_calls(cursor, v)
         conn.commit()
         return {"can_host": bool(can_host)}
-    except Exception:
-        conn.rollback()
-        return {"can_host": False}
+
+    except Exception as e:
+        _rollback(conn)
+        return {"can_host": False, "error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 @router.get("/community/calls/{call_id}")
 def community_call_detail(call_id: int, viewer: str = ""):
-    v = _resolve_viewer(viewer) or ""
-
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        v = _canonical_username(cursor, viewer) or ""
         row = _fetch_call(cursor, call_id, v)
 
         if not row:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "call not found"}
 
         row["can_host"] = bool(v) and _can_host_calls(cursor, v)
@@ -315,11 +440,13 @@ def community_call_detail(call_id: int, viewer: str = ""):
 
         conn.commit()
         return {"call": row}
+
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 @router.post("/community/calls")
@@ -352,17 +479,22 @@ def create_community_call(data: dict):
     eligibility = _eligibility_param(data.get("eligibility"))
     apply_url = (data.get("apply_url") or "").strip()[:500] or None
 
-    conn = get_db()
-    cursor = conn.cursor()
+    date_err = _validate_call_dates(starts_at, ends_at, deadline_at)
+    if date_err:
+        return {"error": date_err}
 
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         viewer = _canonical_username(cursor, viewer_raw)
         if not viewer:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "unknown viewer"}
 
         if not _can_host_calls(cursor, viewer):
-            conn.rollback()
+            _rollback(conn)
             return {"error": "only accredited houses or admins can post open calls"}
 
         cursor.execute(
@@ -419,10 +551,11 @@ def create_community_call(data: dict):
         return {"message": "call created", "call": row}
 
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 @router.patch("/community/calls/{call_id}")
@@ -432,28 +565,60 @@ def update_community_call(call_id: int, data: dict):
     if not viewer_raw:
         return {"error": "viewer required"}
 
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         viewer = _canonical_username(cursor, viewer_raw)
         if not viewer:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "unknown viewer"}
 
         cursor.execute(
-            "SELECT host_user_name FROM community_calls WHERE id = %s",
+            """
+            SELECT host_user_name,
+                   starts_at,
+                   ends_at,
+                   deadline_at
+            FROM community_calls
+            WHERE id = %s
+            """,
             (call_id,),
         )
         existing = cursor.fetchone()
 
         if not existing:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "call not found"}
 
         if existing["host_user_name"] != viewer and viewer not in ADMIN_USERNAMES:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "not allowed to edit this call"}
+
+        # Validate dates if any date field is being changed.
+        date_keys = ("starts_at", "ends_at", "deadline_at")
+        if any(k in data for k in date_keys):
+            merged_starts = (
+                _ts_param(data.get("starts_at"))
+                if "starts_at" in data
+                else existing.get("starts_at")
+            )
+            merged_ends = (
+                _ts_param(data.get("ends_at"))
+                if "ends_at" in data
+                else existing.get("ends_at")
+            )
+            merged_deadline = (
+                _ts_param(data.get("deadline_at"))
+                if "deadline_at" in data
+                else existing.get("deadline_at")
+            )
+
+            date_err = _validate_call_dates(merged_starts, merged_ends, merged_deadline)
+            if date_err:
+                _rollback(conn)
+                return {"error": date_err}
 
         sets = []
         params = []
@@ -461,7 +626,7 @@ def update_community_call(call_id: int, data: dict):
         if "title" in data:
             title = (data.get("title") or "").strip()[:180]
             if not title:
-                conn.rollback()
+                _rollback(conn)
                 return {"error": "title cannot be empty"}
             sets.append("title = %s")
             params.append(title)
@@ -469,7 +634,7 @@ def update_community_call(call_id: int, data: dict):
         if "kind" in data:
             kind = (data.get("kind") or "").strip().lower()
             if kind not in CALL_KINDS:
-                conn.rollback()
+                _rollback(conn)
                 return {"error": "invalid kind"}
             sets.append("kind = %s")
             params.append(kind)
@@ -477,7 +642,7 @@ def update_community_call(call_id: int, data: dict):
         if "status" in data:
             status = (data.get("status") or "").strip().lower()
             if status not in CALL_STATUSES:
-                conn.rollback()
+                _rollback(conn)
                 return {"error": "invalid status"}
             sets.append("status = %s")
             params.append(status)
@@ -523,7 +688,7 @@ def update_community_call(call_id: int, data: dict):
             params.append((data.get("apply_url") or "").strip()[:500] or None)
 
         if not sets:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "nothing to update"}
 
         sets.append("updated_at = CURRENT_TIMESTAMP")
@@ -544,10 +709,11 @@ def update_community_call(call_id: int, data: dict):
         return {"message": "call updated", "call": row}
 
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 @router.post("/community/calls/{call_id}/interest")
@@ -557,13 +723,14 @@ def toggle_call_interest(call_id: int, data: dict):
     if not viewer_raw:
         return {"error": "viewer required"}
 
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         viewer = _canonical_username(cursor, viewer_raw)
         if not viewer:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "unknown viewer"}
 
         cursor.execute(
@@ -571,7 +738,7 @@ def toggle_call_interest(call_id: int, data: dict):
             (call_id,),
         )
         if not cursor.fetchone():
-            conn.rollback()
+            _rollback(conn)
             return {"error": "call not found"}
 
         cursor.execute(
@@ -621,10 +788,11 @@ def toggle_call_interest(call_id: int, data: dict):
         }
 
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +813,7 @@ def _ensure_reminders_schema(cursor):
     global _reminders_schema_ready
     if _reminders_schema_ready:
         return
+
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS call_reminders (
@@ -669,13 +838,19 @@ def _window_label(w: int) -> str:
 
 
 def sweep_call_deadlines():
-    """Scan saved (open) calls whose deadline falls in each bucket and notify
-    the interested users once per bucket. Best-effort: any error aborts the
-    current cycle (caller catches); already-committed reminders are not rolled
-    back, so a retry never re-notifies thanks to the UNIQUE guard."""
-    conn = get_db()
-    cursor = conn.cursor()
+    """
+    Scan saved (open) calls whose deadline falls in each bucket and notify
+    the interested users once per bucket.
+
+    Best-effort: any error aborts the current cycle (caller catches);
+    already-committed reminders are not rolled back, so a retry never
+    re-notifies thanks to the UNIQUE guard.
+    """
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         _ensure_reminders_schema(cursor)
         conn.commit()
 
@@ -751,10 +926,12 @@ def sweep_call_deadlines():
             conn.commit()
 
     except Exception:
-        conn.rollback()
+        _rollback(conn)
         raise
+
     finally:
-        conn.close()
+        _close(conn)
+
 
 # ---------------------------------------------------------------------------
 # GET /community/discover
@@ -767,10 +944,6 @@ def community_discover(
     scene: str = "",
     limit: int = 30,
 ):
-    viewer = _resolve_viewer(viewer)
-    if not viewer:
-        return {"error": "viewer required"}
-
     limit = max(1, min(int(limit or 30), 60))
     search = f"%{(q or '').strip()}%" if (q or "").strip() else None
     category = (category or "").strip() or None
@@ -781,6 +954,10 @@ def community_discover(
         conn = get_db()
         cursor = conn.cursor()
 
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
+
         where = [
             "c.kind = 'group'",
             "c.join_mode = ANY(%s)",
@@ -789,17 +966,20 @@ def community_discover(
                    WHERE cm2.conversation_id = c.id AND cm2.user_name = %s
                )""",
         ]
-        # %s binds left-to-right by TEXTUAL position. The gjr JOIN placeholder sits
-        # BEFORE the WHERE clause, so viewer leads, then join_mode, then the NOT
-        # EXISTS viewer, then optionals, then limit.
+
+        # %s binds left-to-right by TEXTUAL position.
+        # The gjr JOIN placeholder sits BEFORE the WHERE clause, so viewer leads,
+        # then join_mode, then the NOT EXISTS viewer, then optionals, then limit.
         params = [viewer, list(DISCOVER_MODES), viewer]
 
         if search:
             where.append("(c.name ILIKE %s OR COALESCE(c.description,'') ILIKE %s)")
             params += [search, search]
+
         if category:
             where.append("c.category = %s")
             params.append(category)
+
         if scene:
             where.append("c.scene = %s")
             params.append(scene)
@@ -844,9 +1024,12 @@ def community_discover(
             rows.append(d)
 
         return {"groups": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -854,10 +1037,6 @@ def community_discover(
 # ---------------------------------------------------------------------------
 @router.get("/community/taxonomy")
 def community_taxonomy(viewer: str = ""):
-    viewer = _resolve_viewer(viewer)
-    if not viewer:
-        return {"error": "viewer required"}
-
     member_filter = """NOT EXISTS (
         SELECT 1 FROM chat_members cm2
         WHERE cm2.conversation_id = c.id AND cm2.user_name = %s
@@ -868,6 +1047,10 @@ def community_taxonomy(viewer: str = ""):
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
 
         cursor.execute(
             f"""
@@ -893,9 +1076,12 @@ def community_taxonomy(viewer: str = ""):
         scenes = [{"name": r["scene"], "count": int(r["count"])} for r in cursor.fetchall()]
 
         return {"categories": categories, "scenes": scenes}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -903,16 +1089,16 @@ def community_taxonomy(viewer: str = ""):
 # ---------------------------------------------------------------------------
 @router.get("/community/requests")
 def community_requests(viewer: str = "", limit: int = 20):
-    viewer = _resolve_viewer(viewer)
-    if not viewer:
-        return {"error": "viewer required"}
-
     limit = max(1, min(int(limit or 20), 50))
 
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
 
         cursor.execute(
             """
@@ -941,9 +1127,12 @@ def community_requests(viewer: str = "", limit: int = 20):
             rows.append(d)
 
         return {"requests": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -951,16 +1140,16 @@ def community_requests(viewer: str = "", limit: int = 20):
 # ---------------------------------------------------------------------------
 @router.get("/community/invites")
 def community_invites(viewer: str = "", limit: int = 10):
-    viewer = _resolve_viewer(viewer)
-    if not viewer:
-        return {"error": "viewer required"}
-
     limit = max(1, min(int(limit or 10), 30))
 
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
 
         cursor.execute(
             """
@@ -991,9 +1180,12 @@ def community_invites(viewer: str = "", limit: int = 10):
             rows.append(d)
 
         return {"invites": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1001,16 +1193,16 @@ def community_invites(viewer: str = "", limit: int = 10):
 # ---------------------------------------------------------------------------
 @router.get("/community/people")
 def community_people(viewer: str = "", limit: int = 6):
-    viewer = _resolve_viewer(viewer)
-    if not viewer:
-        return {"error": "viewer required"}
-
     limit = max(1, min(int(limit or 6), 12))
 
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        viewer = _canonical_username(cursor, viewer)
+        if not viewer:
+            return {"error": "viewer required"}
 
         cursor.execute(
             """
@@ -1064,17 +1256,22 @@ def community_people(viewer: str = "", limit: int = 6):
             rows.append(d)
 
         return {"people": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
 # GET /community/live  (real live auctions only)
+#
+# This slice is public. We do NOT resolve viewer here to avoid wasting a DB
+# connection on every community page load.
 # ---------------------------------------------------------------------------
 @router.get("/community/live")
-def community_live(viewer: str = "", limit: int = 6):
-    _ = _resolve_viewer(viewer)  # auth gate; data is public
+def community_live(limit: int = 6):
     limit = max(1, min(int(limit or 6), 12))
 
     conn = None
@@ -1109,17 +1306,22 @@ def community_live(viewer: str = "", limit: int = 6):
             rows.append(d)
 
         return {"live": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
 # GET /community/calendar  (upcoming + live auctions, real dates only)
+#
+# This slice is public. We do NOT resolve viewer here to avoid wasting a DB
+# connection on every community page load.
 # ---------------------------------------------------------------------------
 @router.get("/community/calendar")
-def community_calendar(viewer: str = "", limit: int = 8):
-    _ = _resolve_viewer(viewer)
+def community_calendar(limit: int = 8):
     limit = max(1, min(int(limit or 8), 20))
 
     conn = None
@@ -1149,9 +1351,12 @@ def community_calendar(viewer: str = "", limit: int = 8):
             rows.append(d)
 
         return {"calendar": rows}
+
+    except Exception as e:
+        return {"error": str(e)}
+
     finally:
-        if conn:
-            conn.close()
+        _close(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1160,18 +1365,20 @@ def community_calendar(viewer: str = "", limit: int = 8):
 @router.post("/community/groups/{conv_id}/meta")
 def community_group_meta(conv_id: int, data: dict):
     viewer_raw = (data.get("viewer") or "").strip()
-    conn = get_db()
-    cursor = conn.cursor()
 
+    conn = None
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         viewer = _canonical_username(cursor, viewer_raw)
         if not viewer:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "unknown viewer"}
 
         role = _group_role(cursor, conv_id, viewer)
         if role not in ("owner", "admin"):
-            conn.rollback()
+            _rollback(conn)
             return {"error": "only admins can edit group community info"}
 
         sets, params = [], []
@@ -1200,7 +1407,7 @@ def community_group_meta(conv_id: int, data: dict):
         if "join_mode" in data:
             jm = (data.get("join_mode") or "").strip().lower()
             if jm not in GROUP_JOIN_MODES:
-                conn.rollback()
+                _rollback(conn)
                 return {"error": "invalid join_mode"}
             sets.append("join_mode = %s")
             params.append(jm)
@@ -1214,7 +1421,7 @@ def community_group_meta(conv_id: int, data: dict):
             params.append(bool(data.get("announce_new_members")))
 
         if not sets:
-            conn.rollback()
+            _rollback(conn)
             return {"error": "nothing to update"}
 
         params.append(conv_id)
@@ -1225,8 +1432,10 @@ def community_group_meta(conv_id: int, data: dict):
 
         conn.commit()
         return {"message": "community info updated"}
+
     except Exception as e:
-        conn.rollback()
+        _rollback(conn)
         return {"error": str(e)}
+
     finally:
-        conn.close()
+        _close(conn)

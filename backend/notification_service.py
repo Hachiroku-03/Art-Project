@@ -19,13 +19,32 @@ Preference enforcement split (deliberate):
   - sound  : enforced CLIENT-SIDE (ToastHost reads prefs via GET /account/settings
              and pings only when prefs[category].sound). should_sound() is the
              shared rule for any future server-side push/email.
+
+WRITE HARDENING (this revision):
+  - The unified `notifications` INSERT is the single source of truth the bell
+    and /notifications page read.
+  - The legacy `chat_notifications` dual-write is fully isolated so it can never
+    roll back the unified row:
+        * when we own the connection, the unified row is COMMITTED first, then
+          the legacy write runs in its own implicit transaction;
+        * when the caller shares a transaction (cursor passed), the legacy write
+          runs inside a SAVEPOINT and is rolled back to that savepoint on failure.
+    This matters on Neon: a mid-transaction drop (SSL connection closed
+    unexpectedly / terminating due to administrator command / idle-in-transaction)
+    must not destroy a notification that already saved.
+  - `actor` is canonicalized before insert and set to NULL when unknown, so the
+    live foreign key on notifications.actor can never abort the write.
+  - Failures are logged under logger "notifications" instead of vanishing, so a
+    silent "notifications not dropping" becomes visible in the server terminal.
 """
 
 import json
+import logging
 
 from db import get_db
 from fastapi import APIRouter
 
+_log = logging.getLogger("notifications")
 
 router = APIRouter(prefix="/account", tags=["account"])
 
@@ -354,6 +373,20 @@ def resolve_viewer(viewer_raw: str):
     return viewer
 
 
+def _resolve_actor(cursor, actor):
+    """
+    Canonicalize actor so the live foreign key on notifications.actor can never
+    abort the unified INSERT on a casing / whitespace / unknown-user mismatch.
+    Returns None when the actor is unknown (the column is nullable).
+    """
+    if not actor:
+        return None
+    try:
+        return _canonical_username(cursor, actor)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Merge helpers
 # ---------------------------------------------------------------------------
@@ -664,7 +697,19 @@ def save_settings(
 
 
 # ---------------------------------------------------------------------------
-# Notification creation (unchanged — already enforces in_app at insert)
+# Notification creation
+#
+# HARDENED in this revision (see module docstring):
+#   1. Unified `notifications` INSERT is the source of truth the bell reads.
+#   2. When we own the connection, the unified row is COMMITTED before the
+#      legacy dual-write, so a legacy failure cannot roll it back.
+#   3. When the caller shares a transaction (cursor passed), the legacy
+#      dual-write runs inside its own SAVEPOINT; on failure we ROLLBACK TO the
+#      savepoint, leaving the unified row intact in the caller's transaction.
+#   4. actor is resolved canonically (NULL when unknown) so the live FK cannot
+#      abort the unified INSERT.
+#   5. All failures are logged under logger "notifications" — no more silent
+#      "notifications not dropping".
 # ---------------------------------------------------------------------------
 def create_notification(
     user_name: str,
@@ -683,8 +728,10 @@ def create_notification(
     """
     Creates a notification only if user preferences allow it.
 
-    Writes to unified notifications table.
-    Also writes legacy chat_notifications for chat-compatible events during transition.
+    Writes to the unified `notifications` table (what the bell + /notifications
+    page read). Also dual-writes legacy `chat_notifications` for chat-compatible
+    events during transition — but that dual-write is fully isolated so it can
+    never destroy the unified row.
     """
 
     own_conn = cursor is None
@@ -694,6 +741,7 @@ def create_notification(
     try:
         target = _canonical_username(cur, user_name)
         if not target:
+            _log.info("create_notification skipped: unknown user %r", user_name)
             return None
 
         prefs = get_notification_prefs(cur, target)
@@ -702,6 +750,10 @@ def create_notification(
 
         if not should_notify(prefs, resolved_category, "in_app"):
             return None
+
+        # Canonicalize actor BEFORE the unified INSERT so the live FK on
+        # notifications.actor cannot abort the write on a casing mismatch.
+        actor_resolved = _resolve_actor(cur, actor)
 
         payload = data or {}
         payload_json = json.dumps(payload, default=str)
@@ -727,7 +779,7 @@ def create_notification(
                 target,
                 resolved_category,
                 type,
-                actor,
+                actor_resolved,
                 source_type,
                 source_id,
                 secondary_id,
@@ -737,53 +789,103 @@ def create_notification(
             ),
         )
 
-        notification_id = cur.fetchone()["id"]
+        row = cur.fetchone()
+        notification_id = row["id"] if row else None
 
-        # Transition dual-write for existing chat notification UI.
-        if legacy_type in LEGACY_CHAT_NOTIFICATION_TYPES:
-            conversation_id = None
-            message_id = secondary_id
-
-            if source_type in {"conversation", "chat"}:
-                conversation_id = source_id
-            elif isinstance(payload.get("conversation_id"), int):
-                conversation_id = payload["conversation_id"]
-
-            if isinstance(payload.get("message_id"), int):
-                message_id = payload["message_id"]
-
-            cur.execute(
-                """
-                INSERT INTO chat_notifications (
-                    user_name,
-                    conversation_id,
-                    message_id,
-                    type,
-                    title,
-                    body
-                )
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    target,
-                    conversation_id,
-                    message_id,
-                    legacy_type,
-                    title,
-                    body,
-                ),
-            )
-
-        if own_conn:
+        # Commit the unified row FIRST when we own the connection, so the legacy
+        # dual-write below runs in a separate transaction and cannot roll back
+        # the notification the bell reads.
+        if own_conn and notification_id is not None:
             conn.commit()
+
+        # ---------------------------------------------------------------------
+        # Legacy dual-write — fully isolated. Never allowed to kill the unified
+        # notification. In shared-transaction mode we use a SAVEPOINT so a
+        # legacy failure (missing table / constraint / stale Neon socket) is
+        # rolled back WITHOUT touching the unified INSERT above.
+        # ---------------------------------------------------------------------
+        if legacy_type in LEGACY_CHAT_NOTIFICATION_TYPES and notification_id is not None:
+            try:
+                if not own_conn:
+                    cur.execute("SAVEPOINT notif_legacy")
+
+                conversation_id = None
+                message_id = secondary_id
+
+                if source_type in {"conversation", "chat"}:
+                    conversation_id = source_id
+                elif isinstance(payload.get("conversation_id"), int):
+                    conversation_id = payload["conversation_id"]
+
+                if isinstance(payload.get("message_id"), int):
+                    message_id = payload["message_id"]
+
+                cur.execute(
+                    """
+                    INSERT INTO chat_notifications (
+                        user_name,
+                        conversation_id,
+                        message_id,
+                        type,
+                        title,
+                        body
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        target,
+                        conversation_id,
+                        message_id,
+                        legacy_type,
+                        title,
+                        body,
+                    ),
+                )
+
+                if not own_conn:
+                    cur.execute("RELEASE SAVEPOINT notif_legacy")
+
+            except Exception as legacy_exc:
+                _log.warning(
+                    "legacy chat_notifications dual-write failed "
+                    "(unified notification %s is still saved): %s",
+                    notification_id,
+                    legacy_exc,
+                )
+                if not own_conn:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT notif_legacy")
+                    except Exception:
+                        pass
+                else:
+                    # Unified row already committed; drop the aborted legacy stmt.
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                # Deliberately do NOT raise: the unified notification must survive.
 
         return notification_id
 
-    except Exception:
+    except Exception as exc:
+        # The unified INSERT itself failed (e.g. table truly missing, or a stale
+        # socket mid-insert). Log loudly so it is never silent again.
+        _log.error(
+            "create_notification FAILED for user=%r type=%r: %s",
+            user_name,
+            type,
+            exc,
+        )
         if own_conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
 
     finally:
         if own_conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass

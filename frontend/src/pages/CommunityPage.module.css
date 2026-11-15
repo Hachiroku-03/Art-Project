@@ -1197,3 +1197,122 @@
   .myGroupCard, .discoverCard, .callCard, .startBtn, .actBtn { transition: none; }
   .myGroupCard:hover, .discoverCard:hover, .callCard:hover, .startBtn:hover, .actBtn:hover { transform: none; }
 }
+
+/* ----------------------------- SKELETON ----------------------------- */
+
+@keyframes communitySkelShimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.skelBar {
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.04),
+    rgba(14, 14, 14, 0.09),
+    rgba(14, 14, 14, 0.04)
+  );
+  background-size: 200% 100%;
+  animation: communitySkelShimmer 1.4s ease-in-out infinite;
+}
+
+.skelStrip {
+  display: flex;
+  gap: 0.75rem;
+  overflow: hidden;
+  padding-bottom: 0.35rem;
+}
+
+.skelCards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.skelCard {
+  border-radius: 18px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.035),
+    rgba(14, 14, 14, 0.085),
+    rgba(14, 14, 14, 0.035)
+  );
+  background-size: 200% 100%;
+  animation: communitySkelShimmer 1.4s ease-in-out infinite;
+}
+
+.skelSpin {
+  animation: skelSpin 0.9s linear infinite;
+}
+
+@keyframes skelSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ----------------------------- RETRY PANEL ----------------------------- */
+
+.retryPanel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  background: rgba(109, 26, 36, 0.04);
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.retryPanel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.retryPanel button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.retryPanel button:hover {
+  background: #f1f0ed;
+  border-color: var(--ink);
+}
+
+.retryPanel button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* ----------------------------- EMPTY STATE SLOT ----------------------------- */
+
+.section > .emptyInline {
+  padding: 1.1rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 16px;
+}
+
+/* ----------------------------- FIX: remove empty selectors ----------------------------- */
+
+/* .modePublic and .modeLock are used as class hooks in the JSX.
+   If you want them to do nothing visually, that is fine.
+   But remove the empty {} blocks to silence linters: */
+
+/* Delete these two lines if they exist:
+   .modePublic {}
+   .modeLock {}
+   They are not errors, just noise. */

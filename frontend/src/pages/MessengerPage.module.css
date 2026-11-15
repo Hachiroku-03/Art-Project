@@ -502,6 +502,196 @@
   color: var(--ink-soft);
 }
 
+/* ----------------------------- CONNECTION PILL ----------------------------- */
+
+.listHeadStatus {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.connPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(14, 14, 14, 0.08);
+  background: rgba(14, 14, 14, 0.035);
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.connDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.connConnected {
+  color: #2f8f5b;
+  background: rgba(47, 143, 91, 0.08);
+  border-color: rgba(47, 143, 91, 0.18);
+}
+
+.connConnecting,
+.connReconnecting {
+  color: #a97916;
+  background: rgba(169, 121, 22, 0.08);
+  border-color: rgba(169, 121, 22, 0.18);
+}
+
+.connOffline,
+.connError {
+  color: #9b3142;
+  background: rgba(155, 49, 66, 0.08);
+  border-color: rgba(155, 49, 66, 0.18);
+}
+
+.connIdle {
+  color: var(--ink-faint);
+}
+
+/* ----------------------------- MESSENGER SKELETON ----------------------------- */
+
+@keyframes messengerSkelShimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.messengerSkel {
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.035),
+    rgba(14, 14, 14, 0.085),
+    rgba(14, 14, 14, 0.035)
+  );
+  background-size: 200% 100%;
+  animation: messengerSkelShimmer 1.35s ease-in-out infinite;
+  border-radius: 10px;
+}
+
+.skelList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.skelRow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.skelAvatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.04),
+    rgba(14, 14, 14, 0.09),
+    rgba(14, 14, 14, 0.04)
+  );
+  background-size: 200% 100%;
+  animation: messengerSkelShimmer 1.35s ease-in-out infinite;
+}
+
+.skelCol {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.skelLineWide,
+.skelLineNarrow {
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 14, 14, 0.035),
+    rgba(14, 14, 14, 0.085),
+    rgba(14, 14, 14, 0.035)
+  );
+  background-size: 200% 100%;
+  animation: messengerSkelShimmer 1.35s ease-in-out infinite;
+}
+
+.skelLineWide {
+  width: 62%;
+}
+
+.skelLineNarrow {
+  width: 88%;
+  height: 10px;
+}
+
+.skelThread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1.1rem 1.25rem 1.5rem;
+  width: 100%;
+}
+
+.skelBubble {
+  width: 58%;
+  min-height: 54px;
+  border-radius: 18px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0.88),
+    rgba(255, 255, 255, 0.55)
+  );
+  background-size: 200% 100%;
+  animation: messengerSkelShimmer 1.35s ease-in-out infinite;
+  box-shadow: 0 4px 14px rgba(20, 18, 15, 0.05);
+}
+
+.skelBubbleLeft {
+  align-self: flex-start;
+  border-bottom-left-radius: 7px;
+}
+
+.skelBubbleRight {
+  align-self: flex-end;
+  width: 48%;
+  border-bottom-right-radius: 7px;
+  background: linear-gradient(
+    90deg,
+    rgba(91, 58, 142, 0.08),
+    rgba(91, 58, 142, 0.16),
+    rgba(91, 58, 142, 0.08)
+  );
+  background-size: 200% 100%;
+}
+
+@media (max-width: 900px) {
+  .skelBubble {
+    width: 76%;
+  }
+
+  .skelBubbleRight {
+    width: 68%;
+  }
+}
+
 /* ----------------------------- THREAD ----------------------------- */
 .threadWrap {
   min-width: 0;

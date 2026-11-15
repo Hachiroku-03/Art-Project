@@ -39,7 +39,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { Lightbox } from '../components/Lightbox'
 import { ChatBackground } from '../components/chat/ChatBackground'
 import { ChatInfoPanel } from '../components/chat/ChatInfoPanel'
-import { useChat, isOptimistic } from '../hooks/useChat'
+import { useChat, isOptimistic, type ConnectionState } from '../hooks/useChat'
 import { API } from '../lib/sales'
 import { updateCommunityGroupMeta } from '../lib/community'
 import {
@@ -64,6 +64,7 @@ import {
 import styles from './MessengerPage.module.css'
 
 import { AUTH_API } from '../lib/config'
+
 const QUICK_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🙏']
 
 const RECORDING_TTL = 15000
@@ -253,6 +254,66 @@ function Avatar({
   )
 }
 
+const CONNECTION_LABEL: Record<ConnectionState, string> = {
+  idle: 'Not connected',
+  connecting: 'Connecting…',
+  connected: 'Connected',
+  reconnecting: 'Reconnecting…',
+  offline: 'Offline',
+  error: 'Connection problem',
+}
+
+function ConnectionPill({ state }: { state: ConnectionState }) {
+  const className =
+    state === 'connected'
+      ? styles.connConnected
+      : state === 'connecting'
+        ? styles.connConnecting
+        : state === 'reconnecting'
+          ? styles.connReconnecting
+          : state === 'offline'
+            ? styles.connOffline
+            : state === 'error'
+              ? styles.connError
+              : styles.connIdle
+
+  return (
+    <span className={`${styles.connPill} ${className}`}>
+      <span className={styles.connDot} />
+      <span>{CONNECTION_LABEL[state]}</span>
+    </span>
+  )
+}
+
+function MessengerListSkeleton() {
+  return (
+    <div className={styles.skelList}>
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className={styles.skelRow}>
+          <div className={styles.skelAvatar} />
+          <div className={styles.skelCol}>
+            <div className={styles.skelLineWide} />
+            <div className={styles.skelLineNarrow} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function MessengerThreadSkeleton() {
+  return (
+    <div className={styles.skelThread}>
+      {Array.from({ length: 7 }).map((_, i) => (
+        <div
+          key={i}
+          className={`${styles.skelBubble} ${i % 2 === 0 ? styles.skelBubbleLeft : styles.skelBubbleRight}`}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function MessengerPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -262,9 +323,11 @@ export function MessengerPage() {
 
   const {
     conversations,
+    conversationsLoaded,
     activeConvId: cid,
     activeThread,
     online,
+    connection,
     readCursors,
     deliveredCursors,
     hasMoreOlder,
@@ -350,6 +413,10 @@ export function MessengerPage() {
   const lastDraftSaved = useRef<string>('')
   const audioCtxRef = useRef<AudioContext | null>(null)
 
+  const archivedLoaded = useRef(false)
+  const pinnedCache = useRef<Record<number, ChatMessage[]>>({})
+  const membersCache = useRef<Record<number, GroupMember[]>>({})
+
   const autosizeComposer = useCallback(() => {
     const el = inputRef.current
     if (!el) return
@@ -372,6 +439,12 @@ export function MessengerPage() {
       archivedConvs.find(c => c.id === cid)
     )
   }, [cid, conversations, archivedConvs])
+
+  // A restored active id that has not yet been confirmed against the loaded
+  // list. While this is true we must NOT show "Conversation unavailable" —
+  // that message is reserved for the case where the list IS loaded and the
+  // id is genuinely gone. This is the fix for the startup flash.
+  const threadPending = cid != null && !activeConv && !conversationsLoaded
 
   const counterpartUser = activeConv?.counterpart_username || ''
 
@@ -423,6 +496,16 @@ export function MessengerPage() {
             : 'No conversations yet.'
 
   const pinnedIds = useMemo(() => new Set(pinnedMessages.map(m => m.id)), [pinnedMessages])
+
+  const listLoading =
+    conversations.length === 0 &&
+    !conversationsLoaded &&
+    (connection === 'idle' || connection === 'connecting' || connection === 'reconnecting')
+
+  const threadLoading =
+    cid != null &&
+    activeThread.length === 0 &&
+    (listLoading || connection === 'connecting' || connection === 'reconnecting')
 
   const closeMenu = useCallback(() => setActiveMenu(null), [])
 
@@ -521,12 +604,23 @@ export function MessengerPage() {
   useEffect(() => {
     if (!viewer) return
 
+    const key = `space_lang_${viewer}`
+    const cached = localStorage.getItem(key)
+
+    if (cached) {
+      setLang(cached)
+      return
+    }
+
     let alive = true
 
     fetch(`${AUTH_API}/settings?viewer=${encodeURIComponent(viewer)}`)
       .then(r => r.json())
       .then(d => {
-        if (alive && d.language) setLang(d.language)
+        if (!alive || !d.language) return
+
+        setLang(d.language)
+        localStorage.setItem(key, d.language)
       })
       .catch(() => {})
 
@@ -535,35 +629,51 @@ export function MessengerPage() {
     }
   }, [viewer])
 
-  const reloadArchived = useCallback(async () => {
-    if (!viewer) return
+  const reloadArchived = useCallback(
+    async (force = false) => {
+      if (!viewer) return
+      if (archivedLoaded.current && !force) return
 
-    try {
-      const all = await fetchConversations(viewer, true)
-      setArchivedConvs(all.filter(c => c.archived))
-    } catch {
-      // ignore
-    }
-  }, [viewer])
+      try {
+        const all = await fetchConversations(viewer, true)
+        setArchivedConvs(all.filter(c => c.archived))
+        archivedLoaded.current = true
+      } catch {
+        // ignore
+      }
+    },
+    [viewer],
+  )
 
   useEffect(() => {
-    void reloadArchived()
-  }, [reloadArchived])
+    if (filter === 'archived') {
+      void reloadArchived()
+    }
+  }, [filter, reloadArchived])
 
   const refreshAll = useCallback(async () => {
-    void refreshConversations()
-    await reloadArchived()
-  }, [refreshConversations, reloadArchived])
+    refreshConversations()
+
+    if (archivedLoaded.current || filter === 'archived') {
+      await reloadArchived(true)
+    }
+  }, [filter, refreshConversations, reloadArchived])
 
   const loadPinned = useCallback(
     async (conversationId: number) => {
       if (!viewer) return
 
+      const cached = pinnedCache.current[conversationId]
+      if (cached) {
+        setPinnedMessages(cached)
+      }
+
       try {
         const rows = await fetchPinnedMessages(viewer, conversationId)
+        pinnedCache.current[conversationId] = rows
         setPinnedMessages(rows)
       } catch {
-        setPinnedMessages([])
+        if (!cached) setPinnedMessages([])
       }
     },
     [viewer],
@@ -728,6 +838,11 @@ export function MessengerPage() {
       return
     }
 
+    const cachedPinned = pinnedCache.current[cid]
+    if (cachedPinned) {
+      setPinnedMessages(cachedPinned)
+    }
+
     void loadPinned(cid)
 
     const conv = conversations.find(c => c.id === cid) || archivedConvs.find(c => c.id === cid)
@@ -741,8 +856,16 @@ export function MessengerPage() {
     setForwardTargets([])
     setNote('')
 
+    const cachedMembers = membersCache.current[cid]
+    if (cachedMembers) {
+      setMembers(prev => ({ ...prev, [cid]: cachedMembers }))
+    }
+
     fetchConversationMembers(viewer, cid)
-      .then(list => setMembers(prev => ({ ...prev, [cid]: list })))
+      .then(list => {
+        membersCache.current[cid] = list
+        setMembers(prev => ({ ...prev, [cid]: list }))
+      })
       .catch(() => {})
 
     if (isDesktop()) requestAnimationFrame(() => inputRef.current?.focus())
@@ -901,16 +1024,16 @@ export function MessengerPage() {
 
     if (id != null) {
       refreshConversations()
-      void reloadArchived()
+
+      if (archivedLoaded.current) {
+        void reloadArchived(true)
+      }
+
       openChat(Number(id))
       navigate(location.pathname, { replace: true, state: null })
     }
   }, [location.state, location.pathname, navigate, openChat, refreshConversations, reloadArchived])
 
-  // Deep-link from Community "Start a group": open the create-group modal on
-  // arrival. Uses router state (not a window event) because the target page is
-  // mounting cold — an event dispatched during navigation would be lost before
-  // the listener attaches. Mirrors the proven openConversationId pattern above.
   useEffect(() => {
     const state = location.state as { openCreateGroup?: boolean } | null
 
@@ -926,32 +1049,49 @@ export function MessengerPage() {
 
       if (detail != null) {
         refreshConversations()
-        void reloadArchived()
+
+        if (archivedLoaded.current) {
+          void reloadArchived(true)
+        }
+
         openChat(Number(detail))
       }
     }
 
     window.addEventListener('open-chat', handler as EventListener)
 
-    return () => {
-      window.removeEventListener('open-chat', handler as EventListener)
-    }
+    return () => window.removeEventListener('open-chat', handler as EventListener)
   }, [openChat, refreshConversations, reloadArchived])
 
-  // A group membership can change while the user is idle on Messenger (approved
-  // elsewhere, added by an admin, removed). Surface it in the list without
-  // interrupting whatever chat they're reading — the toast handles one-click open.
   useEffect(() => {
+    let timer: number | null = null
+
     const onNotif = (event: Event) => {
       const n = (event as CustomEvent<{ category?: string }>).detail
       if (!n || n.category !== 'groups') return
 
-      refreshConversations()
-      void reloadArchived()
+      // Do not refresh heavily while tab is hidden.
+      if (document.hidden) return
+
+      if (timer !== null) window.clearTimeout(timer)
+
+      timer = window.setTimeout(() => {
+        timer = null
+
+        refreshConversations()
+
+        if (archivedLoaded.current) {
+          void reloadArchived(true)
+        }
+      }, 300)
     }
 
     window.addEventListener('space:notification', onNotif as EventListener)
-    return () => window.removeEventListener('space:notification', onNotif as EventListener)
+
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+      window.removeEventListener('space:notification', onNotif as EventListener)
+    }
   }, [refreshConversations, reloadArchived])
 
   const createGroupChat = useCallback(async () => {
@@ -978,17 +1118,14 @@ export function MessengerPage() {
         return
       }
 
-      const cid = d.conversation_id
+      const newCid = d.conversation_id
       const cat = groupCategory.trim()
       const scn = groupScene.trim()
 
-      // Stamp community fields only when they differ from the create defaults
-      // (join_mode defaults to 'request', category/scene default to null), so the
-      // common "plain request group" path stays a single request.
       const needsMeta = groupJoinMode !== 'request' || !!cat || !!scn
 
-      if (cid != null && needsMeta) {
-        const m = await updateCommunityGroupMeta(viewer, cid, {
+      if (newCid != null && needsMeta) {
+        const m = await updateCommunityGroupMeta(viewer, newCid, {
           category: cat || null,
           scene: scn || null,
           join_mode: groupJoinMode,
@@ -1008,7 +1145,7 @@ export function MessengerPage() {
       setGroupJoinMode('request')
       setFilter('all')
 
-      if (cid != null) openChat(cid)
+      if (newCid != null) openChat(newCid)
     } finally {
       setCreatingGroup(false)
     }
@@ -1419,7 +1556,14 @@ export function MessengerPage() {
         backToList()
       }
 
-      await reloadArchived()
+      if (action === 'archive') {
+        archivedLoaded.current = false
+
+        if (filter === 'archived') {
+          void reloadArchived(true)
+        }
+      }
+
       refreshConversations()
     },
     [
@@ -1428,6 +1572,7 @@ export function MessengerPage() {
       cid,
       closeMenu,
       conversations,
+      filter,
       leaveConversation,
       refreshConversations,
       reloadArchived,
@@ -1548,7 +1693,7 @@ export function MessengerPage() {
   const headerSub = (() => {
     if (recording.length) return `${recording.join(', ')} recording voice note…`
     if (typing.length) return `${typing.join(', ')} typing…`
-    if (!activeConv) return online ? 'Connected' : 'Reconnecting…'
+    if (!activeConv) return CONNECTION_LABEL[connection]
 
     if (activeConv.kind === 'group') {
       return `${activeConv.member_count || (cid != null ? members[cid]?.length : 0) || 2} members`
@@ -1575,6 +1720,8 @@ export function MessengerPage() {
   }, [reactionDetail])
 
   const renderBody = (item: (typeof activeThread)[number]) => {
+    if (!item) return null
+
     const committed = isOptimistic(item) ? null : item
 
     if (item.kind === 'text') {
@@ -1721,9 +1868,10 @@ export function MessengerPage() {
           <div className={styles.listHead}>
             <div>
               <h1 className={styles.title}>Messenger</h1>
-              <p className={styles.sub}>
-                {online ? 'Connected' : 'Reconnecting…'} · {conversations.length} chats
-              </p>
+              <div className={styles.listHeadStatus}>
+                <ConnectionPill state={connection} />
+                <span className={styles.sub}>{conversations.length} chats</span>
+              </div>
             </div>
 
             <div className={styles.listHeadActions}>
@@ -1791,7 +1939,9 @@ export function MessengerPage() {
 
           <ErrorBoundary fallback={<p className={styles.rest}>Conversation list is resting.</p>}>
             <div className={styles.convList}>
-              {filter === 'starred' ? (
+              {listLoading ? (
+                <MessengerListSkeleton />
+              ) : filter === 'starred' ? (
                 loadingStarred ? (
                   <p className={styles.empty}>Loading starred messages…</p>
                 ) : starredMessages.length === 0 ? (
@@ -1956,7 +2106,18 @@ export function MessengerPage() {
                     <MoreVertical size={18} />
                   </button>
                 </>
+              ) : threadPending ? (
+                // Restored conversation id is being validated against the
+                // freshly loaded list. Show a neutral loading header instead
+                // of the alarming "Conversation unavailable" message.
+                <div className={styles.threadTitleBlock}>
+                  <h2 className={styles.threadTitle}>Loading conversation…</h2>
+                  <p className={styles.threadSub}>Please wait a moment.</p>
+                </div>
               ) : (
+                // List is loaded and this id is genuinely gone (deleted /
+                // archived on another device / wrong account). Only now is it
+                // correct to tell the user it is unavailable.
                 <div className={styles.threadTitleBlock}>
                   <h2 className={styles.threadTitle}>Conversation unavailable</h2>
                   <p className={styles.threadSub}>
@@ -2037,227 +2198,247 @@ export function MessengerPage() {
                 <p>Select a conversation to start messaging.</p>
               </div>
             ) : !activeConv ? (
-              <div className={styles.threadEmpty}>
-                <Archive size={38} />
-                <p>This conversation is archived or unavailable.</p>
-                <button className={styles.loadOlderBtn} onClick={backToList}>
-                  Back to chats
-                </button>
-              </div>
+              threadPending ? (
+                // Validation in flight: show the thread skeleton, never the
+                // archived/unavailable empty state.
+                <div className={styles.messages}>
+                  <MessengerThreadSkeleton />
+                </div>
+              ) : (
+                <div className={styles.threadEmpty}>
+                  <Archive size={38} />
+                  <p>This conversation is archived or unavailable.</p>
+                  <button className={styles.loadOlderBtn} onClick={backToList}>
+                    Back to chats
+                  </button>
+                </div>
+              )
             ) : (
               <ErrorBoundary fallback={<p className={styles.rest}>This thread is resting.</p>}>
                 <div className={styles.messages}>
-                  {hasMoreOlder[cid] && (
-                    <button className={styles.loadOlderBtn} onClick={() => loadOlder(cid)}>
-                      Load older messages
-                    </button>
-                  )}
-
-                  {activeThread.length === 0 ? (
-                    <p className={styles.emptyThread}>No messages yet. Say hello.</p>
+                  {threadLoading ? (
+                    <MessengerThreadSkeleton />
                   ) : (
-                    (() => {
-                      let lastDayKey = ''
+                    <>
+                      {hasMoreOlder[cid] && (
+                        <button className={styles.loadOlderBtn} onClick={() => loadOlder(cid)}>
+                          Load older messages
+                        </button>
+                      )}
 
-                      return activeThread.map(t => {
-                        const opt = isOptimistic(t) ? t : null
-                        const msg = opt ? null : (t as ChatMessage)
+                      {activeThread.length === 0 ? (
+                        <p className={styles.emptyThread}>No messages yet. Say hello.</p>
+                      ) : (
+                        (() => {
+                          let lastDayKey = ''
 
-                        const date = parseDate(t.created_at)
-                        const dayKey = isNaN(date.getTime()) ? '' : date.toDateString()
-                        const showDay = dayKey !== '' && dayKey !== lastDayKey
+                          return activeThread.map(t => {
+                            if (!t) return null
 
-                        if (dayKey) lastDayKey = dayKey
+                            const opt = isOptimistic(t) ? t : null
+                            const msg = opt ? null : (t as ChatMessage)
 
-                        const mine = opt ? true : msg!.sender === viewer
-                        const key = opt ? opt.temp_id : String(msg!.id)
+                            if (!opt && (!msg || !Number.isFinite(Number(msg.id)))) {
+                              return null
+                            }
 
-                        if (msg?.kind === 'system') {
-                          return (
-                            <Fragment key={key}>
-                              {showDay && (
-                                <div className={styles.daySep}>
-                                  <span>{dayLabel(date)}</span>
-                                </div>
-                              )}
+                            const date = parseDate(t.created_at)
+                            const dayKey = isNaN(date.getTime()) ? '' : date.toDateString()
+                            const showDay = dayKey !== '' && dayKey !== lastDayKey
 
-                              <div className={styles.systemRow}>
-                                <span>{msg.body}</span>
-                              </div>
-                            </Fragment>
-                          )
-                        }
+                            if (dayKey) lastDayKey = dayKey
 
-                        let status: 'sending' | 'failed' | 'sent' | 'delivered' | 'read' = 'sent'
+                            const mine = opt ? true : msg!.sender === viewer
+                            const key = opt ? opt.temp_id : String(msg!.id)
 
-                        if (opt) {
-                          status = opt.status
-                        } else if (mine) {
-                          const r = counterpartUser ? counterpartRead : groupRead
-                          const d = counterpartUser ? counterpartDelivered : groupDelivered
-                          if (r >= msg!.id) status = 'read'
-                          else if (d >= msg!.id) status = 'delivered'
-                          else status = 'sent'
-                        }
-
-                        return (
-                          <Fragment key={key}>
-                            {showDay && (
-                              <div className={styles.daySep}>
-                                <span>{dayLabel(date)}</span>
-                              </div>
-                            )}
-
-                            <div
-                              className={`${styles.msgRow} ${mine ? styles.mine : styles.other}`}
-                              data-message-id={msg?.id}
-                            >
-                              {!mine && (
-                                <Avatar
-                                  src={msg?.sender_avatar}
-                                  name={msg?.sender_display || msg?.sender}
-                                  className={styles.msgAvatar}
-                                />
-                              )}
-
-                              <div className={styles.msgCol}>
-                                <div className={`${styles.bubble} ${t.kind === 'image' ? styles.bubbleImage : ''}`}>
-                                  {msg && activeConv.kind === 'group' && !mine && (
-                                    <p className={styles.senderName}>{msg.sender_display || msg.sender}</p>
-                                  )}
-
-                                  {msg?.reply_to_body && (
-                                    <div
-                                      className={styles.replyPreview}
-                                      onClick={() => setJumpToMessageId(msg.reply_to_id ?? null)}
-                                      role="button"
-                                      tabIndex={0}
-                                    >
-                                      <strong>
-                                        {msg.reply_to_sender_display || msg.reply_to_sender || 'Message'}
-                                      </strong>
-                                      <span>
-                                        {previewForKind(msg.reply_to_kind || 'text', msg.reply_to_body)}
-                                      </span>
+                            if (msg?.kind === 'system') {
+                              return (
+                                <Fragment key={key}>
+                                  {showDay && (
+                                    <div className={styles.daySep}>
+                                      <span>{dayLabel(date)}</span>
                                     </div>
                                   )}
 
-                                  {renderBody(t)}
+                                  <div className={styles.systemRow}>
+                                    <span>{msg.body}</span>
+                                  </div>
+                                </Fragment>
+                              )
+                            }
 
-                                  {msg?.edited_at && <span className={styles.editedTag}>edited</span>}
+                            let status: 'sending' | 'failed' | 'sent' | 'delivered' | 'read' = 'sent'
 
-                                  {msg && pinnedIds.has(msg.id) && (
-                                    <span className={styles.pinnedTag}>
-                                      <Pin size={11} />
-                                    </span>
-                                  )}
+                            if (opt) {
+                              status = opt.status
+                            } else if (mine) {
+                              const r = counterpartUser ? counterpartRead : groupRead
+                              const d = counterpartUser ? counterpartDelivered : groupDelivered
+                              if (r >= msg!.id) status = 'read'
+                              else if (d >= msg!.id) status = 'delivered'
+                              else status = 'sent'
+                            }
 
-                                  {msg?.starred_by_viewer && (
-                                    <span className={styles.starredTag}>
-                                      <Star size={12} fill="currentColor" />
-                                    </span>
-                                  )}
-                                </div>
-
-                                {msg && msg.reactions && msg.reactions.length > 0 && (
-                                  <div className={styles.reactionBar}>
-                                    {msg.reactions.map(r => (
-                                      <button
-                                        key={r.emoji}
-                                        className={`${styles.reactionChip} ${r.viewer_reacted ? styles.reactionChipOn : ''}`}
-                                        onClick={() => toggleReaction(msg, r.emoji)}
-                                        onDoubleClick={() => void openReactionDetail(msg)}
-                                        title={r.viewer_reacted ? 'Remove reaction' : 'React'}
-                                      >
-                                        <span>{r.emoji}</span>
-                                        <em>{r.count}</em>
-                                      </button>
-                                    ))}
+                            return (
+                              <Fragment key={key}>
+                                {showDay && (
+                                  <div className={styles.daySep}>
+                                    <span>{dayLabel(date)}</span>
                                   </div>
                                 )}
 
-                                <div className={styles.msgMeta}>
-                                  <span>{shortTime(t.created_at)}</span>
+                                <div
+                                  className={`${styles.msgRow} ${mine ? styles.mine : styles.other}`}
+                                  data-message-id={msg?.id}
+                                >
+                                  {!mine && (
+                                    <Avatar
+                                      src={msg?.sender_avatar}
+                                      name={msg?.sender_display || msg?.sender}
+                                      className={styles.msgAvatar}
+                                    />
+                                  )}
 
-                                  {mine && (
-                                    <span className={styles.status}>
-                                      {status === 'sending' && <Clock size={12} />}
-                                      {status === 'failed' && <AlertCircle size={12} />}
-                                      {status === 'sent' && <Check size={12} />}
+                                  <div className={styles.msgCol}>
+                                    <div className={`${styles.bubble} ${t.kind === 'image' ? styles.bubbleImage : ''}`}>
+                                      {msg && activeConv.kind === 'group' && !mine && (
+                                        <p className={styles.senderName}>{msg.sender_display || msg.sender}</p>
+                                      )}
 
-                                      {status === 'delivered' && (
-                                        <span className={styles.ticks}>
-                                          <Check size={12} />
-                                          <Check size={12} />
+                                      {msg?.reply_to_body && (
+                                        <div
+                                          className={styles.replyPreview}
+                                          onClick={() => setJumpToMessageId(msg.reply_to_id ?? null)}
+                                          role="button"
+                                          tabIndex={0}
+                                        >
+                                          <strong>
+                                            {msg.reply_to_sender_display || msg.reply_to_sender || 'Message'}
+                                          </strong>
+                                          <span>
+                                            {previewForKind(msg.reply_to_kind || 'text', msg.reply_to_body)}
+                                          </span>
+                                        </div>
+                                      )}
+
+                                      {renderBody(t)}
+
+                                      {msg?.edited_at && <span className={styles.editedTag}>edited</span>}
+
+                                      {msg && pinnedIds.has(msg.id) && (
+                                        <span className={styles.pinnedTag}>
+                                          <Pin size={11} />
                                         </span>
                                       )}
 
-                                      {status === 'read' && (
-                                        <span className={`${styles.ticks} ${styles.ticksRead}`}>
-                                          <Check size={12} />
-                                          <Check size={12} />
+                                      {msg?.starred_by_viewer && (
+                                        <span className={styles.starredTag}>
+                                          <Star size={12} fill="currentColor" />
                                         </span>
                                       )}
-                                    </span>
-                                  )}
+                                    </div>
 
-                                  {msg && (
-                                    <span className={styles.msgActions}>
-                                      <button
-                                        className={styles.msgActionBtn}
-                                        onClick={e => toggleMenu(e, 'reaction', msg.id)}
-                                        aria-label="React"
-                                        title="React"
-                                      >
-                                        <Smile size={14} />
-                                      </button>
+                                    {msg && msg.reactions && msg.reactions.length > 0 && (
+                                      <div className={styles.reactionBar}>
+                                        {msg.reactions.map(r => (
+                                          <button
+                                            key={r.emoji}
+                                            className={`${styles.reactionChip} ${r.viewer_reacted ? styles.reactionChipOn : ''}`}
+                                            onClick={() => toggleReaction(msg, r.emoji)}
+                                            onDoubleClick={() => void openReactionDetail(msg)}
+                                            title={r.viewer_reacted ? 'Remove reaction' : 'React'}
+                                          >
+                                            <span>{r.emoji}</span>
+                                            <em>{r.count}</em>
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
 
-                                      <button
-                                        className={styles.msgActionBtn}
-                                        onClick={() => startReply(msg)}
-                                        aria-label="Reply"
-                                        title="Reply"
-                                      >
-                                        <Reply size={14} />
-                                      </button>
+                                    <div className={styles.msgMeta}>
+                                      <span>{shortTime(t.created_at)}</span>
 
-                                      <button
-                                        className={styles.msgActionBtn}
-                                        onClick={e => toggleMenu(e, 'message', msg.id)}
-                                        aria-label="Message options"
-                                        title="More"
-                                      >
-                                        <MoreVertical size={14} />
-                                      </button>
-                                    </span>
-                                  )}
+                                      {mine && (
+                                        <span className={styles.status}>
+                                          {status === 'sending' && <Clock size={12} />}
+                                          {status === 'failed' && <AlertCircle size={12} />}
+                                          {status === 'sent' && <Check size={12} />}
 
-                                  {opt && opt.status === 'failed' && (
-                                    <span className={styles.failedActions}>
-                                      <button
-                                        className={styles.iconMini}
-                                        onClick={() => retrySend(cid, opt.temp_id)}
-                                        aria-label="Retry message"
-                                      >
-                                        <RotateCcw size={12} />
-                                      </button>
+                                          {status === 'delivered' && (
+                                            <span className={styles.ticks}>
+                                              <Check size={12} />
+                                              <Check size={12} />
+                                            </span>
+                                          )}
 
-                                      <button
-                                        className={styles.iconMini}
-                                        onClick={() => dismissFailed(cid, opt.temp_id)}
-                                        aria-label="Dismiss failed message"
-                                      >
-                                        <X size={12} />
-                                      </button>
-                                    </span>
-                                  )}
+                                          {status === 'read' && (
+                                            <span className={`${styles.ticks} ${styles.ticksRead}`}>
+                                              <Check size={12} />
+                                              <Check size={12} />
+                                            </span>
+                                          )}
+                                        </span>
+                                      )}
+
+                                      {msg && (
+                                        <span className={styles.msgActions}>
+                                          <button
+                                            className={styles.msgActionBtn}
+                                            onClick={e => toggleMenu(e, 'reaction', msg.id)}
+                                            aria-label="React"
+                                            title="React"
+                                          >
+                                            <Smile size={14} />
+                                          </button>
+
+                                          <button
+                                            className={styles.msgActionBtn}
+                                            onClick={() => startReply(msg)}
+                                            aria-label="Reply"
+                                            title="Reply"
+                                          >
+                                            <Reply size={14} />
+                                          </button>
+
+                                          <button
+                                            className={styles.msgActionBtn}
+                                            onClick={e => toggleMenu(e, 'message', msg.id)}
+                                            aria-label="Message options"
+                                            title="More"
+                                          >
+                                            <MoreVertical size={14} />
+                                          </button>
+                                        </span>
+                                      )}
+
+                                      {opt && opt.status === 'failed' && (
+                                        <span className={styles.failedActions}>
+                                          <button
+                                            className={styles.iconMini}
+                                            onClick={() => retrySend(cid, opt.temp_id)}
+                                            aria-label="Retry message"
+                                          >
+                                            <RotateCcw size={12} />
+                                          </button>
+
+                                          <button
+                                            className={styles.iconMini}
+                                            onClick={() => dismissFailed(cid, opt.temp_id)}
+                                            aria-label="Dismiss failed message"
+                                          >
+                                            <X size={12} />
+                                          </button>
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
-                              </div>
-                            </div>
-                          </Fragment>
-                        )
-                      })
-                    })()
+                              </Fragment>
+                            )
+                          })
+                        })()
+                      )}
+                    </>
                   )}
 
                   <div ref={endRef} />
@@ -2282,7 +2463,7 @@ export function MessengerPage() {
                 <div className={styles.banner}>
                   <span className={styles.bannerLabel}>Editing message</span>
                   <span className={styles.bannerText}>{editing.body}</span>
-                  <button onClick={cancelEdit} aria-label="Cancel edit">
+                  <button onClick={() => cancelEdit} aria-label="Cancel edit">
                     <X size={16} />
                   </button>
                 </div>
