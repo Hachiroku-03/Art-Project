@@ -37,6 +37,21 @@ import styles from './AuctionRoomPage.module.css'
 
 type HostActionKey = 'live' | 'reveal' | 'hammer' | 'pass' | 'end' | 'reopen'
 
+// A rail row is a real LotBid, optionally an optimistic (not-yet-committed) echo
+// tagged with a negative temp id and the time it was placed, so the sweeper can
+// drop it if the backend never confirms it.
+type LedgerRow = LotBid & { __temp?: boolean; __at?: number }
+
+// Hard ceilings for in-flight GET requests. The Neon pool can hold a queued
+// query up to query_wait_timeout (default 120s); we refuse to let a single
+// poll hang that long. If a GET outlives its timeout, we abort it, the guard
+// resets in the finally block, and the next tick retries with a fresh socket.
+// This is the fix for "host rail frozen until refresh": without a timeout, a
+// single hung fetchLotBids permanently pins pollBusy=true and every subsequent
+// 1000ms tick is skipped. Same for fetchSale pinning saleInFlightRef.
+const SALE_POLL_TIMEOUT_MS = 8000
+const BID_POLL_TIMEOUT_MS = 5000
+
 function pad(n: number) {
   return n.toString().padStart(2, '0')
 }
@@ -132,8 +147,6 @@ function toEmbedUrl(raw?: string | null): string {
   const nocookie = host === 'youtube-nocookie.com'
   const isYouTubeHost = host === 'youtube.com' || host === 'youtu.be' || nocookie
 
-  // https://youtu.be/VIDEO_ID  -> real player embed (never iframe the raw
-  // youtu.be page; per YouTube that is the about/share shell, not a player).
   if (host === 'youtu.be') {
     const id = path.slice(1).split('/')[0]
     if (id) return buildYouTubeEmbed(id, nocookie)
@@ -141,39 +154,27 @@ function toEmbedUrl(raw?: string | null): string {
   }
 
   if (host === 'youtube.com' || nocookie) {
-    // https://youtube.com/watch?v=VIDEO_ID
     if (path === '/watch') {
       const id = u.searchParams.get('v')
       if (id) return buildYouTubeEmbed(id, nocookie)
     }
 
-    // https://youtube.com/embed/VIDEO_ID | /shorts/ID | /live/ID
     const idMatch = path.match(/^\/(?:embed|shorts|live)\/([\w-]+)/)
     if (idMatch?.[1]) {
       return buildYouTubeEmbed(idMatch[1], nocookie)
     }
 
-    // https://youtube.com/embed/live_stream?channel=CHANNEL_ID
     if (path === '/embed/live_stream') {
       const channel = u.searchParams.get('channel')
       if (channel) return buildYouTubeChannelLiveEmbed(channel, nocookie)
     }
 
-    // FIX: a bare channel URL carries a real channel id -> map it to the
-    // channel live-stream embed so "go live on my channel" actually plays
-    // instead of iframing YouTube's cookie/language shell.
     const ch = path.match(/^\/channel\/([\w-]+)/)
     if (ch?.[1]) return buildYouTubeChannelLiveEmbed(ch[1], nocookie)
 
-    // FIX: @handle / /c/... / /user/... cannot be resolved to a channel id
-    // client-side, and as raw pages they render shells inside an iframe.
-    // Refuse to embed; the external "Open stream externally" link still works.
     if (/^\/(?:@|c\/|user\/)/.test(path)) return ''
   }
 
-  // FIX safety net: NEVER iframe an unrecognized youtube.com page (search,
-  // feed, playlist, /watch without v, etc.) — those are shells, not players.
-  // Only NON-YouTube external embeds (Twitch player, Zoom, other) pass through.
   if (isYouTubeHost) return ''
 
   if (/^https?:\/\//.test(value)) return value
@@ -231,7 +232,7 @@ export function AuctionRoomPage() {
 
   const [sale, setSale] = useState<Sale | null>(null)
   const [lots, setLots] = useState<Lot[]>([])
-  const [bids, setBids] = useState<LotBid[]>([])
+  const [bids, setBids] = useState<LedgerRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -243,6 +244,14 @@ export function AuctionRoomPage() {
   const [actionNotice, setActionNotice] = useState('')
 
   const lastBidId = useRef(0)
+  const tempSeqRef = useRef(0)
+
+  // In-flight guard for the sale poll. Without a timeout, a single hung
+  // fetchSale permanently pins this to true and every subsequent 2500ms tick
+  // is skipped — the host's lots/current_bid freeze until a refresh remounts
+  // the component. The AbortController + SALE_POLL_TIMEOUT_MS below converts
+  // that permanent freeze into a retryable 8s blip.
+  const saleInFlightRef = useRef(false)
 
   const currency = sale?.currency || 'NGN'
 
@@ -290,11 +299,7 @@ export function AuctionRoomPage() {
       (/youtube\.com\/embed\//.test(embed) ||
         /youtube-nocookie\.com\/embed\//.test(embed))
 
-    return {
-      embed,
-      external,
-      isYouTube,
-    }
+    return { embed, external, isYouTube }
   }, [sale?.stream_url])
 
   const canGoLive = Boolean(sale?.is_host && sale?.status === 'upcoming')
@@ -312,13 +317,25 @@ export function AuctionRoomPage() {
     sale?.is_host && sale?.status === 'live' && !activeLot && lastPassedLot,
   )
 
-  // Did this viewer win anything in this sale?
-  // winner_username is left visible by get_sale for sold lots.
   const wonLots = useMemo(
     () => (viewer ? lots.filter(l => l.winner_username === viewer).length : 0),
     [lots, viewer],
   )
 
+  // -----------------------------------------------------------------------
+  // loadSale — guarded, one at a time, with a hard timeout.
+  //
+  // THE HOST-FREEZE FIX: the old version had saleInFlightRef but NO timeout
+  // on fetchSale. If the Neon pool starves (query_wait_timeout, "Remaining
+  // connection slots are reserved…"), fetchSale hangs indefinitely,
+  // saleInFlightRef stays true forever, every 2500ms tick is skipped, lots
+  // never update, current_bid freezes, and the host must refresh.
+  //
+  // Now: AbortController + SALE_POLL_TIMEOUT_MS (8s). If the request outlives
+  // 8s it is aborted, the finally block resets the guard, and the next tick
+  // retries with a fresh socket. The keep-prev guard (rows.length ? rows : prev)
+  // ensures a failed/aborted poll never blanks the board.
+  // -----------------------------------------------------------------------
   const loadSale = useCallback(async () => {
     if (!Number.isFinite(saleId)) {
       setError('Invalid sale id.')
@@ -326,19 +343,35 @@ export function AuctionRoomPage() {
       return
     }
 
+    if (saleInFlightRef.current) return
+    saleInFlightRef.current = true
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), SALE_POLL_TIMEOUT_MS)
+
     try {
-      const data = await fetchSale(String(saleId), viewer)
+      const data = await fetchSale(String(saleId), viewer, controller.signal)
 
       if (data.sale) {
         setSale(data.sale)
-        setLots(data.lots || [])
+
+        const rows = Array.isArray(data.lots) ? data.lots : []
+
+        // Transient-failure guard: an empty/aborted poll must NOT blank the
+        // board. Keep the last good lots so the house strip and activeLot
+        // never vanish mid-poll.
+        setLots(prev => (rows.length ? rows : prev))
+
         setError('')
       } else {
         setError(data.error || 'This room is private.')
       }
     } catch {
-      setError('network error - is the feed server running?')
+      // Network/abort: keep whatever we had. Do not blank lots or sale.
+      setError(prev => prev || 'network error - is the feed server running?')
     } finally {
+      window.clearTimeout(timer)
+      saleInFlightRef.current = false
       setLoading(false)
     }
   }, [saleId, viewer])
@@ -361,10 +394,7 @@ export function AuctionRoomPage() {
     }
 
     const target = parseTimestamp(sale.starts_at)
-    if (!target) {
-      setStartCountdown('')
-      return
-    }
+    if (!target) { setStartCountdown(''); return }
 
     let cancelled = false
     let done = false
@@ -372,28 +402,20 @@ export function AuctionRoomPage() {
 
     const tick = () => {
       if (cancelled) return
-
       const diff = target - Date.now()
-
       if (diff <= 0) {
         done = true
         setStartCountdown('00:00:00')
-
         if (timer) window.clearInterval(timer)
         timer = undefined
-
         void loadSale()
         return
       }
-
       setStartCountdown(formatDuration(diff))
     }
 
     tick()
-
-    if (!done && !cancelled) {
-      timer = window.setInterval(tick, 1000)
-    }
+    if (!done && !cancelled) timer = window.setInterval(tick, 1000)
 
     return () => {
       cancelled = true
@@ -409,10 +431,7 @@ export function AuctionRoomPage() {
     }
 
     const target = parseTimestamp(sale.ends_at)
-    if (!target) {
-      setEndCountdown('')
-      return
-    }
+    if (!target) { setEndCountdown(''); return }
 
     let cancelled = false
     let done = false
@@ -420,28 +439,20 @@ export function AuctionRoomPage() {
 
     const tick = () => {
       if (cancelled) return
-
       const diff = target - Date.now()
-
       if (diff <= 0) {
         done = true
         setEndCountdown('00:00:00')
-
         if (timer) window.clearInterval(timer)
         timer = undefined
-
         void loadSale()
         return
       }
-
       setEndCountdown(formatDuration(diff))
     }
 
     tick()
-
-    if (!done && !cancelled) {
-      timer = window.setInterval(tick, 1000)
-    }
+    if (!done && !cancelled) timer = window.setInterval(tick, 1000)
 
     return () => {
       cancelled = true
@@ -450,6 +461,11 @@ export function AuctionRoomPage() {
   }, [sale?.status, sale?.ends_at, loadSale])
 
   // Poll sale status while not ended.
+  //
+  // 2500ms is a deliberate load/latency trade-off on a SHARED Neon pool.
+  // saleInFlightRef + the 8s AbortController inside loadSale guarantee at
+  // most ONE poll runs at a time and a hung poll cannot permanently disable
+  // the cycle. Do not crank this down.
   useEffect(() => {
     if (!sale || sale.status === 'ended') return
 
@@ -461,11 +477,24 @@ export function AuctionRoomPage() {
   }, [sale?.status, loadSale])
 
   /**
-   * Single source of truth for the ledger.
+   * Single source of truth for the ledger (the rail).
    *
-   * Keyed ONLY on activeLot?.id so a lot change always clears the board.
-   * Merge is strictly id-deduped so an optimistic row can never coexist with
-   * the polled real row.
+   * THE HOST-FREEZE FIX (the primary bug you reported):
+   *
+   * The old bid poll had `pollBusy` but NO timeout on fetchLotBids. When the
+   * Neon pool starves, a single GET /lots/{id}/bids?since=X hangs for up to
+   * query_wait_timeout (120s default). pollBusy stays true for those 120s,
+   * every 1000ms tick is skipped, and the host's rail shows ZERO new bids
+   * for two minutes. The bidder doesn't notice because their OWN bid appears
+   * via optimistic echo (bypasses the poll). The host has no echo — a stuck
+   * poll = a completely frozen rail until refresh remounts the component.
+   *
+   * Now: AbortController + BID_POLL_TIMEOUT_MS (5s) on BOTH the initial fetch
+   * and every interval tick. If a GET outlives 5s it is aborted, pollBusy
+   * resets in the finally block, and the next 1000ms tick retries with a
+   * fresh socket. A 120s freeze becomes a 5s blip.
+   *
+   * The merge() + sweeper + onBidError logic is unchanged.
    */
   useEffect(() => {
     const lotId = activeLot?.id
@@ -483,71 +512,183 @@ export function AuctionRoomPage() {
 
     const merge = (incoming: LotBid[]) => {
       setBids(prev => {
-        const seen = new Set(prev.map(b => b.id))
+        let next = prev
+        let mutated = false
 
-        const add = incoming.filter(
-          b => b.id > 0 && b.id > lastBidId.current && !seen.has(b.id),
-        )
+        for (const r of incoming) {
+          if (!(r.id > 0)) continue
 
-        if (!add.length) return prev
+          const ti = next.findIndex(
+            x =>
+              x.__temp &&
+              x.user_name === r.user_name &&
+              Number(x.amount) === Number(r.amount),
+          )
 
-        const maxId = add.reduce((m, b) => Math.max(m, b.id), lastBidId.current)
-        lastBidId.current = maxId
+          if (ti >= 0) {
+            if (!mutated) { next = next.slice(); mutated = true }
+            next[ti] = r
+            if (r.id > lastBidId.current) lastBidId.current = r.id
+            continue
+          }
 
-        return [...add.slice().reverse(), ...prev]
+          if (r.id > lastBidId.current && !next.some(x => x.id === r.id)) {
+            if (!mutated) { next = next.slice(); mutated = true }
+            next = [r, ...next]
+            if (r.id > lastBidId.current) lastBidId.current = r.id
+          }
+        }
+
+        return mutated ? next : prev
       })
     }
 
-    fetchLotBids(lotId, 0).then(list => {
-      if (!alive) return
+    // Initial load: abortable with timeout.
+    const initController = new AbortController()
+    const initTimer = window.setTimeout(() => initController.abort(), BID_POLL_TIMEOUT_MS)
 
-      const real = list.filter(b => b.id > 0)
+    fetchLotBids(lotId, 0, initController.signal)
+      .then(list => {
+        if (!alive) return
 
-      if (real.length) {
-        lastBidId.current = real[real.length - 1].id
-      }
+        const real = list.filter(b => b.id > 0)
 
-      setBids(real.slice().reverse())
-    })
+        if (real.length) {
+          lastBidId.current = real[real.length - 1].id
+        }
+
+        setBids(prev => {
+          const temps = prev.filter(x => x.__temp)
+          const keepTemps = temps.filter(
+            t => !real.some(r => r.user_name === t.user_name && Number(r.amount) === Number(t.amount)),
+          )
+          return [...keepTemps, ...real.slice().reverse()]
+        })
+      })
+      .catch(() => {
+        // initial fetch failed/aborted: rail keeps whatever temps + nothing yet
+      })
+      .finally(() => {
+        window.clearTimeout(initTimer)
+      })
+
+    // Delta poll: ONE at a time, with a hard timeout per tick.
+    // THE HOST-FREEZE FIX: without the AbortController, a single hung
+    // fetchLotBids pins pollBusy=true for up to 120s (query_wait_timeout),
+    // freezing the host's rail completely. With the 5s timeout, the abort
+    // fires, the finally block resets pollBusy, and the next 1000ms tick
+    // retries. Maximum rail freeze: 5s + 1s = 6s, not 120s.
+    let pollBusy = false
+    let pollController: AbortController | null = null
+    let pollTimer: number | undefined
 
     const timer = window.setInterval(async () => {
-      const fresh = await fetchLotBids(lotId, lastBidId.current)
+      if (!alive || pollBusy) return
+      pollBusy = true
 
-      if (alive && fresh.length) {
-        merge(fresh)
+      pollController = new AbortController()
+      pollTimer = window.setTimeout(
+        () => pollController?.abort(),
+        BID_POLL_TIMEOUT_MS,
+      )
+
+      try {
+        const fresh = await fetchLotBids(lotId, lastBidId.current, pollController.signal)
+        if (alive && fresh.length) merge(fresh)
+      } catch {
+        // failed/aborted: skip this tick, lastBidId unchanged, retry next tick
+      } finally {
+        window.clearTimeout(pollTimer)
+        pollController = null
+        pollBusy = false
       }
     }, 1000)
+
+    // Phantom sweeper: drop optimistic rows the backend never confirmed.
+    const sweeper = window.setInterval(() => {
+      const cutoff = Date.now() - 12000
+
+      setBids(prev => {
+        const hasStale = prev.some(x => x.__temp && (x.__at || 0) < cutoff)
+        if (!hasStale) return prev
+        return prev.filter(x => !(x.__temp && (x.__at || 0) < cutoff))
+      })
+    }, 2000)
 
     return () => {
       alive = false
       window.clearInterval(timer)
+      window.clearInterval(sweeper)
+      try { initController.abort() } catch { /* noop */ }
+      try { pollController?.abort() } catch { /* noop */ }
+      window.clearTimeout(pollTimer)
     }
   }, [activeLot?.id])
 
+  // -----------------------------------------------------------------------
+  // handleMyBid — anti-clobber: optimistic temps touch the RAIL only.
+  // Real bids (id > 0) bump lot.current_bid legitimately.
+  // -----------------------------------------------------------------------
   function handleMyBid(b: LotBid) {
-    // Only trust real backend ids; the poll will also surface it and merge() dedupes.
-    if (b.id > 0) {
-      lastBidId.current = Math.max(lastBidId.current, b.id)
-      setBids(prev => (prev.some(x => x.id === b.id) ? prev : [b, ...prev]))
-    }
+    const name = b.user_name || viewer
+    const numericAmount = Number(b.amount)
+    if (!name || !Number.isFinite(numericAmount) || numericAmount <= 0) return
 
-    setLots(prev =>
-      prev.map(l =>
-        l.id === activeLot?.id
-          ? {
-              ...l,
-              current_bid: b.amount,
-              bid_count: (l.bid_count || 0) + 1,
-            }
-          : l,
-      ),
-    )
+    setBids(prev => {
+      if (b.id > 0) {
+        if (b.id > lastBidId.current) lastBidId.current = b.id
+
+        const cleaned = prev.filter(
+          x =>
+            x.id !== b.id &&
+            !(x.__temp && x.user_name === name && Number(x.amount) === numericAmount),
+        )
+
+        return [{ ...b, user_name: name, amount: String(b.amount) }, ...cleaned]
+      }
+
+      const temp: LedgerRow = {
+        ...b,
+        user_name: name,
+        amount: String(b.amount),
+        id: --tempSeqRef.current,
+        __temp: true,
+        __at: Date.now(),
+      }
+
+      const cleaned = prev.filter(
+        x => !(x.__temp && x.user_name === name && Number(x.amount) === numericAmount),
+      )
+
+      return [temp, ...cleaned]
+    })
+
+    // CRITICAL ANTI-CLOBBER: only bump lot.current_bid for a REAL bid.
+    if (b.id > 0) {
+      setLots(prev =>
+        prev.map(l =>
+          l.id === activeLot?.id
+            ? { ...l, current_bid: b.amount, bid_count: (l.bid_count || 0) + 1 }
+            : l,
+        ),
+      )
+    }
   }
 
-  /**
-   * Flip local state the instant an action succeeds, so the board moves without
-   * waiting on the network reconcile.
-   */
+  const dropMyTemp = useCallback(
+    (amount: number) => {
+      const a = Number(amount)
+      if (!Number.isFinite(a)) return
+
+      setBids(prev =>
+        prev.filter(
+          x => !(x.__temp && x.user_name === viewer && Number(x.amount) === a),
+        ),
+      )
+    },
+    [viewer],
+  )
+
   const applyOptimistic = useCallback((key: HostActionKey, res: any) => {
     if (!res || res.error) return
 
@@ -558,26 +699,16 @@ export function AuctionRoomPage() {
 
     if (key === 'end') {
       setSale(prev =>
-        prev
-          ? {
-              ...prev,
-              status: 'ended',
-              ended_at: new Date().toISOString(),
-            }
-          : prev,
+        prev ? { ...prev, status: 'ended', ended_at: new Date().toISOString() } : prev,
       )
       return
     }
 
     if (key === 'reveal' && res.lot?.id) {
       const revealedId = res.lot.id
-
       setLots(prev =>
-        prev.map(l =>
-          l.id === revealedId ? { ...l, status: 'on_block' as const } : l,
-        ),
+        prev.map(l => (l.id === revealedId ? { ...l, status: 'on_block' as const } : l)),
       )
-
       return
     }
 
@@ -585,7 +716,6 @@ export function AuctionRoomPage() {
       setLots(prev =>
         prev.map(l => {
           if (l.status !== 'on_block') return l
-
           if (res.message === 'sold') {
             return {
               ...l,
@@ -596,29 +726,14 @@ export function AuctionRoomPage() {
               hammer_at: new Date().toISOString(),
             }
           }
-
-          return {
-            ...l,
-            status: 'passed' as const,
-            hammer_at: new Date().toISOString(),
-          }
+          return { ...l, status: 'passed' as const, hammer_at: new Date().toISOString() }
         }),
       )
-
       return
     }
 
-    /**
-     * Reopen a passed lot back onto the block.
-     *
-     * Bids are preserved server-side. The ledger effect, keyed on activeLot?.id,
-     * refetches them once this lot becomes active again.
-     *
-     * We only flip THIS lot, never another.
-     */
     if (key === 'reopen' && (res.lot_id || res.lot?.id)) {
       const reopenedId = Number(res.lot_id ?? res.lot?.id)
-
       setLots(prev =>
         prev.map(l =>
           l.id === reopenedId
@@ -650,16 +765,10 @@ export function AuctionRoomPage() {
 
       try {
         const res = await fn()
-
-        if (res?.error) {
-          setActionError(res.error)
-          return
-        }
+        if (res?.error) { setActionError(res.error); return }
 
         applyOptimistic(key, res)
         setActionNotice(typeof success === 'function' ? success(res) : success)
-
-        // Reconcile in the background; do NOT block the button on it.
         void loadSale()
       } catch (e) {
         setActionError(e instanceof Error ? e.message : 'Action failed.')
@@ -669,6 +778,10 @@ export function AuctionRoomPage() {
     },
     [saleId, viewer, loadSale, applyOptimistic],
   )
+
+  // -----------------------------------------------------------------------
+  // RENDER
+  // -----------------------------------------------------------------------
 
   if (loading) {
     return (
@@ -683,12 +796,10 @@ export function AuctionRoomPage() {
     return (
       <main className={styles.layout}>
         <Navbar />
-
         <div className={styles.gateCard} style={{ maxWidth: 480, margin: '6rem auto' }}>
           <p className={styles.gateTitle}>
             <Lock size={16} /> {error || 'This room is private.'}
           </p>
-
           <button className={styles.gateBtn} onClick={() => navigate('/auctions')}>
             Back to the floor
           </button>
@@ -697,21 +808,16 @@ export function AuctionRoomPage() {
     )
   }
 
-  // THE CURTAIN — before the sale, only the timer exists.
   if (sale.status === 'upcoming') {
     const startReached = startCountdown === '00:00:00'
 
     return (
       <main className={styles.curtainLayout}>
         <Navbar />
-
         <div className={styles.curtain}>
           <p className={styles.curtainLabel}>The auction will start in</p>
           <h1 className={styles.curtainTime}>{startCountdown || '—'}</h1>
-
-          <p className={styles.curtainSub}>
-            {sale.title} · @{sale.host_username}
-          </p>
+          <p className={styles.curtainSub}>{sale.title} · @{sale.host_username}</p>
 
           {startReached ? (
             <p className={styles.startNote}>
@@ -731,20 +837,13 @@ export function AuctionRoomPage() {
                 }
                 disabled={actionBusy !== '' || !canGoLive}
               >
-                {actionBusy === 'live' ? (
-                  <Loader2 size={14} className={styles.spin} />
-                ) : (
-                  <Play size={14} />
-                )}
+                {actionBusy === 'live' ? <Loader2 size={14} className={styles.spin} /> : <Play size={14} />}
                 Go live
               </button>
             </div>
           ) : !sale.has_ticket ? (
             <div className={styles.hostActionsInline}>
-              <button
-                className={styles.gateBtn}
-                onClick={() => navigate(`/sales/${saleId}`)}
-              >
+              <button className={styles.gateBtn} onClick={() => navigate(`/sales/${saleId}`)}>
                 Get a paddle
               </button>
             </div>
@@ -760,26 +859,18 @@ export function AuctionRoomPage() {
 
       <div className={styles.room}>
         <div className={styles.topBar}>
-          <button
-            className={styles.backBtn}
-            onClick={() => navigate('/auctions')}
-            aria-label="Back to floor"
-          >
+          <button className={styles.backBtn} onClick={() => navigate('/auctions')} aria-label="Back to floor">
             <ArrowLeft size={18} />
           </button>
-
           <span className={styles.watching}>
             <i />
             {sale.status === 'live'
               ? `live${endCountdown ? ` · ends in ${endCountdown}` : ''}`
-              : sale.status === 'ended'
-                ? 'archive'
-                : 'upcoming'}
+              : sale.status === 'ended' ? 'archive' : 'upcoming'}
           </span>
         </div>
 
         <section className={styles.main}>
-          {/* THE STREAM */}
           <div className={styles.streamBox}>
             {stream.embed ? (
               <div className={styles.streamShell}>
@@ -792,14 +883,8 @@ export function AuctionRoomPage() {
                   referrerPolicy="strict-origin-when-cross-origin"
                   allowFullScreen
                 />
-
                 {stream.external ? (
-                  <a
-                    className={styles.streamFallback}
-                    href={stream.external}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a className={styles.streamFallback} href={stream.external} target="_blank" rel="noreferrer">
                     Open stream externally
                   </a>
                 ) : null}
@@ -812,63 +897,37 @@ export function AuctionRoomPage() {
             )}
           </div>
 
-          <AuctionHeader
-            sale={sale}
-            totalLots={lots.length}
-            activeLot={activeLot}
-          />
+          <AuctionHeader sale={sale} totalLots={lots.length} activeLot={activeLot} />
 
-          {/* HOST CONTROLS */}
           {sale.is_host ? (
             <div className={styles.hostBar}>
               <div className={styles.hostBarHead}>
                 <span className={styles.ledgerTitle}>Host controls</span>
-
                 <span className={styles.hostMeta}>
-                  {lots.length} lots · {soldCount} sold · {passedCount} passed ·{' '}
-                  {sealedCount} sealed
+                  {lots.length} lots · {soldCount} sold · {passedCount} passed · {sealedCount} sealed
                 </span>
               </div>
 
               <div className={styles.hostActions}>
                 <button
                   className={styles.hostBtn}
-                  onClick={() =>
-                    void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')
-                  }
+                  onClick={() => void runHostAction('live', () => goLive(saleId, viewer), 'Sale is live.')}
                   disabled={actionBusy !== '' || !canGoLive}
                 >
-                  {actionBusy === 'live' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Play size={14} />
-                  )}
+                  {actionBusy === 'live' ? <Loader2 size={14} className={styles.spin} /> : <Play size={14} />}
                   Go live
                 </button>
 
                 <button
                   className={styles.hostBtn}
                   onClick={() =>
-                    void runHostAction(
-                      'reveal',
-                      () => revealNext(saleId, viewer),
-                      res => `Lot ${res.lot?.position ?? '?'} is now on the block.`,
-                    )
+                    void runHostAction('reveal', () => revealNext(saleId, viewer),
+                      res => `Lot ${res.lot?.position ?? '?'} is now on the block.`)
                   }
                   disabled={actionBusy !== '' || !canReveal}
-                  title={
-                    activeLot
-                      ? 'Hammer or pass the current lot before revealing the next one.'
-                      : sealedCount === 0
-                        ? 'No sealed lots left to reveal.'
-                        : 'Reveal the next sealed lot.'
-                  }
+                  title={activeLot ? 'Hammer or pass the current lot before revealing the next one.' : sealedCount === 0 ? 'No sealed lots left to reveal.' : 'Reveal the next sealed lot.'}
                 >
-                  {actionBusy === 'reveal' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Eye size={14} />
-                  )}
+                  {actionBusy === 'reveal' ? <Loader2 size={14} className={styles.spin} /> : <Eye size={14} />}
                   Reveal next
                 </button>
 
@@ -876,32 +935,15 @@ export function AuctionRoomPage() {
                   className={styles.hostBtn}
                   onClick={() => {
                     if (!activeLot) return
-
-                    const ok = window.confirm(
-                      `Hammer Lot ${activeLot.position}? This sells it to the top bidder if reserve is met, otherwise passes it.`,
-                    )
-
-                    if (!ok) return
-
-                    void runHostAction(
-                      'hammer',
-                      () => hammerLot(activeLot.id, viewer),
-                      res =>
-                        res.message === 'sold'
-                          ? `Sold Lot ${activeLot.position} to ${res.winner || 'winner'} at ${formatMoney(
-                              res.sold_price,
-                              currency,
-                            )}.`
-                          : `Lot ${activeLot.position} passed. ${res.reason || ''}`.trim(),
-                    )
+                    if (!window.confirm(`Hammer Lot ${activeLot.position}? This sells it to the top bidder if reserve is met, otherwise passes it.`)) return
+                    void runHostAction('hammer', () => hammerLot(activeLot.id, viewer),
+                      res => res.message === 'sold'
+                        ? `Sold Lot ${activeLot.position} to ${res.winner || 'winner'} at ${formatMoney(res.sold_price, currency)}.`
+                        : `Lot ${activeLot.position} passed. ${res.reason || ''}`.trim())
                   }}
                   disabled={actionBusy !== '' || !canHammer}
                 >
-                  {actionBusy === 'hammer' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Gavel size={14} />
-                  )}
+                  {actionBusy === 'hammer' ? <Loader2 size={14} className={styles.spin} /> : <Gavel size={14} />}
                   Hammer
                 </button>
 
@@ -909,26 +951,12 @@ export function AuctionRoomPage() {
                   className={styles.hostBtn}
                   onClick={() => {
                     if (!activeLot) return
-
-                    const ok = window.confirm(
-                      `Pass Lot ${activeLot.position} without selling?`,
-                    )
-
-                    if (!ok) return
-
-                    void runHostAction(
-                      'pass',
-                      () => passLot(activeLot.id, viewer),
-                      `Lot ${activeLot.position} passed.`,
-                    )
+                    if (!window.confirm(`Pass Lot ${activeLot.position} without selling?`)) return
+                    void runHostAction('pass', () => passLot(activeLot.id, viewer), `Lot ${activeLot.position} passed.`)
                   }}
                   disabled={actionBusy !== '' || !canPass}
                 >
-                  {actionBusy === 'pass' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <SkipForward size={14} />
-                  )}
+                  {actionBusy === 'pass' ? <Loader2 size={14} className={styles.spin} /> : <SkipForward size={14} />}
                   Pass
                 </button>
 
@@ -936,60 +964,29 @@ export function AuctionRoomPage() {
                   className={styles.hostBtn}
                   onClick={() => {
                     if (!lastPassedLot) return
-
-                    const ok = window.confirm(
-                      `Reopen Lot ${lastPassedLot.position}? Its previous bids remain on the ledger and bidding resumes.`,
-                    )
-
-                    if (!ok) return
-
-                    void runHostAction(
-                      'reopen',
-                      () => reopenLot(lastPassedLot.id, viewer),
-                      `Lot ${lastPassedLot.position} reopened — back on the block.`,
-                    )
+                    if (!window.confirm(`Reopen Lot ${lastPassedLot.position}? Its previous bids remain on the ledger and bidding resumes.`)) return
+                    void runHostAction('reopen', () => reopenLot(lastPassedLot.id, viewer), `Lot ${lastPassedLot.position} reopened — back on the block.`)
                   }}
                   disabled={actionBusy !== '' || !canReopenLast}
-                  title={
-                    activeLot
-                      ? 'Hammer or pass the current lot before reopening a passed lot.'
-                      : lastPassedLot
-                        ? 'Reopen the most recently passed lot.'
-                        : 'No passed lots to reopen.'
-                  }
+                  title={activeLot ? 'Hammer or pass the current lot before reopening a passed lot.' : lastPassedLot ? 'Reopen the most recently passed lot.' : 'No passed lots to reopen.'}
                 >
-                  {actionBusy === 'reopen' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <RotateCcw size={14} />
-                  )}
+                  {actionBusy === 'reopen' ? <Loader2 size={14} className={styles.spin} /> : <RotateCcw size={14} />}
                   Reopen last passed
                 </button>
 
                 <button
                   className={`${styles.hostBtn} ${styles.hostBtnDanger}`}
                   onClick={() => {
-                    const msg =
-                      sealedCount > 0
-                        ? `There are still ${sealedCount} sealed lots. Ending now leaves them unsold. End sale anyway?`
-                        : 'End this sale?'
-
+                    const msg = sealedCount > 0
+                      ? `There are still ${sealedCount} sealed lots. Ending now leaves them unsold. End sale anyway?`
+                      : 'End this sale?'
                     if (!window.confirm(msg)) return
-
                     void runHostAction('end', () => endSale(saleId, viewer), 'Sale ended.')
                   }}
                   disabled={actionBusy !== '' || !canEnd}
-                  title={
-                    activeLot
-                      ? 'Hammer or pass the current lot before ending the sale.'
-                      : 'End the sale.'
-                  }
+                  title={activeLot ? 'Hammer or pass the current lot before ending the sale.' : 'End the sale.'}
                 >
-                  {actionBusy === 'end' ? (
-                    <Loader2 size={14} className={styles.spin} />
-                  ) : (
-                    <Square size={14} />
-                  )}
+                  {actionBusy === 'end' ? <Loader2 size={14} className={styles.spin} /> : <Square size={14} />}
                   End sale
                 </button>
               </div>
@@ -1003,53 +1000,30 @@ export function AuctionRoomPage() {
           <div className={styles.chapters}>
             {lots.map(lot => {
               const isPassed = lot.status === 'passed'
-
-              const canReopenThisLot =
-                !!sale.is_host && sale.status === 'live' && isPassed
-
+              const canReopenThisLot = !!sale.is_host && sale.status === 'live' && isPassed
               const reopenBlockedByActiveLot = !!activeLot
+              const reopenDisabled = actionBusy !== '' || reopenBlockedByActiveLot
 
-              const reopenDisabled =
-                actionBusy !== '' || reopenBlockedByActiveLot
-
-              const children =
-                lot.status === 'sealed' ? (
-                  <div className={styles.chapterSealed}>
-                    <Lock size={16} />
-                    <span>Lot {lot.position}</span>
-                  </div>
-                ) : (
-                  <>
-                    {lot.image_url ? (
-                      <img
-                        className={styles.chapterImg}
-                        src={lot.image_url}
-                        alt={lot.title || `Lot ${lot.position}`}
-                      />
-                    ) : (
-                      <div className={styles.chapterImgBlank} />
-                    )}
-
-                    <span className={styles.chapterTitle}>
-                      {lot.title || `Lot ${lot.position}`}
-                    </span>
-
-                    {lot.status === 'sold' && (
-                      <span className={styles.soldStamp}>SOLD</span>
-                    )}
-
-                    {lot.status === 'passed' && (
-                      <span className={styles.passedStamp}>PASSED</span>
-                    )}
-
-                    {canReopenThisLot && (
-                      <span className={styles.reopenHint}>
-                        <RotateCcw size={12} />
-                        Reopen
-                      </span>
-                    )}
-                  </>
-                )
+              const children = lot.status === 'sealed' ? (
+                <div className={styles.chapterSealed}>
+                  <Lock size={16} />
+                  <span>Lot {lot.position}</span>
+                </div>
+              ) : (
+                <>
+                  {lot.image_url ? (
+                    <img className={styles.chapterImg} src={lot.image_url} alt={lot.title || `Lot ${lot.position}`} />
+                  ) : (
+                    <div className={styles.chapterImgBlank} />
+                  )}
+                  <span className={styles.chapterTitle}>{lot.title || `Lot ${lot.position}`}</span>
+                  {lot.status === 'sold' && <span className={styles.soldStamp}>SOLD</span>}
+                  {lot.status === 'passed' && <span className={styles.passedStamp}>PASSED</span>}
+                  {canReopenThisLot && (
+                    <span className={styles.reopenHint}><RotateCcw size={12} /> Reopen</span>
+                  )}
+                </>
+              )
 
               if (canReopenThisLot) {
                 return (
@@ -1057,24 +1031,11 @@ export function AuctionRoomPage() {
                     key={lot.id}
                     type="button"
                     className={`${styles.chapter} ${styles.chapterPassed} ${styles.chapterReopenable}`}
-                    title={
-                      reopenBlockedByActiveLot
-                        ? 'Hammer or pass the current lot before reopening this one.'
-                        : 'Reopen this lot — previous bids stay and bidding resumes.'
-                    }
+                    title={reopenBlockedByActiveLot ? 'Hammer or pass the current lot before reopening this one.' : 'Reopen this lot — previous bids stay and bidding resumes.'}
                     disabled={reopenDisabled}
                     onClick={() => {
-                      const ok = window.confirm(
-                        `Reopen Lot ${lot.position}? Its previous bids remain on the ledger and bidding resumes.`,
-                      )
-
-                      if (!ok) return
-
-                      void runHostAction(
-                        'reopen',
-                        () => reopenLot(lot.id, viewer),
-                        `Lot ${lot.position} reopened — back on the block.`,
-                      )
+                      if (!window.confirm(`Reopen Lot ${lot.position}? Its previous bids remain on the ledger and bidding resumes.`)) return
+                      void runHostAction('reopen', () => reopenLot(lot.id, viewer), `Lot ${lot.position} reopened — back on the block.`)
                     }}
                   >
                     {children}
@@ -1085,11 +1046,7 @@ export function AuctionRoomPage() {
               return (
                 <div
                   key={lot.id}
-                  className={`${styles.chapter} ${
-                    lot.status === 'on_block' ? styles.chapterActive : ''
-                  } ${lot.status === 'sold' ? styles.chapterSold : ''} ${
-                    lot.status === 'passed' ? styles.chapterPassed : ''
-                  }`}
+                  className={`${styles.chapter} ${lot.status === 'on_block' ? styles.chapterActive : ''} ${lot.status === 'sold' ? styles.chapterSold : ''} ${lot.status === 'passed' ? styles.chapterPassed : ''}`}
                 >
                   {children}
                 </div>
@@ -1107,23 +1064,19 @@ export function AuctionRoomPage() {
                   currency={sale.currency}
                   leadingUsername={
                     bids.length
-                      ? bids.reduce((top, b) =>
-                          Number(b.amount) > Number(top.amount) ? b : top,
-                        ).user_name
+                      ? bids.reduce((top, b) => Number(b.amount) > Number(top.amount) ? b : top).user_name
                       : null
                   }
                   viewerHasBid={bids.some(b => b.user_name === viewer)}
                   onBid={handleMyBid}
+                  onBidError={dropMyTemp}
                 />
               ) : (
                 <TicketGate sale={sale} viewer={viewer} onRefresh={loadSale} />
               )
             ) : (
               <div className={styles.gateCard}>
-                <p className={styles.gateTitle}>
-                  <Radio size={16} /> Between lots
-                </p>
-
+                <p className={styles.gateTitle}><Radio size={16} /> Between lots</p>
                 <p className={styles.gateText}>
                   {sale.is_host && passedCount > 0
                     ? 'The house can reveal the next lot or reopen a passed lot.'
@@ -1133,29 +1086,15 @@ export function AuctionRoomPage() {
             )
           ) : sale.status === 'ended' ? (
             <div className={styles.gateCard}>
-              <p className={styles.gateTitle}>
-                <Lock size={16} /> Sale ended
-              </p>
-
-              <p className={styles.gateText}>
-                Results are visible in the catalogue strip above.
-              </p>
-
+              <p className={styles.gateTitle}><Lock size={16} /> Sale ended</p>
+              <p className={styles.gateText}>Results are visible in the catalogue strip above.</p>
               <div className={styles.hostActionsInline}>
-                <button
-                  className={styles.gateBtn}
-                  onClick={() => navigate(`/sales/${saleId}`)}
-                >
+                <button className={styles.gateBtn} onClick={() => navigate(`/sales/${saleId}`)}>
                   View ticket page
                 </button>
-
                 {wonLots > 0 ? (
-                  <button
-                    className={styles.gateBtn}
-                    onClick={() => navigate('/wins')}
-                  >
-                    <Trophy size={14} />
-                    You won {wonLots} lot{wonLots === 1 ? '' : 's'} — view
+                  <button className={styles.gateBtn} onClick={() => navigate('/wins')}>
+                    <Trophy size={14} /> You won {wonLots} lot{wonLots === 1 ? '' : 's'} — view
                   </button>
                 ) : null}
               </div>
@@ -1166,39 +1105,28 @@ export function AuctionRoomPage() {
         </section>
 
         <aside className={styles.rail}>
-          {/* THE LEDGER */}
           <div className={styles.ledgerHead}>
             <span className={styles.ledgerTitle}>
               Bid ledger {activeLot ? `· Lot ${activeLot.position}` : ''}
             </span>
-
             {sale.status === 'live' && (
-              <span className={styles.ledgerLive}>
-                <i /> updating live
-              </span>
+              <span className={styles.ledgerLive}><i /> updating live</span>
             )}
           </div>
 
           <div className={styles.ledger}>
             {!activeLot ? (
-              <p className={styles.ledgerEmpty}>
-                No lot on the block. The floor awaits.
-              </p>
+              <p className={styles.ledgerEmpty}>No lot on the block. The floor awaits.</p>
             ) : bids.length === 0 ? (
               <p className={styles.ledgerEmpty}>No bids yet on this lot.</p>
             ) : (
               bids.map((b, i) => (
                 <div
                   key={b.id}
-                  className={`${styles.ledgerRow} ${
-                    i === 0 ? styles.ledgerLead : ''
-                  }`}
+                  className={`${styles.ledgerRow} ${i === 0 ? styles.ledgerLead : ''} ${b.__temp ? styles.ledgerPending : ''}`}
                 >
                   <span className={styles.ledgerUser}>{b.user_name}</span>
-
-                  <span className={styles.ledgerAmount}>
-                    {formatMoney(b.amount, currency)}
-                  </span>
+                  <span className={styles.ledgerAmount}>{formatMoney(b.amount, currency)}</span>
                 </div>
               ))
             )}

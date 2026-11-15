@@ -149,14 +149,28 @@ export type BidRow = {
 }
 
 // ---- ORIGINAL functions, ORIGINAL signatures/returns (do not "improve") ----
-export async function fetchSale(id: string, viewer: string) {
-  const res = await fetch(`${API}/sales/${id}?viewer=${encodeURIComponent(viewer)}`)
+export async function fetchSale(
+  id: string,
+  viewer: string,
+  signal?: AbortSignal,
+) {
+  const res = await fetch(
+    `${API}/sales/${id}?viewer=${encodeURIComponent(viewer)}`,
+    { signal },
+  )
   return res.json()
 }
 
-export async function fetchLotBids(lotId: number, since: number = 0): Promise<LotBid[]> {
+export async function fetchLotBids(
+  lotId: number,
+  since: number = 0,
+  signal?: AbortSignal,
+): Promise<LotBid[]> {
   try {
-    const res = await fetch(`${API}/lots/${lotId}/bids?since=${since}`)
+    const res = await fetch(
+      `${API}/lots/${lotId}/bids?since=${since}`,
+      { signal },
+    )
     const data = await res.json()
     return data.bids || []
   } catch {
