@@ -17,6 +17,13 @@ Rules:
 
 This is the ONLY place external money events enter the ledger via push.
 The pull path (verify-on-return) shares apply_charge_success() below.
+
+CURRENCY (this revision): _major now threads the event's real currency into
+paystack.to_major so a live USD charge is scaled/stored in cents, not a blind
+NGN, while the NGN default keeps an NGN-only test account correct. Previously
+_major called the now-strict to_major with one arg and crashed every amount-
+bearing event (charge.success/failed, wallet_topup, record_event); because the
+handler returns 500 on exception, Paystack retried the money event forever.
 """
 
 import asyncio
@@ -41,8 +48,11 @@ def _log(msg: str):
     print(f"[paystack-webhook] {msg}", flush=True)
 
 
-def _major(minor_amount) -> Decimal:
-    return paystack.to_major(minor_amount)
+def _major(minor_amount, currency: str = "NGN") -> Decimal:
+    # Threads the event currency so live USD scales in cents; defaults to NGN so
+    # an omitted/unknown currency never raises (the charge path validates
+    # acceptance separately). Total — a webhook amount cannot 500 the endpoint.
+    return paystack.to_major(minor_amount, currency)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +175,10 @@ def apply_charge_success(cursor, *, lot_id, reference, amount_minor, currency="N
             _refresh_collection_payout_status(cursor, int(sale_id))
         return {"status": "paid", "already": True}
 
-    collected = _major(amount_minor)
+    # Thread the charged currency so escrow + the stored amount scale correctly
+    # for live USD (cents), not a blind NGN. sales.py passes currency here from
+    # the Paystack-reported value (or the lot's own currency as fallback).
+    collected = _major(amount_minor, currency or "NGN")
     sale_id = lot.get("sale_id")
     winner = lot.get("winner_username")
     host = lot.get("host_username")
@@ -332,7 +345,7 @@ def _process_paystack_webhook(raw: bytes, sig: str):
             event,
             account=meta.get("account") or meta.get("winner_username"),
             currency=data.get("currency"),
-            amount=_major(data.get("amount")),          # Bug D: store major units
+            amount=_major(data.get("amount"), data.get("currency") or "NGN"),  # store major units, correct currency
             reference=data.get("reference"),
             payload=body,
         )
@@ -345,7 +358,7 @@ def _process_paystack_webhook(raw: bytes, sig: str):
         if event == "charge.success" and kind == "wallet_topup":
             user = meta.get("account")
             cur = data.get("currency") or "NGN"
-            amt = _major(data.get("amount"))
+            amt = _major(data.get("amount"), cur)
             if user and amt > 0:
                 credit(cursor, user, float(amt), kind="wallet_topup",
                        reference=data.get("reference") or "",

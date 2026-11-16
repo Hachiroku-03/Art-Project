@@ -642,21 +642,20 @@ def _initialize_lot_checkout(cursor, lot_id: int) -> dict:
 def verify_won_lot_payment(lot_id: int, data: dict):
     """
     Pull-path reconciliation.
-
     Called by frontend when buyer returns from Paystack:
-        /wins?payment=completed
-
+    /wins?payment=completed
     Backend asks Paystack, server-to-server:
-        GET https://api.paystack.co/transaction/verify/{reference}
-
+    GET https://api.paystack.co/transaction/verify/{reference}
     If Paystack says success, backend marks the lot paid idempotently.
-
     This is the safety net for delayed/lost/broken webhooks.
-
     Browser must NEVER call api.paystack.co directly.
+
+    Currency fallback now reads the LOT's own currency (lot-first), matching
+    my_won_lots and _initialize_lot_checkout, instead of a hardcoded NGN that
+    could mis-book a USD reconciliation. On a successful verify Paystack always
+    returns the charged currency, so this fallback is only a last resort.
     """
     conn = None
-
     try:
         viewer = str(data.get("viewer") or "").strip()
         if not viewer:
@@ -674,7 +673,8 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             SELECT
                 winner_username,
                 COALESCE(payment_status, 'unpaid') AS payment_status,
-                payment_reference
+                payment_reference,
+                COALESCE(currency, '') AS lot_currency
             FROM lots
             WHERE id = %s
             """,
@@ -682,7 +682,6 @@ def verify_won_lot_payment(lot_id: int, data: dict):
         )
 
         row = cursor.fetchone()
-
         if not row:
             return {"error": "lot not found"}
 
@@ -696,7 +695,6 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             }
 
         reference = str(row.get("payment_reference") or "").strip()
-
         if not reference:
             return {
                 "status": "unpaid",
@@ -704,7 +702,6 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             }
 
         resp = paystack.verify_charge(reference)
-
         if resp.get("error"):
             return {"error": resp["error"]}
 
@@ -715,7 +712,6 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             }
 
         d = resp.get("data") or {}
-
         if str(d.get("status") or "").lower() != "success":
             return {
                 "status": "pending",
@@ -729,7 +725,9 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             lot_id=lot_id,
             reference=reference,
             amount_minor=d.get("amount"),
-            currency=d.get("currency") or "NGN",
+            # Paystack-reported currency is the truth on success; fall back to
+            # the LOT's currency (lot-first), never a blind NGN.
+            currency=d.get("currency") or _ccy(row.get("lot_currency")),
         )
 
         conn.commit()
@@ -738,123 +736,10 @@ def verify_won_lot_payment(lot_id: int, data: dict):
             return {"error": res["error"]}
 
         return res
-
     except Exception as e:
         if conn:
             conn.rollback()
-
         return {"error": str(e)}
-
-    finally:
-        if conn:
-            conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Public auction floor
-# ---------------------------------------------------------------------------
-
-@router.get("/sales")
-def list_sales(viewer: str = ""):
-    """
-    Public auction floor.
-
-    Ended sales remain visible for ENDED_FLOOR_RETENTION_HOURS after they end,
-    then disappear from the public floor. The house still sees all their own
-    sales through /my_sales.
-
-    IMPORTANT: every matching row is returned with its access flags. We do NOT
-    hide invite/VIP rooms from the floor when the viewer lacks a paddle. The
-    card renders them locked, and the real gating happens in get_sale + room.
-    """
-    conn = None
-
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                a.id,
-                a.host_username,
-                a.title,
-                a.description,
-                a.image_url,
-                a.tier,
-                a.status,
-                a.starts_at::text AS starts_at,
-                a.ends_at::text AS ends_at,
-                a.ended_at::text AS ended_at,
-                a.created_at::text AS created_at,
-                a.ticket_price::text AS ticket_price,
-                a.ticket_currency,
-                a.currency,
-                a.ticket_capacity,
-                (
-                    SELECT COUNT(*)
-                    FROM tickets t
-                    WHERE t.auction_id = a.id
-                ) AS tickets_sold,
-                (
-                    SELECT COUNT(*)
-                    FROM lots l
-                    WHERE l.sale_id = a.id
-                ) AS lot_count,
-                CASE
-                    WHEN a.ticket_capacity IS NULL THEN NULL
-                    ELSE GREATEST(a.ticket_capacity - (
-                        SELECT COUNT(*)
-                        FROM tickets t2
-                        WHERE t2.auction_id = a.id
-                    ), 0)
-                END AS tickets_remaining
-            FROM auctions a
-            WHERE
-                a.status IN ('upcoming', 'live')
-                OR (
-                    a.status = 'ended'
-                    AND COALESCE(a.ended_at, a.ends_at, a.created_at) >
-                        CURRENT_TIMESTAMP - make_interval(hours => %s)
-                )
-            ORDER BY
-                CASE
-                    WHEN a.status = 'live' THEN 0
-                    WHEN a.status = 'upcoming' THEN 1
-                    ELSE 2
-                END,
-                COALESCE(a.ended_at, a.ends_at, a.created_at) DESC
-            """,
-            (ENDED_FLOOR_RETENTION_HOURS,),
-        )
-
-        rows = cursor.fetchall()
-        out = []
-
-        for s in rows:
-            d = dict(s)
-            tier_canonical = _normalize_access_mode(d.get("tier"))
-
-            acc = auction_access(
-                cursor,
-                {**d, "tier": tier_canonical},
-                viewer,
-            ) or {}
-
-            out.append(
-                {
-                    **d,
-                    **acc,
-                    "access_mode": tier_canonical,
-                    "visible": acc.get("visible", True),
-                }
-            )
-
-        return {"sales": out}
-
-    except Exception as e:
-        return {"error": str(e)}
-
     finally:
         if conn:
             conn.close()
@@ -3911,17 +3796,23 @@ def settlement_view(sale_id: int, viewer: str = ""):
 def my_won_lots(viewer: str = ""):
     """
     Buyer-facing won lots.
-
     Returns sold lots where the signed-in user is the winner.
     Includes sale info, hammer/premium/total, payment status,
     and checkout URL if one was generated by settlement.
-
     Important:
     The browser must never call https://api.paystack.co directly.
     It may only open the checkout_url returned by this backend endpoint.
+
+    CURRENCY (fixed): a LOT's payable currency is the LOT's own
+    (l.currency), NOT the sale default. The old code resolved
+    sale_currency first, so a USD lot under an NGN-defaulted sale was
+    labelled NGN on /wins while the actual Paystack charge (built by
+    _initialize_lot_checkout, which is lot-first) went out in USD —
+    the UI lied about what was charged. Now lot-first everywhere, and a
+    per-currency bucket breakdown (summary.by_currency) so a mixed-
+    currency wallet is never silently collapsed under one wrong label.
     """
     conn = None
-
     try:
         raw_buyer = str(viewer or "").strip()
         if not raw_buyer:
@@ -3931,7 +3822,6 @@ def my_won_lots(viewer: str = ""):
         cursor = conn.cursor()
 
         buyer = _resolve_username(cursor, raw_buyer)
-
         if not buyer:
             return {
                 "lots": [],
@@ -3943,6 +3833,8 @@ def my_won_lots(viewer: str = ""):
                     "total_paid": "0.00",
                     "total_outstanding": "0.00",
                     "currency": DEFAULT_CCY,
+                    "mixed": False,
+                    "by_currency": [],
                 },
                 "rates": {
                     "buyer_premium_rate": float(BUYER_PREMIUM_RATE),
@@ -3964,7 +3856,6 @@ def my_won_lots(viewer: str = ""):
                 l.payment_reference,
                 l.payment_updated_at::text AS payment_updated_at,
                 l.hammer_at::text AS hammered_at,
-
                 a.id AS sale_id,
                 a.title AS sale_title,
                 a.host_username,
@@ -3974,7 +3865,7 @@ def my_won_lots(viewer: str = ""):
             FROM lots l
             JOIN auctions a ON a.id = l.sale_id
             WHERE l.winner_username = %s
-              AND l.status = 'sold'
+            AND l.status = 'sold'
             ORDER BY
                 a.settled_at DESC NULLS LAST,
                 l.hammer_at DESC NULLS LAST,
@@ -3986,17 +3877,27 @@ def my_won_lots(viewer: str = ""):
         rows = cursor.fetchall()
 
         lots = []
-
         total_hammer = Decimal("0.00")
         total_premium = Decimal("0.00")
         total_collected = Decimal("0.00")
         total_paid = Decimal("0.00")
         total_outstanding = Decimal("0.00")
 
+        # Per-currency truth for mixed wallets; the flat totals below are kept
+        # for the (common) uniform case and for backward compatibility with the
+        # current WonLotsSummary shape.
+        buckets: dict[str, dict] = {}
+        resolved_ccys: list[str] = []
+
         for r in rows:
             d = dict(r)
 
-            sale_ccy = _ccy(d.get("sale_currency") or d.get("lot_currency"))
+            # LOT-FIRST. The lot's own currency wins; the sale currency is only
+            # a last resort when the lot row has none (should not happen:
+            # add_lot always stamps a currency, defaulting to the sale's).
+            row_ccy = _ccy(d.get("lot_currency") or d.get("sale_currency"))
+            resolved_ccys.append(row_ccy)
+
             hammer = _money(d.get("hammer"))
             premium = (hammer * BUYER_PREMIUM_RATE).quantize(
                 Decimal("0.01"),
@@ -4013,7 +3914,7 @@ def my_won_lots(viewer: str = ""):
 
             d.update(
                 {
-                    "currency": sale_ccy,
+                    "currency": row_ccy,
                     "hammer": str(hammer),
                     "premium": str(premium),
                     "collected": str(collected),
@@ -4033,8 +3934,46 @@ def my_won_lots(viewer: str = ""):
             else:
                 total_outstanding += collected
 
-        first = dict(rows[0]) if rows else {}
-        summary_currency = _ccy(first.get("sale_currency") or DEFAULT_CCY)
+            b = buckets.get(row_ccy)
+            if b is None:
+                b = {
+                    "currency": row_ccy,
+                    "count": 0,
+                    "hammer": Decimal("0.00"),
+                    "premium": Decimal("0.00"),
+                    "collected": Decimal("0.00"),
+                    "paid": Decimal("0.00"),
+                    "outstanding": Decimal("0.00"),
+                }
+                buckets[row_ccy] = b
+            b["count"] += 1
+            b["hammer"] += hammer
+            b["premium"] += premium
+            b["collected"] += collected
+            if payment_status == "paid":
+                b["paid"] += collected
+            else:
+                b["outstanding"] += collected
+
+        # Uniform sale (your case): one currency, label = that currency.
+        # Mixed: label = first lot's currency (not silently NGN); the
+        # authoritative split is in by_currency, and the flat totals above are
+        # a cross-currency sum only meaningful when uniform.
+        summary_currency = resolved_ccys[0] if resolved_ccys else DEFAULT_CCY
+        mixed = len(buckets) > 1
+
+        by_currency = [
+            {
+                "currency": b["currency"],
+                "count": b["count"],
+                "hammer": str(b["hammer"]),
+                "premium": str(b["premium"]),
+                "collected": str(b["collected"]),
+                "paid": str(b["paid"]),
+                "outstanding": str(b["outstanding"]),
+            }
+            for b in buckets.values()
+        ]
 
         return {
             "lots": lots,
@@ -4046,15 +3985,15 @@ def my_won_lots(viewer: str = ""):
                 "total_paid": str(total_paid),
                 "total_outstanding": str(total_outstanding),
                 "currency": summary_currency,
+                "mixed": mixed,
+                "by_currency": by_currency,
             },
             "rates": {
                 "buyer_premium_rate": float(BUYER_PREMIUM_RATE),
             },
         }
-
     except Exception as e:
         return {"error": str(e)}
-
     finally:
         if conn:
             conn.close()

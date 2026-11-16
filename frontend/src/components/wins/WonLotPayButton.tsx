@@ -82,8 +82,20 @@ export function WonLotPayButton({
   const [manualUrl, setManualUrl] = useState('')
 
   const status = String(lot.payment_status || 'unpaid').toLowerCase()
-  const currency = lot.currency || 'NGN'
+
+  // LOT currency, resolved without silently inventing NGN. After the backend
+  // fix (my_won_lots is lot-first) lot.currency is the real charge currency
+  // (e.g. 'USD'), so the empty branch is a last-resort guard only: if a lot
+  // ever arrives with no currency we show the bare number rather than a wrong
+  // 'NGN' label that would mismatch the actual Paystack charge.
+  const currency = String(lot.currency || '').trim().toUpperCase()
   const amount = lot.collected || lot.hammer
+  const amountLabel = currency
+    ? formatMoney(amount, currency)
+    : Number(amount || 0).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
 
   if (status === 'paid') {
     return <span style={paidStyle}>Paid</span>
@@ -171,7 +183,7 @@ export function WonLotPayButton({
             ? 'Try payment again'
             : status === 'pending'
               ? 'Open payment link'
-              : `Pay ${formatMoney(amount, currency)}`}
+              : `Pay ${amountLabel}`}
       </button>
 
       {error ? <p style={errorStyle}>{error}</p> : null}

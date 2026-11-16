@@ -7,6 +7,7 @@ import {
   Gavel,
   RefreshCw,
   XCircle,
+  AlertTriangle,
 } from 'lucide-react'
 import { Navbar } from '../components/Navbar'
 import {
@@ -45,6 +46,47 @@ function isPendingWithReference(lot: WonLot) {
   return (
     String(lot.payment_status || '').toLowerCase() === 'pending' &&
     !!lot.payment_reference
+  )
+}
+
+/**
+ * Resolve a lot's currency SAFELY. The old code passed lot.currency straight
+ * to formatMoney(value, lot.currency), whose signature is
+ * formatMoney(value, currency = 'NGN'). When the backend returned a null /
+ * undefined / empty currency (because the won-lots query read sale.currency
+ * or ticket_currency instead of lot.currency, or the lot row had no currency
+ * populated), the default 'NGN' fired SILENTLY — you saw "Pay 4,785,495.00 NGN"
+ * on a USD lot and had no idea the data was broken.
+ *
+ * Now: if the currency is missing, we return '' and the render shows a visible
+ * warning badge instead of a wrong NGN label. The bug becomes loud, not silent.
+ */
+function safeCurrency(raw: unknown): string {
+  const c = String(raw ?? '').trim().toUpperCase()
+  return c || ''
+}
+
+function CurrencyWarning() {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.3rem',
+        fontSize: '0.72rem',
+        fontWeight: 700,
+        color: '#b45309',
+        background: 'rgba(180, 83, 9, 0.08)',
+        border: '1px solid rgba(180, 83, 9, 0.2)',
+        borderRadius: 6,
+        padding: '0.15rem 0.4rem',
+        marginLeft: '0.4rem',
+      }}
+      title="This lot has no currency set on the backend. The amount shown may be in the wrong currency. Contact the house or check the lot form."
+    >
+      <AlertTriangle size={11} />
+      no currency
+    </span>
   )
 }
 
@@ -396,35 +438,35 @@ export function WonLotsPage() {
             <div className={styles.stat}>
               <span className={styles.statLabel}>Hammer total</span>
               <strong className={styles.statValue}>
-                {formatMoney(summary.total_hammer, summary.currency)}
+                {formatMoney(summary.total_hammer, safeCurrency(summary.currency) || undefined)}
               </strong>
             </div>
 
             <div className={styles.stat}>
               <span className={styles.statLabel}>Buyer premium</span>
               <strong className={styles.statValue}>
-                {formatMoney(summary.total_premium, summary.currency)}
+                {formatMoney(summary.total_premium, safeCurrency(summary.currency) || undefined)}
               </strong>
             </div>
 
             <div className={styles.stat}>
               <span className={styles.statLabel}>Total payable</span>
               <strong className={styles.statValue}>
-                {formatMoney(summary.total_collected, summary.currency)}
+                {formatMoney(summary.total_collected, safeCurrency(summary.currency) || undefined)}
               </strong>
             </div>
 
             <div className={styles.stat}>
               <span className={styles.statLabel}>Paid</span>
               <strong className={`${styles.statValue} ${styles.paidText}`}>
-                {formatMoney(summary.total_paid, summary.currency)}
+                {formatMoney(summary.total_paid, safeCurrency(summary.currency) || undefined)}
               </strong>
             </div>
 
             <div className={styles.stat}>
               <span className={styles.statLabel}>Outstanding</span>
               <strong className={`${styles.statValue} ${styles.outstanding}`}>
-                {formatMoney(summary.total_outstanding, summary.currency)}
+                {formatMoney(summary.total_outstanding, safeCurrency(summary.currency) || undefined)}
               </strong>
             </div>
           </section>
@@ -468,6 +510,14 @@ export function WonLotsPage() {
               const collectionReady =
                 Boolean((lot as any).collection_ready) ||
                 (lot.sale_status === 'ended' && !!lot.settled_at)
+
+              // Resolve currency ONCE per lot. If the backend returned null /
+              // empty (the NGN-leak bug: the won-lots query read sale.currency
+              // or ticket_currency instead of lot.currency), we show a visible
+              // warning instead of silently defaulting to NGN via formatMoney's
+              // default parameter.
+              const cur = safeCurrency(lot.currency)
+              const hasCurrency = cur !== ''
 
               return (
                 <article
@@ -516,17 +566,32 @@ export function WonLotsPage() {
                     <div className={styles.moneyGrid}>
                       <div className={styles.moneyBox}>
                         <span>Hammer</span>
-                        <strong>{formatMoney(lot.hammer, lot.currency)}</strong>
+                        <strong>
+                          {hasCurrency
+                            ? formatMoney(lot.hammer, cur)
+                            : `${Number(lot.hammer || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          {!hasCurrency && <CurrencyWarning />}
+                        </strong>
                       </div>
 
                       <div className={styles.moneyBox}>
                         <span>Buyer premium</span>
-                        <strong>{formatMoney(lot.premium, lot.currency)}</strong>
+                        <strong>
+                          {hasCurrency
+                            ? formatMoney(lot.premium, cur)
+                            : `${Number(lot.premium || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          {!hasCurrency && <CurrencyWarning />}
+                        </strong>
                       </div>
 
                       <div className={styles.moneyBox}>
                         <span>Total payable</span>
-                        <strong>{formatMoney(lot.collected, lot.currency)}</strong>
+                        <strong>
+                          {hasCurrency
+                            ? formatMoney(lot.collected, cur)
+                            : `${Number(lot.collected || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          {!hasCurrency && <CurrencyWarning />}
+                        </strong>
                       </div>
                     </div>
 
